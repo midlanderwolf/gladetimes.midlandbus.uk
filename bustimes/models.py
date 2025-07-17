@@ -347,6 +347,7 @@ class Trip(models.Model):
     vehicle_journey_code = models.CharField(max_length=100, blank=True, db_index=True)
     ticket_machine_code = models.CharField(max_length=100, blank=True, db_index=True)
     block = models.CharField(max_length=100, blank=True, db_index=True)
+    direction = models.CharField(max_length=50, blank=True, null=True)
     destination = models.ForeignKey(
         "busstops.StopPoint", models.DO_NOTHING, null=True, blank=True
     )

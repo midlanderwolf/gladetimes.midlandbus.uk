@@ -18,7 +18,7 @@ ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split()
 
 CSRF_TRUSTED_ORIGINS = os.environ.get(
     "CSRF_TRUSTED_ORIGINS",
-    "https://bustimes.org",
+    "https://gladetimes.midlandbus.uk",
 ).split()
 CSRF_FAILURE_VIEW = "busstops.views.csrf_failure"
 
@@ -321,9 +321,9 @@ else:
 TNDS_DIR = DATA_DIR / "TNDS"
 
 # captchas
-TURNSTILE_SITEKEY = os.environ.get("TURNSTILE_SITEKEY", "0x4AAAAAAAFWiyCqdh2c-5sy")
+TURNSTILE_SITEKEY = os.environ.get("TURNSTILE_SITEKEY")
 TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET")
 
-ABBREVIATE_HOURLY = False  # we override this in some tests, that's all
-DISABLE_REGISTRATION = os.environ.get("DISABLE_REGISTRATION", False)
-DISABLE_EDITING = os.environ.get("DISABLE_EDITING", False)
+ABBREVIATE_HOURLY = True  # we override this in some tests, that's all
+DISABLE_REGISTRATION = os.environ.get("DISABLE_REGISTRATION", True)
+DISABLE_EDITING = os.environ.get("DISABLE_EDITING", True)

@@ -34,40 +34,40 @@ PASSWORD=$2
 ./manage.py naptan_new "Irish NaPTAN"
 
 
-cd data/TNDS
+# cd data/TNDS
 
-ncsd_old=$(ls -l NCSD.zip)
-wget -qN https://bodds-prod-coach-data.s3.eu-west-2.amazonaws.com/TxC-2.4.zip -O NCSD.zip
-ncsd_new=$(ls -l NCSD.zip)
+# ncsd_old=$(ls -l NCSD.zip)
+# wget -qN https://bodds-prod-coach-data.s3.eu-west-2.amazonaws.com/TxC-2.4.zip -O NCSD.zip
+# ncsd_new=$(ls -l NCSD.zip)
 
-tfl_old=$(ls -l L.zip)
-wget -qN https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip -O L.zip
-tfl_new=$(ls -l L.zip)
+# tfl_old=$(ls -l L.zip)
+# wget -qN https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip -O L.zip
+# tfl_new=$(ls -l L.zip)
 
-cd ../..
+# cd ../..
 
-if [[ $ncsd_old != $ncsd_new ]]; then
-    echo 'NCSD.zip'
-    ./manage.py import_transxchange data/TNDS/NCSD.zip
-fi
+# if [[ $ncsd_old != $ncsd_new ]]; then
+#     echo 'NCSD.zip'
+#     ./manage.py import_transxchange data/TNDS/NCSD.zip
+# fi
 
-if [[ $tfl_old != $tfl_new ]]; then
-    echo 'L.zip'
-    ./manage.py import_transxchange data/TNDS/L.zip
-fi
+# if [[ $tfl_old != $tfl_new ]]; then
+#     echo 'L.zip'
+#     ./manage.py import_transxchange data/TNDS/L.zip
+# fi
 
 
 ./manage.py import_noc
 
 
-if [[ $USERNAME == '' || $PASSWORD == '' ]]; then
-   echo 'TNDS username and/or password not supplied :('
-   exit 1
-fi
+# if [[ $USERNAME == '' || $PASSWORD == '' ]]; then
+#    echo 'TNDS username and/or password not supplied :('
+#    exit 1
+# fi
 
-./manage.py import_tnds "$USERNAME" "$PASSWORD"
+# ./manage.py import_tnds "$USERNAME" "$PASSWORD"
 
-./manage.py import_gtfs
+# ./manage.py import_gtfs
 
 ./manage.py update_search_indexes
 
