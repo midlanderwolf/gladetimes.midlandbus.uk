@@ -153,7 +153,7 @@ class Command(ImportLiveVehiclesCommand):
         operators = self.get_operator(operator_ref)
 
         if operator_ref == "TFLO":
-            defaults["livery_id"] = 262
+            defaults["livery_id"] = 1
             defaults["operator_id"] = operator_ref
             if vehicle_ref.startswith("TMP"):
                 defaults["notes"] = "Spare ticket machine"
