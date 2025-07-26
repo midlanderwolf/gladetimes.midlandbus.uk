@@ -232,6 +232,11 @@ NUTT:
     Mereside
     Blackpool
     FY4 4QU
+MDEM:
+  name: midland Transportation Group
+  aka: midland Group - East Midlands
+  url: https://midlandbus.uk
+  email: contact@midlandbus.uk
 MDBC:
   url: ""
 TANV:
