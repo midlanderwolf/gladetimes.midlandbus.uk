@@ -134,7 +134,7 @@
 | vehicles/management/commands/import\_gtfsr\_ie.py               |      105 |        6 |     94% |83, 110, 157, 166, 173, 177 |
 | vehicles/management/commands/import\_live\_jersey.py            |       35 |        0 |    100% |           |
 | vehicles/management/commands/import\_nx.py                      |      137 |       27 |     80% |47, 91, 108-110, 112-113, 116-117, 134, 142-145, 149-152, 168-171, 174, 186-187, 197, 208 |
-| vehicles/management/commands/import\_polar.py                   |       75 |       25 |     67% |13-14, 25, 28, 33-39, 45-47, 51, 61-62, 65, 79-82, 85, 98, 105 |
+| vehicles/management/commands/import\_polar.py                   |       77 |       25 |     68% |14-15, 27, 30, 35-41, 47-49, 53, 58-59, 62, 76-79, 82, 95, 102 |
 | vehicles/management/commands/import\_stagecoach\_avl.py         |       94 |       15 |     84% |105, 116-127, 155, 162, 167-168, 179-185, 207-215 |
 | vehicles/management/commands/signalr.py                         |       66 |        5 |     92% |58, 75-77, 89 |
 | vehicles/management/commands/siri\_vm\_subscribe.py             |       26 |        7 |     73% |     27-55 |
@@ -169,7 +169,7 @@
 | vosa/tests.py                                                   |       60 |        0 |    100% |           |
 | vosa/urls.py                                                    |        3 |        0 |    100% |           |
 | vosa/views.py                                                   |       57 |        0 |    100% |           |
-|                                                       **TOTAL** | **16214** | **1094** | **93%** |           |
+|                                                       **TOTAL** | **16216** | **1094** | **93%** |           |
 
 
 ## Setup coverage badge
