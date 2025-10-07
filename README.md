@@ -86,7 +86,7 @@
 | bustimes/management/tests/test\_import\_passenger.py            |       23 |        0 |    100% |           |
 | bustimes/management/tests/test\_import\_transxchange.py         |      746 |        0 |    100% |           |
 | bustimes/management/tests/test\_tnds.py                         |       19 |        0 |    100% |           |
-| bustimes/models.py                                              |      342 |        9 |     97% |111, 217, 375, 378, 407, 452-455, 487 |
+| bustimes/models.py                                              |      342 |        8 |     98% |111, 375, 378, 407, 452-455, 487 |
 | bustimes/test\_get\_trip.py                                     |       31 |        0 |    100% |           |
 | bustimes/tests.py                                               |      129 |        0 |    100% |           |
 | bustimes/timetables.py                                          |      615 |       64 |     90% |39-52, 162-173, 204-205, 222-234, 286, 298-301, 313, 327-332, 346, 365, 440, 443, 459-462, 464, 491, 603-618, 704-705, 776, 922-924 |
@@ -125,6 +125,7 @@
 | fares/urls.py                                                   |        3 |        0 |    100% |           |
 | fares/views.py                                                  |       44 |        0 |    100% |           |
 | manage.py                                                       |        6 |        0 |    100% |           |
+| setup\_rentor.py                                                |       17 |       17 |      0% |      7-44 |
 | transxchange/\_\_init\_\_.py                                    |        0 |        0 |    100% |           |
 | transxchange/test\_txc.py                                       |       23 |        0 |    100% |           |
 | transxchange/txc.py                                             |      485 |       19 |     96% |54, 125, 131, 176, 236, 264, 310-317, 384, 386, 430, 451, 513, 546-547, 702, 733 |
@@ -150,6 +151,7 @@
 | vehicles/management/commands/import\_gtfsr\_worldwide.py        |       93 |       93 |      0% |     1-193 |
 | vehicles/management/commands/import\_live\_jersey.py            |       44 |        3 |     93% |27, 31, 39 |
 | vehicles/management/commands/import\_polar.py                   |       84 |       28 |     67% |13-14, 25, 29, 33, 41, 44, 49-55, 61-63, 67, 77-78, 81, 95-98, 101, 114, 121 |
+| vehicles/management/commands/import\_rentor.py                  |       53 |       53 |      0% |     1-100 |
 | vehicles/management/commands/import\_stagecoach\_avl.py         |       72 |        5 |     93% |123, 133, 138-139, 171 |
 | vehicles/management/commands/import\_translink\_avl.py          |       58 |        7 |     88% |14, 68-71, 105-106 |
 | vehicles/management/commands/listen.py                          |       22 |       22 |      0% |      1-58 |
@@ -189,7 +191,7 @@
 | vosa/tests.py                                                   |       60 |        0 |    100% |           |
 | vosa/urls.py                                                    |        3 |        0 |    100% |           |
 | vosa/views.py                                                   |       57 |        0 |    100% |           |
-|                                                       **TOTAL** | **17773** | **2269** | **87%** |           |
+|                                                       **TOTAL** | **17843** | **2338** | **87%** |           |
 
 
 ## Setup coverage badge
