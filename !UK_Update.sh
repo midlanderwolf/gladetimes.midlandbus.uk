@@ -54,6 +54,20 @@ echo "Importing Passenger Timetables"
 docker compose exec web uv run ./manage.py import_passenger
 echo "Passenger Timetables import complete"
 
+cd data/TNDS
+
+tfl_old=$(ls -l L.zip)
+wget -qN https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip -O L.zip
+tfl_new=$(ls -l L.zip)
+
+cd ../..
+
+if [[ $tfl_old != $tfl_new ]]; then
+    echo 'Importing London Timetables'
+    ./manage.py import_transxchange data/TNDS/L.zip
+    echo 'London Timetables import complete'
+fi
+
 # echo "Importing Northern Ireland Timeabltes"
 # docker compose exec web uv run ./manage.py import_ni
 # echo "Northern Ireland Timeabltes import complete"
