@@ -1,8 +1,7 @@
 import logging
 from functools import cache
-from itertools import pairwise
 from pathlib import Path
-import geopandas as gpd
+import pandas as pd
 
 import gtfs_kit
 import requests
@@ -11,21 +10,24 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Min, Subquery, OuterRef
-from django.contrib.gis.geos import LineString, Point
 
 from busstops.models import DataSource, Operator, Service, StopPoint
 from vosa.models import Registration
+from fares.models import Fare, FareRule
 
 from ...download_utils import download_if_modified
-from ...models import Route, StopTime, Trip, Note, RouteLink
-from ...gtfs_utils import get_calendars, MODES
+from ...models import Route, StopTime, Trip, Note
+from ...gtfs_utils import get_calendars, MODES, do_route_links
 
 logger = logging.getLogger(__name__)
 
 
+note_codes = ["¶", "‖", "§", "‡", "†", "*"]
+
+
 @cache
-def get_note(note_code, note_text):
-    return Note.objects.get_or_create(code=note_code or "", text=note_text[:255])[0]
+def get_note(note_text):
+    return Note.objects.get_or_create(code=note_codes.pop(), text=note_text[:255])[0]
 
 
 class Command(BaseCommand):
@@ -36,9 +38,8 @@ class Command(BaseCommand):
         source.url = "https://cdn.ember.to/gtfs/static/Ember_GTFS_latest.zip"
 
         modified, last_modified = download_if_modified(path, source)
-        assert last_modified
 
-        if source.datetime == last_modified:
+        if not modified:
             return  # no new data to import
         source.datetime = last_modified
 
@@ -121,6 +122,7 @@ class Command(BaseCommand):
                 route=existing_routes[row.route_id],
                 calendar=calendars[row.service_id],
                 inbound=row.direction_id == 1,
+                ticket_machine_code=row.trip_id,
                 vehicle_journey_code=row.trip_id,
                 operator=operator,
                 headsign=row.trip_headsign,
@@ -152,58 +154,12 @@ class Command(BaseCommand):
 
             stop_times.append(stop_time)
 
-        existing_route_links = {
-            (rl.service.line_name, rl.from_stop_id, rl.to_stop_id): rl
-            for rl in RouteLink.objects.filter(service__in=existing_services.values())
-        }
-        route_links = {}
+        feed_stops = {row.stop_id: row for row in feed.stops.itertuples()}
+        stop_codes = {stop_id: stop.atco_code for stop_id, stop in stops.items()}
+        do_route_links(feed, source, existing_routes, feed_stops, stop_codes)
 
-        for trip in feed.trips.itertuples():
-            service = existing_routes[trip.route_id].service
-
-            shape = feed.shapes[feed.shapes.shape_id == trip.shape_id]
-            shape_gdf = gpd.GeoDataFrame(
-                shape,
-                geometry=gpd.points_from_xy(shape.shape_pt_lon, shape.shape_pt_lat),
-                crs="EPSG:4326",
-            )
-            if shape_gdf.empty:
-                continue
-
-            for a, b in pairwise(
-                feed.stop_times[feed.stop_times.trip_id == trip.trip_id].itertuples()
-            ):
-                from_stop = stops[a.stop_id]
-                to_stop = stops[b.stop_id]
-                key = (trip.route_id, from_stop.atco_code, to_stop.atco_code)
-
-                if key in route_links:
-                    continue
-
-                segment_gdf = shape_gdf[
-                    (shape_gdf.shape_dist_traveled >= a.shape_dist_traveled)
-                    & (shape_gdf.shape_dist_traveled <= b.shape_dist_traveled)
-                ]
-                if segment_gdf.empty:
-                    continue
-
-                if key in existing_route_links:
-                    rl = existing_route_links[key]
-                else:
-                    rl = RouteLink(
-                        service=service,
-                        from_stop=from_stop,
-                        to_stop=to_stop,
-                    )
-                rl.geometry = LineString(
-                    *(Point(p.x, p.y) for p in segment_gdf.geometry.values)
-                )
-                route_links[key] = rl
-
-        RouteLink.objects.bulk_update(
-            [rl for rl in route_links.values() if rl.id], fields=["geometry"]
-        )
-        RouteLink.objects.bulk_create([rl for rl in route_links.values() if not rl.id])
+        fare_attributes_df = feed.fare_attributes
+        fare_rules_df = feed.fare_rules
 
         # get TripUpdates from the GTFS-RT feed - to mark some stops as "pre-book only":
 
@@ -222,7 +178,7 @@ class Command(BaseCommand):
                 description = item.alert.description_text.translation[0].text
                 if header == "Pre-booking":
                     stop_id = item.alert.informed_entity[0].stop_id
-                    note = get_note("b", description)
+                    note = get_note(description)
                     if note in stop_notes:
                         stop_notes[note].append(stop_id)
                     else:
@@ -241,6 +197,7 @@ class Command(BaseCommand):
                     "destination",
                     "block",
                     "vehicle_journey_code",
+                    "ticket_machine_code",
                     "inbound",
                     "headsign",
                 ],
@@ -267,6 +224,51 @@ class Command(BaseCommand):
             for note in existing_notes.values():
                 if note not in stop_notes:
                     note.trip_set.clear()
+
+            # fares
+            if fare_attributes_df is not None and not fare_attributes_df.empty:
+                new_fare_ids = set(fare_attributes_df.fare_id.tolist())
+                Fare.objects.filter(source=source).exclude(
+                    fare_id__in=new_fare_ids
+                ).delete()
+                fare_objs = [
+                    Fare(
+                        source=source,
+                        fare_id=row.fare_id,
+                        price=row.price,
+                        currency=row.currency_type,
+                        payment_method=row.payment_method,
+                        transfers=int(row.transfers) if pd.notna(row.transfers) else 0,
+                    )
+                    for row in fare_attributes_df.itertuples()
+                ]
+                Fare.objects.bulk_create(
+                    fare_objs,
+                    update_conflicts=True,
+                    unique_fields=["source", "fare_id"],
+                    update_fields=["price", "currency", "payment_method", "transfers"],
+                )
+                fares = {fare.fare_id: fare for fare in fare_objs}
+                FareRule.objects.filter(fare__source=source).delete()
+                if fare_rules_df is not None and not fare_rules_df.empty:
+                    rules = []
+                    for row in fare_rules_df.itertuples():
+                        fare = fares.get(row.fare_id)
+                        if fare is None:
+                            continue
+                        rule = FareRule(fare=fare)
+                        if pd.notna(getattr(row, "route_id", float("nan"))):
+                            route = existing_routes.get(row.route_id)
+                            if route:
+                                rule.service = route.service
+                        if pd.notna(getattr(row, "origin_id", float("nan"))):
+                            rule.origin = stops.get(row.origin_id)
+                        if pd.notna(getattr(row, "destination_id", float("nan"))):
+                            rule.destination = stops.get(row.destination_id)
+                        rules.append(rule)
+                    FareRule.objects.bulk_create(rules)
+            else:
+                Fare.objects.filter(source=source).delete()
 
             for service in source.service_set.filter(current=True):
                 service.do_stop_usages()

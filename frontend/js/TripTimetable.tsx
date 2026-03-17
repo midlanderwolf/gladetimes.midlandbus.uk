@@ -22,6 +22,7 @@ export type TripTime = {
   pick_up?: boolean;
   set_down?: boolean;
   call_condition?: string | null;
+  note_codes?: string[];
 };
 
 type Note = {
@@ -114,7 +115,7 @@ function Row({
       if (vehicle.progress.progress > 0.1) {
         actualRowSpan = (actualRowSpan || 1) + 1;
       }
-    } else if (!vehicle?.progress || vehicle.progress.id > stop.id) {
+    } else if (!vehicle?.progress || vehicle.progress.id + 1 !== stop.id) {
       actual = stop.actual_departure_time; // vehicle history
     }
     if (actual) {
@@ -138,26 +139,20 @@ function Row({
     }
   }
 
+  const notes = stop.note_codes?.map((note_code) => (
+    <strong key={note_code}>{note_code}</strong>
+  ));
+
   let aimed: ReactElement | null | string = null;
   if (aimedColumn) {
     aimed = stop.aimed_arrival_time || stop.aimed_departure_time;
-    if (stop.call_condition === "notStopping") {
-      aimed = (
-        <td>
-          <s>
-            {aimed}
-            {caveat}
-          </s>
-        </td>
-      );
-    } else {
-      aimed = (
-        <td>
-          {aimed}
-          {caveat}
-        </td>
-      );
-    }
+    aimed = (
+      <td>
+        {aimed}
+        {caveat}
+        {notes}
+      </td>
+    );
   }
 
   return (
@@ -272,7 +267,9 @@ const TripTimetable = React.memo(function TripTimetable({
         </tbody>
       </table>
       {trip.notes?.map((note) => (
-        <p key={note.code}>{note.text}</p>
+        <p key={note.code}>
+          <strong>{note.code}</strong> {note.text}
+        </p>
       ))}
     </React.Fragment>
   );

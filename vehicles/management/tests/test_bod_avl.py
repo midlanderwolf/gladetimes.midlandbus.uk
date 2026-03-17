@@ -12,6 +12,7 @@ from busstops.models import (
     Locality,
     Operator,
     OperatorCode,
+    OperatorGroup,
     Region,
     Service,
     StopPoint,
@@ -34,6 +35,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         region = Region.objects.create(id="EA")
+        first_group = OperatorGroup.objects.create(name="First", slug="first")
         Operator.objects.bulk_create(
             [
                 Operator(noc="WHIP", region=region),
@@ -41,8 +43,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 Operator(noc="HAMS", region=region),
                 Operator(noc="UNOE", region=region),
                 Operator(noc="UNIB", region=region),
-                Operator(noc="FBRI", region=region, parent="First"),
-                Operator(noc="FECS", region=region, parent="First"),
+                Operator(noc="FBRI", region=region, group=first_group),
+                Operator(noc="FECS", region=region, group=first_group),
                 Operator(noc="NIBS", region=region),
                 Operator(noc="TCVW", region=region, name="National Express Coventry"),
                 Operator(
@@ -279,13 +281,13 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 return_value=items,
             ),
         ):
-            with self.assertNumQueries(41):
+            with self.assertNumQueries(44):
                 wait = command.update()
             self.assertEqual(11, wait)
 
-            with self.assertNumQueries(0):
+            with self.assertNumQueries(0):  # no new data
                 wait = command.update()
-            self.assertEqual(30, wait)
+            self.assertEqual(11, wait)
 
             items[0]["RecordedAtTime"] = "2020-10-30T05:09:00+00:00"
             with self.assertNumQueries(1):
@@ -388,7 +390,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             # test history view
             whippet_journey = VehicleJourney.objects.get(vehicle__operator="WHIP")
 
-            with time_machine.travel("2020-06-17"), self.assertNumQueries(7):
+            with time_machine.travel("2020-06-17"), self.assertNumQueries(8):
                 response = self.client.get(whippet_journey.get_absolute_url())
 
             self.assertContains(
@@ -501,7 +503,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         vehicle = journey.vehicle
 
         with mock.patch("vehicles.views.redis_client", redis_client):
-            with self.assertNumQueries(4):
+            with self.assertNumQueries(5):
                 response = self.client.get(journey.get_absolute_url())
             self.assertContains(response, "146")
             self.assertContains(response, ">Southwold<")
@@ -1111,3 +1113,76 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         with use_cassette(str(self.vcr_path / "bod_avl_error.yaml")):
             items = command.get_items()
             self.assertEqual(items, [])
+
+    def test_tfw_bods_coexistence(self):
+        tfw = DataSource.objects.create(name="Transport for Wales")
+        bods = self.source
+
+        bods_command = import_bod_avl.Command()
+        bods_command.source = bods
+
+        tfw_command = import_bod_avl.Command()
+        tfw_command.source = tfw
+
+        bods_data = {
+            "Extensions": {
+                "VehicleJourney": {
+                    "Operational": {
+                        "TicketMachine": {
+                            "JourneyCode": "0732",
+                            "TicketMachineServiceCode": "60T3",
+                        }
+                    },
+                    "VehicleUniqueId": "YW25 DDN",
+                }
+            },
+            "RecordedAtTime": "2026-02-07T07:25:36+00:00",
+            "MonitoredVehicleJourney": {
+                "Bearing": "320",
+                "LineRef": "T3",
+                "BlockRef": "C303",
+                "OriginRef": "5400AWD70018",
+                "OriginName": "Jubilee_Road",
+                "VehicleRef": "YW25_DDN",
+                "OperatorRef": "LLCO",
+                "DirectionRef": "outbound",
+                "DestinationRef": "5140WDB25304",
+                "DestinationName": "Bus_Station",
+                "VehicleLocation": {"Latitude": "52.720813", "Longitude": "-4.054096"},
+                "PublishedLineName": "T3",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026-02-07",
+                    "DatedVehicleJourneyRef": "0732",
+                },
+                "OriginAimedDepartureTime": "2026-02-07T07:32:00+00:00",
+                "DestinationAimedArrivalTime": "2026-02-07T10:10:00+00:00",
+            },
+        }
+        tfw_data = {
+            "RecordedAtTime": "2026-02-07T07:25:36+00:00",
+            "VehicleMonitoringRef": "LLCO-YW25_DDN",
+            "MonitoredVehicleJourney": {
+                "Bearing": "0",
+                "InPanic": "false",
+                "BlockRef": "Unknown",
+                "Monitored": "false",
+                "VehicleRef": "LLCO-YW25_DDN",
+                "OperatorRef": "LLCO",
+                "VehicleLocation": {"Latitude": "52.720813", "Longitude": "-4.054096"},
+                "VehicleFeatureRef": "lowFloor",
+                "VehicleJourneyRef": None,
+            },
+        }
+
+        with patch_redis_client():
+            tfw_command.handle_item(tfw_data)
+            tfw_command.save()
+
+            bods_command.handle_item(bods_data)
+            bods_command.save()
+
+        vehicle = Vehicle.objects.get(reg="YW25DDN")
+        journey = vehicle.latest_journey
+        self.assertEqual(journey.route_name, "T3")
+        self.assertEqual(journey.source, bods)
+        self.assertEqual(journey.code, "0732")

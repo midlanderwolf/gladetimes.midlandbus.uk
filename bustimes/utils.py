@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date, datetime, timedelta
 from difflib import Differ
 from itertools import pairwise
@@ -29,6 +30,14 @@ from .models import (
 )
 
 differ = Differ(charjunk=lambda _: True)
+
+
+def get_sha1(path):
+    sha1 = hashlib.sha1(usedforsecurity=False)
+    with path.open("rb") as open_file:
+        while data := open_file.read(65536):
+            sha1.update(data)
+    return sha1.hexdigest()
 
 
 class log_time_taken:
@@ -101,8 +110,16 @@ def get_routes(routes, when):
                 start_date__lte=when,
             )
         )
+    ).filter(
+        ~Exists(
+            Route.objects.filter(
+                file_hash=OuterRef("file_hash"),
+                file_hash__isnull=False,
+                code=OuterRef("code"),
+                id__gt=OuterRef("id"),
+            )
+        )
     )
-
     return routes
 
 
@@ -175,7 +192,7 @@ def get_other_trips_in_block(trip, date):
 
 
 def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=None):
-    times = StopTime.objects.filter(pick_up=True).annotate(date=Value(date))
+    times = StopTime.objects.filter(pick_up=True)
 
     try:
         times = times.filter(stop__stop_area=stop)
@@ -183,8 +200,21 @@ def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=No
         times = times.filter(stop=stop)
 
     if trip_ids:
-        trips = Trip.objects.filter(id__in=trip_ids, start__lt=time)
-        times = times.filter(departure__lt=time)
+        trips = Trip.objects.filter(id__in=trip_ids)
+        one_day = timedelta(1)
+        times = times.filter(
+            Q(departure__lt=time)
+            | Q(departure__gte=one_day, departure__lt=time + one_day)
+        )
+        times = times.annotate(
+            date=Case(
+                When(
+                    departure__gte=one_day,
+                    then=Value(date - one_day),
+                ),
+                default=date,
+            )
+        )
     else:
         routes = list(get_routes(routes, date))
 
@@ -212,6 +242,8 @@ def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=No
             ).order_by("departure_time")
         else:
             times = times.filter(departure__isnull=False)
+
+        times = times.annotate(date=Value(date))
 
     times = times.filter(trip__in=trips)
 
@@ -331,13 +363,22 @@ def get_trip(
 
     if departure_time:
         start_time = timezone.localtime(departure_time)
-        start = Q(start=timedelta(hours=start_time.hour, minutes=start_time.minute))
-        if start_time.hour < 6:
-            start |= Q(
-                start=timedelta(
-                    days=1, hours=start_time.hour, minutes=start_time.minute
-                )
+        start_timedelta = timedelta(hours=start_time.hour, minutes=start_time.minute)
+        start = Q(start=start_timedelta)
+        if origin:
+            start |= Exists(
+                "stoptime", filter=Q(stop=origin_ref, departure=start_timedelta)
             )
+        if start_time.hour < 6:
+            start |= Q(start=start_timedelta + timedelta(days=1))
+            if origin:
+                start |= Exists(
+                    "stoptime",
+                    filter=Q(
+                        stop=origin_ref, departure=start_timedelta + timedelta(days=1)
+                    ),
+                )
+
     elif len(journey_code) == 4 and journey_code.isdigit() and int(journey_code) < 2400:
         hours = int(journey_code[:-2])
         minutes = int(journey_code[-2:])

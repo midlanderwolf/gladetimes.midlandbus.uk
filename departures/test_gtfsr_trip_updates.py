@@ -1,4 +1,5 @@
 from datetime import timedelta
+from http import HTTPStatus
 from unittest.mock import patch
 
 import fakeredis
@@ -123,6 +124,12 @@ class GTFSRTTest(TestCase):
             self.assertContains(response, "3051 trip_updates")
             self.assertContains(response, "2 matching trips")
 
+            response = self.client.get("/trip_updates/ntaie.json")
+            self.assertEqual(response.headers["Content-Type"], "application/json")
+
+            response = self.client.get("/trip_updates/foo.json")
+            self.assertEqual(response.status_code, HTTPStatus.NOT_FOUND)
+
             response = self.client.get("/stops/8250DB000429?date=2022-05-04&time=05:00")
             self.assertContains(response, "Ex&shy;pected")
             self.assertContains(response, "Sched&shy;uled")
@@ -136,8 +143,8 @@ class GTFSRTTest(TestCase):
             self.assertTrue(response.context["stops_json"])
 
     def test_no_feed(self):
-        with patch("departures.gtfsr.get_feed_entities", return_value=None):
-            self.assertIsNone(gtfsr.update_stop_departures(()))
+        with patch("departures.gtfsr.get_trip_updates", return_value=None):
+            self.assertIsNone(gtfsr.update_stop_departures((), "ntaie"))
 
     def test_get_expected_time(self):
         update = {
@@ -149,12 +156,8 @@ class GTFSRTTest(TestCase):
         }
 
         self.assertEqual(
-            str(
-                gtfsr.get_expected_time(
-                    timedelta(hours=8, minutes=20), update, "arrival"
-                )
-            ),
-            "2024-09-03 08:39:18+01:00",
+            gtfsr.get_expected_time(timedelta(hours=8, minutes=20), update, "arrival"),
+            "08:39",
         )
         self.assertEqual(
             gtfsr.get_expected_time(

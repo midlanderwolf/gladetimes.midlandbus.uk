@@ -102,13 +102,6 @@ abbr {
     text-decoration: none;
 }
 
-kbd {
-    border: 1px solid #ccc;
-    border-radius: .5em;
-    font: inherit;
-    padding: .25em;
-}
-
 label {
     cursor: pointer;
 }
@@ -538,9 +531,10 @@ ol ::marker {
 
 .rules,
 .history {
+    padding-left: 2em;
+
     > li {
         list-style: decimal;
-        margin-left: 1.75em;
         padding-left: .25em;
     }
 }
@@ -933,6 +927,12 @@ th a,
 
 .stop-name[rowspan="2"] a {
     padding: 1.25em 0;
+}
+
+.stop-name .note {
+    float: right;
+    color: var(--text-color);
+    margin-left: .5em;
 }
 
 th,
@@ -1402,8 +1402,12 @@ input:not(:checked) + label {
     border: 1px solid var(--border-color);
     padding: 1em;
 
-    p {
+    p, h2 {
         margin-top: 0;
+    }
+
+    ul {
+        margin: 0;
     }
 }
 
@@ -1503,6 +1507,25 @@ nav {
     ul, p {
         margin: 0;
     }
+}
+
+figure {
+    margin: 1em 0;
+    position: relative;
+
+    img {
+        display: block;
+    }
+}
+
+figcaption {
+    background: #000;
+    color: #fff;
+    font-size: .75em;
+    padding: .25em;
+    position: absolute;
+    bottom: 0;
+    left: 0;
 }
 
 .ad-wrapper {

@@ -13,12 +13,13 @@ from django.contrib.auth.models import AnonymousUser
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.postgres.aggregates import ArrayAgg
-from django.contrib.postgres.expressions import ArraySubquery
+from itertools import groupby
 from django.contrib.postgres.search import SearchHeadline, SearchQuery, SearchRank
 from django.contrib.sitemaps import Sitemap
 from django.core.cache import cache
 from django.core.mail import EmailMessage
 from django.core.paginator import Paginator
+from django.db import connection
 from django.db.models import F, OuterRef, Prefetch, Q, When, Case, Value
 from django.db.models.functions import Coalesce, Now
 from django.http import (
@@ -44,7 +45,7 @@ from sql_util.utils import Exists, SubqueryMax, SubqueryMin
 from ukpostcodeutils import validation
 
 from buses.utils import cdn_cache_control
-from bustimes.models import StopTime, Trip
+from bustimes.models import StopTime
 from departures import live
 from disruptions.models import Consequence, Situation
 from fares.models import FareTable
@@ -210,6 +211,7 @@ Disallow: /fares/
 Disallow: /vehicles/tfl/
 Disallow: /vehicles/*?date=*
 Disallow: /stops/*?date=*
+Disallow: /services/*?date=*
 Disallow: /services/*/*
 Disallow: /sources
 Disallow: /*/debug
@@ -308,6 +310,83 @@ def status(request):
     )
 
 
+@cache_control(max_age=3600)
+def stops_mvt(request, z, x, y):
+    """Mapbox Vector Tile endpoint for bus stops, replacing stops_json eventually."""
+    if z < 10:
+        return HttpResponse(b"", content_type="application/x-protobuf")
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT ST_AsMVT(tile, 'stops', 4096, 'geom')
+            FROM (
+                SELECT
+                    ST_AsMVTGeom(
+                        ST_Transform(sp.latlong, 3857),
+                        ST_TileEnvelope(%s, %s, %s),
+                        4096, 64, true
+                    ) AS geom,
+                    '/stops/' || sp.atco_code AS url,
+                    sp.indicator,
+                    sp.common_name,
+                    COALESCE(l.name, '') AS locality_name,
+                    COALESCE(
+                        sp.heading,
+                        CASE sp.bearing
+                            WHEN 'N'  THEN 0
+                            WHEN 'NE' THEN 45
+                            WHEN 'E'  THEN 90
+                            WHEN 'SE' THEN 135
+                            WHEN 'S'  THEN 180
+                            WHEN 'SW' THEN 225
+                            WHEN 'W'  THEN 270
+                            WHEN 'NW' THEN 315
+                        END
+                    ) AS bearing,
+                    CASE
+                        WHEN sp.indicator != '' AND LENGTH(sp.indicator) < 3
+                             AND sp.indicator != LOWER(sp.indicator)
+                            THEN sp.indicator
+                        WHEN sp.indicator != ''
+                             AND array_length(regexp_split_to_array(sp.indicator, '\\s+'), 1) = 2
+                             AND LENGTH((regexp_split_to_array(sp.indicator, '\\s+'))[2]) < 3
+                             AND LOWER((regexp_split_to_array(sp.indicator, '\\s+'))[1])
+                                 IN ('stop','bay','stand','stance','gate','platform')
+                            THEN (regexp_split_to_array(sp.indicator, '\\s+'))[2]
+                        WHEN POSITION(' ' IN sp.common_name) > 0
+                             AND LENGTH(regexp_replace(sp.common_name, '^.* ', '')) < 3
+                             AND (   regexp_replace(sp.common_name, '^.* ', '') ~ '^[0-9]+$'
+                                  OR regexp_replace(sp.common_name, '^.* ', '') ~ '^[A-Z]+$')
+                            THEN regexp_replace(sp.common_name, '^.* ', '')
+                        ELSE NULL
+                    END AS icon,
+                    (
+                        SELECT STRING_AGG(DISTINCT su.line_name, ',' ORDER BY su.line_name)
+                        FROM busstops_stopusage su
+                        JOIN busstops_service svc ON su.service_id = svc.id
+                        WHERE su.stop_id = sp.atco_code AND svc.current = true
+                    ) AS line_names
+                FROM busstops_stoppoint sp
+                LEFT JOIN busstops_locality l ON sp.locality_id = l.id
+                WHERE
+                    sp.latlong && ST_Transform(ST_TileEnvelope(%s, %s, %s), 4326)
+                    AND EXISTS (
+                        SELECT 1
+                        FROM busstops_stopusage su
+                        JOIN busstops_service svc ON su.service_id = svc.id
+                        WHERE su.stop_id = sp.atco_code AND svc.current = true
+                    )
+            ) AS tile
+            WHERE geom IS NOT NULL
+            """,
+            [z, x, y, z, x, y],
+        )
+        row = cursor.fetchone()
+    mvt_data = bytes(row[0]) if row and row[0] else b""
+    return HttpResponse(mvt_data, content_type="application/x-protobuf")
+
+
 def stats(request):
     return JsonResponse(cache.get("vehicle-tracking-stats", []), safe=False)
 
@@ -316,7 +395,7 @@ def timetable_source_stats(request):
     return JsonResponse(cache.get("timetable-source-stats", []), safe=False)
 
 
-@cdn_cache_control(3600)
+@cache_control(max_age=3600)
 def stops_json(request):
     """JSON endpoint accessed by the JavaScript map,
     listing the active StopPoints within a rectangle,
@@ -933,6 +1012,7 @@ class OperatorDetailView(DetailView):
             ).first()
             if alternative:
                 return redirect(alternative)
+            # no services or vehicles - render a 404 page that looks like a normal page
             context["ad"] = False
             status_code = HTTPStatus.NOT_FOUND
 
@@ -1351,6 +1431,7 @@ def service_last_modified(request, service_id):
 
 
 @last_modified(service_last_modified)
+@cdn_cache_control(max_age=3600)
 def service_map_data(request, service_id):
     service = request.service
     stops = service.stops.filter(
@@ -1386,47 +1467,32 @@ def service_map_data(request, service_id):
         },
     }
 
-    trips = (
-        Trip.objects.only("id")
-        .annotate(
-            stop_ids=ArraySubquery(
-                StopTime.objects.filter(trip=OuterRef("id")).values("stop")
-            ),
-        )
-        .filter(route__service=service)
-    )
-
-    route_links = {
-        (route_link.from_stop_id, route_link.to_stop_id): route_link
-        for route_link in service.routelink_set.all()
-    }
-
-    if (
-        not route_links
-        and service.geometry
-        and service.geometry.geom_type
-        in (
-            "LineString",
-            "MultiLineString",
-        )
-    ):
+    if service.geometry and service.geometry.geom_type[-10:] == "LineString":
         data["geometry"] = {
             "type": service.geometry.geom_type,
             "coordinates": service.geometry.coords,
         }
     else:
+        route_links = {
+            (route_link.from_stop_id, route_link.to_stop_id): route_link
+            for route_link in service.routelink_set.all()
+        }
+
         # build pairs of consecutive stops
+
+        stop_times = (
+            StopTime.objects.filter(trip__route__service=service)
+            .order_by("trip_id", "id")
+            .values_list("trip_id", "stop_id")
+        )
 
         pairs = set()
 
-        for trip in trips:
+        for _, group in groupby(stop_times, key=lambda x: x[0]):  # group by trip_id
             previous_stop_id = None
-            for stop_id in trip.stop_ids:
+            for _, stop_id in group:
                 if previous_stop_id:
-                    pair = (previous_stop_id, stop_id)
-                    if pair not in pairs:
-                        pairs.add(pair)
-
+                    pairs.add((previous_stop_id, stop_id))
                 previous_stop_id = stop_id
 
         line_string = []

@@ -6,12 +6,6 @@ from pathlib import Path
 from warnings import filterwarnings
 
 import dj_database_url
-import sentry_sdk
-
-from sentry_sdk.integrations.django import DjangoIntegration
-from sentry_sdk.integrations.huey import HueyIntegration
-from sentry_sdk.integrations.logging import ignore_logger
-from sentry_sdk.integrations.redis import RedisIntegration
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
@@ -19,13 +13,12 @@ ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split()
 
 CSRF_TRUSTED_ORIGINS = os.environ.get(
     "CSRF_TRUSTED_ORIGINS",
-    "https://gladetimes.midlandbus.org",
+    "https://bustimes.org",
 ).split()
 CSRF_FAILURE_VIEW = "busstops.views.csrf_failure"
 
 TEST = "test" in sys.argv or "pytest" in sys.argv[0]
 DEBUG = bool(os.environ.get("DEBUG", False))
-DEBUG = False
 
 DEFAULT_FROM_EMAIL = '"bustimes.org" <bustimes.org@bustimes.org>'
 
@@ -59,6 +52,7 @@ INSTALLED_APPS = [
     "vosa",
     "email_obfuscator",
     "api",
+    "photos",
     "rest_framework",
     "django_filters",
     "simple_history",
@@ -95,7 +89,7 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_REDIRECT_EXEMPT = [r"^version$"]
 
 SECURE_CSP = {
-    "upgrade-insecure-requests": True,
+    "upgrade-insecure-requests": not DEBUG,
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -172,10 +166,23 @@ HUEY = {
 STATIC_URL = "/static/"
 STATIC_ROOT = os.environ.get("STATIC_ROOT", BASE_DIR / "staticfiles")
 STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "region_name": "lon1",
+            "endpoint_url": "https://lon1.digitaloceanspaces.com",
+            "bucket_name": "bus-photos",
+            "default_acl": "public-read",
+            "querystring_auth": False,
+            "custom_domain": "bus-photos.lon1.digitaloceanspaces.com",
+        },
+    },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+IMAGEKIT_DEFAULT_CACHEFILE_STRATEGY = "imagekit.cachefiles.strategies.Optimistic"
+
 WHITENOISE_ROOT = BASE_DIR / "busstops" / "static" / "root"
 WHITENOISE_MIMETYPES = {
     ".webmanifest": "application/manifest+json",
@@ -275,6 +282,13 @@ def traces_sampler(context):
 
 if not TEST:  # pragma: nocover
     if "SENTRY_DSN" in os.environ:
+        import sentry_sdk
+
+        from sentry_sdk.integrations.django import DjangoIntegration
+        from sentry_sdk.integrations.huey import HueyIntegration
+        from sentry_sdk.integrations.logging import ignore_logger
+        from sentry_sdk.integrations.redis import RedisIntegration
+
         sentry_sdk.init(
             dsn=os.environ.get("SENTRY_DSN"),
             integrations=[DjangoIntegration(), RedisIntegration(), HueyIntegration()],
@@ -303,12 +317,6 @@ TFL = {  # London
     "app_id": os.environ.get("TFL_APP_ID"),
     "app_key": os.environ.get("TFL_APP_KEY"),
 }
-TFE_OPERATORS = {
-    # "Lothian Buses",
-    # "Lothian Country Buses",
-    # "East Coast Buses",
-    # "Edinburgh Trams",
-}
 
 NTA_API_KEY = os.environ.get("NTA_API_KEY")  # Ireland
 ALLOW_VEHICLE_NOTES_OPERATORS = (
@@ -330,8 +338,14 @@ else:
     DATA_DIR = BASE_DIR / "data"
 TNDS_DIR = DATA_DIR / "TNDS"
 
+AVL_ARCHIVE_DIR = DATA_DIR / "avl"
+
+FLICKR_API_KEY = os.environ.get("FLICKR_API_KEY")
+
+STADIA_MAPS_API_KEY = os.environ.get("STADIA_MAPS_API_KEY")
+
 # captchas
 TURNSTILE_SITEKEY = os.environ.get("TURNSTILE_SITEKEY", "0x4AAAAAAAFWiyCqdh2c-5sy")
 TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET")
 
-ABBREVIATE_HOURLY = True  # we override this in some tests, that's all
+ABBREVIATE_HOURLY = False  # we override this in some tests, that's all

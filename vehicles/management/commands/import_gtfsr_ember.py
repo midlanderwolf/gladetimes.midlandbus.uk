@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
+from django.core.cache import cache
 
 from django.db.models import Q
 
@@ -29,6 +30,13 @@ class Command(GTFSRCommand):
 
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
+
+        trip_updates = {
+            entity["tripUpdate"]["trip"]["tripId"]: entity["tripUpdate"]
+            for entity in json_format.MessageToDict(feed)["entity"]
+            if "tripUpdate" in entity and "tripId" in entity["tripUpdate"]["trip"]
+        }
+        cache.set("ember_trip_updates", trip_updates, 300)
 
         # the feed contains both vehicle positions and alerts (and possibly other entities)
         for item in feed.entity:

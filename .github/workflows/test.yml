@@ -24,7 +24,7 @@ jobs:
     - run: npm run lint
     - run: npm run build
 
-    - uses: actions/upload-artifact@v4.4.3
+    - uses: actions/upload-artifact@v7
       with:
         name: dist
         path: busstops/static
@@ -71,7 +71,7 @@ jobs:
 
     - run: rm -r busstops/static
 
-    - uses: actions/download-artifact@v5
+    - uses: actions/download-artifact@v8
       with:
         name: dist
         path: busstops/static
@@ -82,11 +82,11 @@ jobs:
         SECRET_KEY: secret
       run: |
         uv run ./manage.py collectstatic --noinput && \
-        uv run coverage run ./manage.py test --keepdb --durations 10
+        uv run coverage run --parallel-mode --concurrency=multiprocessing ./manage.py test --parallel=2 --keepdb --durations 10
 
     - name: generate coverage report
       run: |
-        # uv run coverage combine && \
+        uv run coverage combine && \
         uv run coverage html
 
     - name: Coverage comment

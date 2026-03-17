@@ -45,12 +45,8 @@ class ImportBusOpenDataTest(TestCase):
     def setUpTestData(cls):
         ea = Region.objects.create(pk="EA", name="East Anglia")
         lynx = Operator.objects.create(noc="LYNX", region=ea, name="Lynx")
-        scpb = Operator.objects.create(
-            noc="SCCM", region=ea, name="Stagecoach East", parent="Stagecoach"
-        )
-        schu = Operator.objects.create(
-            noc="SCHU", region=ea, name="Huntingdon", parent="Stagecoach"
-        )
+        scpb = Operator.objects.create(noc="SCCM", region=ea, name="Stagecoach East")
+        schu = Operator.objects.create(noc="SCHU", region=ea, name="Huntingdon")
         source = DataSource.objects.create(name="National Operator Codes")
         OperatorCode.objects.bulk_create(
             [
@@ -171,7 +167,6 @@ class ImportBusOpenDataTest(TestCase):
                 <th class="stop-name" scope="row">
                     <a href="/stops/2900w0321">Lion Store (opp)</a>
                 </th>
-                <td></td>
                 <td>12:19</td>
             </tr>""",
             html=True,
@@ -214,7 +209,6 @@ Lynx/Bus Open Data Service (BODS)</a>, <time datetime="2020-04-01">1 April 2020<
                             {
                                 "id": "LYNX",
                                 "name": "Lynx",
-                                "parent": "",
                                 "vehicle_mode": "",
                             }
                         ],
@@ -498,7 +492,7 @@ Lynx/Bus Open Data Service (BODS)</a>, <time datetime="2020-04-01">1 April 2020<
                 "bustimes.management.commands.import_bod_timetables.download_if_modified",
                 return_value=(True, parse_datetime("2020-06-10T12:00:00+01:00")),
             ) as download_if_modified:
-                with self.assertNumQueries(115):
+                with self.assertNumQueries(119):
                     call_command("import_bod_timetables", "stagecoach")
                 download_if_modified.assert_called_with(
                     path, DataSource.objects.get(name="Stagecoach East"), ANY
@@ -518,7 +512,7 @@ Lynx/Bus Open Data Service (BODS)</a>, <time datetime="2020-04-01">1 April 2020<
                 with self.assertNumQueries(1):
                     call_command("import_bod_timetables", "stagecoach", "SCOX")
 
-                with self.assertNumQueries(121):
+                with self.assertNumQueries(56):
                     call_command("import_bod_timetables", "stagecoach", "SCCM")
 
                 route_link.refresh_from_db()
@@ -541,7 +535,7 @@ Lynx/Bus Open Data Service (BODS)</a>, <time datetime="2020-04-01">1 April 2020<
             self.client.logout()
 
         self.assertEqual(BankHoliday.objects.count(), 13)
-        self.assertEqual(CalendarBankHoliday.objects.count(), 130)
+        self.assertEqual(CalendarBankHoliday.objects.count(), 65)
         self.assertEqual(VehicleType.objects.count(), 3)
         self.assertEqual(Garage.objects.count(), 4)
 

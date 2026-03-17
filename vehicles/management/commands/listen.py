@@ -6,15 +6,12 @@ from django.conf import settings
 
 
 def get_content(slug):
-    content = slug
+    content = f"[{slug}](https://bustimes.org/vehicles/{slug})"
 
-    # vehicle = Vehicle.objects.get(slug=slug)
-    # if vehicle.latest_journey and vehicle.latest_journey.route_name:
-    #    content += f" on route {vehicle.latest_journey.route_name}"
-    #    if vehicle.latest_journey.destination:
-    #        content += " to {vehicle.latest_journey.destination}"
+    if slug[:4] in ("sndr", "obus", "scmy", "amsy", "kctb", "simo", "lynx"):
+        content = f"{content} <@813528710404898817>"
 
-    return f"[{content}](https://gladetimes.midlandbus.uk/vehicles/{slug})"
+    return content
 
 
 class Command(BaseCommand):
@@ -44,7 +41,7 @@ class Command(BaseCommand):
                 response = session.post(
                     settings.NEW_VEHICLE_WEBHOOK_URL,
                     json={
-                        "username": "gladetimes New Vehicle Notifier",
+                        "username": "bot",
                         "content": get_content(notify.payload),
                     },
                     timeout=10,

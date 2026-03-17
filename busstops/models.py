@@ -16,11 +16,12 @@ from django.contrib.postgres.search import SearchVector, SearchVectorField
 from django.core.cache import cache
 from django.db.models import Q, Value
 from django.db.models.aggregates import StringAgg
-from django.db.models.functions import Coalesce, Upper
+from django.db.models.functions import Coalesce, Concat, Upper
 from django.urls import reverse
 from django.utils.html import escape, format_html
 from django.utils.safestring import mark_safe
 from django.utils.text import slugify
+from timezone_field import TimeZoneField
 
 from bustimes.models import Route, TimetableDataSource, StopTime
 from bustimes.timetables import Timetable
@@ -357,6 +358,7 @@ class StopPoint(models.Model):
 
     latlong = models.PointField(null=True, blank=True)
 
+    parents = models.ManyToManyField("self", blank=True)
     stop_area = models.ForeignKey(StopArea, models.SET_NULL, null=True, blank=True)
     locality = models.ForeignKey("Locality", models.SET_NULL, null=True, blank=True)
     suburb = models.CharField(max_length=48, blank=True)
@@ -364,6 +366,11 @@ class StopPoint(models.Model):
     locality_centre = models.BooleanField(null=True)
 
     heading = models.PositiveIntegerField(null=True, blank=True)
+
+    timezone = TimeZoneField(null=True, blank=True)
+
+    description = models.CharField(null=True, blank=True)
+    notes = models.CharField(null=True, blank=True)
 
     BEARING_CHOICES = (
         ("N", "north \u2191"),
@@ -553,6 +560,9 @@ class OperatorGroup(models.Model):
     def __str__(self):
         return self.name
 
+    def get_absolute_url(self):
+        return reverse("group_vehicles", args=(self.slug,))
+
 
 class OperatorManager(models.Manager):
     def with_documents(self):
@@ -573,7 +583,6 @@ class Operator(SearchMixin, models.Model):
     aka = models.CharField(max_length=100, blank=True)
     slug = AutoSlugField(populate_from=str, editable=True, unique=True)
     vehicle_mode = models.CharField(max_length=48, blank=True)
-    parent = models.CharField(max_length=48, blank=True, db_index=True)
     group = models.ForeignKey(OperatorGroup, models.SET_NULL, null=True, blank=True)
     siblings = models.ManyToManyField("self", blank=True)
     region = models.ForeignKey(Region, models.SET_NULL, null=True, blank=True)
@@ -605,6 +614,9 @@ class Operator(SearchMixin, models.Model):
 
     def get_absolute_url(self):
         return reverse("operator_detail", args=(self.slug or self.noc,))
+
+    def get_vehicles_url(self):
+        return reverse("operator_vehicles", args=(self.slug,))
 
     def mode(self):
         return self.vehicle_mode
@@ -700,23 +712,21 @@ class ServiceManager(models.Manager):
         vector += SearchVector("line_brand", weight="A", config="english")
         vector += SearchVector("description", weight="B", config="english")
         vector += SearchVector(
-            StringAgg("operator__noc", Value(" "), default=""),
+            StringAgg(
+                Concat("operator__noc", Value(" "), "operator__name"),
+                Value(" "),
+                default="",
+            ),
             weight="B",
             config="english",
         )
         vector += SearchVector(
-            StringAgg("operator__name", Value(" "), default=""),
-            weight="B",
-            config="english",
-        )
-        vector += SearchVector(
-            StringAgg("stops__locality__name", Value(" "), default=""),
+            StringAgg(
+                Concat("stops__locality__name", Value(" "), "stops__common_name"),
+                Value(" "),
+                default="",
+            ),
             weight="C",
-            config="english",
-        )
-        vector += SearchVector(
-            StringAgg("stops__common_name", Value(" "), default=""),
-            weight="D",
             config="english",
         )
         return self.get_queryset().annotate(document=vector)

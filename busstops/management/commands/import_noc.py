@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 
 import requests
 import yaml
+import logging
 from ciso8601 import parse_datetime
 from django.conf import settings
 from django.core.management import BaseCommand
@@ -169,15 +170,21 @@ class Command(BaseCommand):
                 url = url.split("#")[-1]
 
             if noc in overrides:
-                override = overrides[noc]
+                override_data = overrides[noc]
 
-                if "url" in override:
-                    url = override["url"]
+                if "url" in override_data:
+                    if url == override_data["url"]:
+                        logging.warning(
+                            "%s url %s no longer needs overriding", noc, url
+                        )
+                    url = override_data["url"]
 
-                if "name" in override:
-                    if override["name"] == name:
-                        print(name)
-                    name = override["name"]
+                if "name" in override_data:
+                    if name == override_data["name"]:
+                        logging.warning(
+                            "%s name %s no longer needs overriding", noc, name
+                        )
+                    name = override_data["name"]
 
             if noc not in operators:
                 operators[noc] = Operator(
@@ -189,15 +196,14 @@ class Command(BaseCommand):
                 operator = operators[noc]
 
                 slug = slugify(operator.name)
-                if slug in operators_by_slug:
-                    # duplicate name – save now to avoid slug collision
-                    operator.save(force_insert=True)
-                    to_update.append(operator)
-                else:
-                    operator.slug = slug
-                    to_create.append(operator)
-
-                operators_by_slug[operator.slug or slug] = operator
+                base_slug = slug
+                suffix = 0
+                while slug in operators_by_slug:
+                    suffix += 1
+                    slug = f"{base_slug}-{suffix}"
+                operator.slug = slug
+                operators_by_slug[slug] = operator
+                to_create.append(operator)
 
                 operator.url = url
 

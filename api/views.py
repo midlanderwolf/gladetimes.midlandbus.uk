@@ -24,6 +24,10 @@ class BadException(APIException):
     status_code = 400
 
 
+class LimitOffsetPagination(pagination.LimitOffsetPagination):
+    max_limit = 1000
+
+
 class CursorPagination(pagination.CursorPagination):
     ordering = "-pk"
     page_size = 100
@@ -36,12 +40,15 @@ class CursorPaginationWithSmallerPageSize(CursorPagination):
 class VehicleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
         Vehicle.objects.select_related("vehicle_type", "livery", "operator", "garage")
-        .annotate(special_features=ArrayAgg("features__name", filter=~Q(features=None)))
+        .annotate(
+            special_features=ArrayAgg("features__name", filter=~Q(features=None)),
+        )
         .order_by("id")
     )
     serializer_class = serializers.VehicleSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = filters.VehicleFilter
+    pagination_class = LimitOffsetPagination
 
 
 class LiveryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -135,6 +142,8 @@ class TripViewSet(viewsets.ReadOnlyModelViewSet):
             #     )
             # )
         )
+        if obj.notes.all():
+            stops = stops.annotate(note_codes=ArrayAgg("notes__code"))
         if len(trips) > 1:
             stops = contiguous_stoptimes_only(stops, obj.id)
         return stops

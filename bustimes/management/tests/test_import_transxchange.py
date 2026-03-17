@@ -120,7 +120,7 @@ class ImportTransXChangeTest(TestCase):
         command.source.datetime = timezone.now()
         for filename in filenames:
             path = FIXTURES_DIR / filename
-            with open(path, "r") as open_file:
+            with open(path, "rb") as open_file:
                 command.handle_file(open_file, filename)
         command.finish_services()
 
@@ -930,12 +930,12 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("2021-07-07")
     def test_multiple_lines(self):
-        call_command(
-            "import_transxchange", FIXTURES_DIR / "904_SCD_PH_903_20210530.xml"
-        )
+        filename = "904_SCD_PH_903_20210530.xml"
 
-        route_1, route_2 = Route.objects.filter(
-            code__contains="904_SCD_PH_903_20210530"
+        call_command("import_transxchange", FIXTURES_DIR / filename)
+
+        route_1, route_2 = Route.objects.filter(code__contains=filename).order_by(
+            "-line_name"
         )
 
         trip = route_1.trip_set.first()
@@ -960,6 +960,27 @@ class ImportTransXChangeTest(TestCase):
         self.assertContains(response, '">904<')  # service
         self.assertContains(response, '<td colspan="2">LFDD</td>')  # vehicle type
         self.assertContains(response, "<td>LFDD</td>")
+
+        # check combined timetable row ordering (sequence number tiebreaker)
+        timetable = response.context_data["timetable"]
+        codes = [r.stop.atco_code.split(":")[-1] for r in timetable.groupings[1].rows]
+        self.assertEqual(
+            codes[2:8],
+            [
+                "1100DEA11187",
+                "1100DEA11186",
+                "1100DEA11184",
+                "1100DEZ05106",
+                "1100DEA56800",
+                "1100DEA09189",
+            ],
+        )
+
+        self.assertEqual(Route.objects.filter(service__current=True).count(), 2)
+
+        # test re-import
+        call_command("import_transxchange", FIXTURES_DIR / filename)
+        self.assertEqual(Route.objects.filter(service__current=True).count(), 2)
 
     @time_machine.travel("2021-07-07")
     def test_confusing_start_date(self):
@@ -1180,18 +1201,39 @@ class ImportTransXChangeTest(TestCase):
 
             with self.assertLogs(
                 "bustimes.management.commands.import_transxchange", "WARNING"
-            ):
+            ) as cm:
                 call_command("import_transxchange", zipfile_path)
+
+                # warning about missing stop
+                self.assertEqual(
+                    cm.output,
+                    [
+                        "WARNING:bustimes.management.commands.import_transxchange:370010201"
+                    ],
+                )
 
             m11a_trip_ids = Trip.objects.filter(route__line_name="M11A").last().id
             m12_trip_ids = Trip.objects.filter(route__line_name="M12").last().id
+
+            # ensure that file is re-imported
+            Route.objects.filter(line_name="M12").update(file_hash=None)
+
+            # change departure time, so trip id should not be reused
             Trip.objects.filter(route__line_name="M12").update(start="00:00")
 
             # test re-importing a previously imported service again
             with self.assertLogs(
                 "bustimes.management.commands.import_transxchange", "WARNING"
-            ):
+            ) as cm:
                 call_command("import_transxchange", zipfile_path)
+
+                # warning about missing stop (again)
+                self.assertEqual(
+                    cm.output,
+                    [
+                        "WARNING:bustimes.management.commands.import_transxchange:370010201"
+                    ],
+                )
 
             # ids should have kept the same
             self.assertEqual(
@@ -1254,6 +1296,17 @@ class ImportTransXChangeTest(TestCase):
         groupings = res.context_data["timetable"].groupings
         self.assertEqual(len(groupings[0].rows), 15)
         self.assertEqual(len(groupings[1].rows), 15)
+
+        # check M12 row ordering (sequence number tiebreaker)
+        codes = [(r.stop.atco_code or "").split(":")[-1] for r in groupings[0].rows]
+
+        self.assertEqual(
+            codes[10:14], ["450017207", "3390BB01", "079073001Z", "4100024PARWS"]
+        )
+
+        # for r in groupings[0].rows:
+        #     print(r.stop.atco_code, [cell if type(cell) is str else cell.stoptime.sequence for cell in r.times])
+
         self.assertContains(
             res,
             """<td></td><td>06:15</td><td rowspan="2">09:20</td><td rowspan="2">10:20</td><td></td><td></td><td></td>
@@ -1268,6 +1321,14 @@ class ImportTransXChangeTest(TestCase):
             </tr>
         """,
             html=True,
+        )
+
+        # operator note is applied to all M12 trips
+        m12_trip = Trip.objects.filter(route__line_name="M12").first()
+        operator_note = m12_trip.notes.get(code="")
+        self.assertEqual(
+            "You must book this service in advance via the operator's website or telephone",
+            operator_note.text,
         )
 
     @time_machine.travel("4 June 2022")
@@ -1285,6 +1346,7 @@ class ImportTransXChangeTest(TestCase):
 
         service = Service.objects.get()
         self.assertEqual("Stourbridge Shuttle", service.line_brand)
+        self.assertEqual("Stourbridge Junction - Stourbridge Town", service.description)
 
         response = self.client.get(service.get_absolute_url())
         self.assertContains(
@@ -1346,8 +1408,8 @@ class ImportTransXChangeTest(TestCase):
 
         service = Service.objects.get()
         response = self.client.get(service.get_absolute_url())
-        self.assertContains(response, '<abbr title="set down only">s</abbr>')
-        self.assertContains(response, '<abbr title="pick up only">p</abbr>')
+        self.assertContains(response, '<abbr title="set down only">s</abbr>', 17)
+        self.assertContains(response, '<abbr title="pick up only">p</abbr>', 19)
 
     @time_machine.travel("2023-07-20")
     def test_stop_usage_notes(self):
@@ -1357,9 +1419,9 @@ class ImportTransXChangeTest(TestCase):
         service = Service.objects.get()
         response = self.client.get(service.get_absolute_url())
 
-        self.assertContains(response, '<abbr title="set down only">s</abbr>')
-        self.assertContains(response, "<strong>Sch</strong> Schooldays Only")
-        self.assertContains(response, "<td>07:56<strong>Sch</strong></td>")
+        self.assertContains(response, '<abbr title="set down only">s</abbr>', 10)
+        self.assertContains(response, "<strong>Sch</strong> Schooldays Only", 1)
+        self.assertContains(response, "<strong>Sch</strong>", 15)
 
     def test_get_operator_name(self):
         blue_triangle_element = ET.fromstring(

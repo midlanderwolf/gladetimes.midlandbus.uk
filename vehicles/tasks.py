@@ -1,16 +1,20 @@
 import functools
+import json
 from datetime import timedelta
+import zipfile
 
 from ciso8601 import parse_datetime
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models import Count, Q
 from django.utils import timezone
+from django.conf import settings
 from huey import crontab
 from huey.contrib.djhuey import db_periodic_task, db_task
 
 from busstops.models import DataSource, Operator
 
+from .utils import archive_avl_data
 from .management.commands import import_bod_avl
 from .models import (
     SiriSubscription,
@@ -22,7 +26,7 @@ from .models import (
 
 
 @functools.cache
-def get_bod_avl_command(source_name):
+def get_bod_avl_command(source_name: str):
     command = import_bod_avl.Command()
     command.source_name = source_name
     command.do_source()
@@ -30,7 +34,7 @@ def get_bod_avl_command(source_name):
 
 
 @db_task()
-def handle_siri_post(uuid, data):
+def handle_siri_post(uuid, data: dict):
     now = timezone.now()
 
     data = data["Siri"]
@@ -62,6 +66,12 @@ def handle_siri_post(uuid, data):
         command.handle_items(changed_items, changed_item_identities)
         command.handle_items(changed_journey_items, changed_journey_identities)
 
+        archive_avl_data(
+            command.source,
+            json.dumps(items),
+            timestamp.strftime("%Y-%m-%d_%H%M%S.json"),
+        )
+
     # stats for last 50 updates:
     key = subscription.get_status_key()
     stats = cache.get(key, [])
@@ -82,7 +92,7 @@ def handle_siri_post(uuid, data):
 @db_task()
 def log_vehicle_journey(service, data, time, destination, source_name, url, trip_id):
     operator_ref = data.get("OperatorRef")
-    if operator_ref in ("McG", "SWB", "MID", "MBLB"):  # McGills/Stagecoach/
+    if operator_ref == "SWB":  # Stagecoach
         return
 
     if not time:
@@ -95,7 +105,9 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
     if operator_ref:
         vehicle = vehicle.removeprefix(f"{operator_ref}-")
 
-    vehicle = vehicle.removeprefix("WCM-").removeprefix("SHU-")
+    vehicle = (
+        vehicle.removeprefix("WCM-").removeprefix("SHU-").removeprefix("MCG_Fleet-")
+    )
 
     if not vehicle or vehicle == "-":
         return
@@ -110,9 +122,7 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
         except (Operator.DoesNotExist, Operator.MultipleObjectsReturned):
             return
 
-    if operator.noc == "FABD":  # Aberdeen
-        vehicle = vehicle.removeprefix("111-").removeprefix("S-")
-    elif operator.parent == "Stagecoach" or operator.noc == "MCGL":
+    if operator.name.startswith("Stagecoach "):
         return
 
     vehicle_code_code = f"{operator_ref}:{vehicle}"
@@ -129,8 +139,8 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
         defaults = {"source": data_source, "operator": operator, "code": vehicle}
 
         operator_query = Q(operator=operator)
-        if operator.parent:
-            operator_query |= Q(operator__parent=operator.parent)
+        if operator.group_id:
+            operator_query |= Q(operator__group=operator.group_id)
         vehicles = Vehicle.objects.filter(
             operator_query | Q(source=data_source)
         ).select_related("latest_journey")
@@ -220,6 +230,13 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
 
 @db_periodic_task(crontab(minute="*/5"))
 def stats():
+    """
+    count the number of current vehicle journeys
+    (in total, with services, and with trips)
+    and pending vehicle revisions
+    for the /status graphs
+    """
+
     now = timezone.now()
     half_hour_ago = now - timedelta(minutes=30)
     journeys = VehicleJourney.objects.filter(
@@ -245,6 +262,10 @@ def stats():
 
 @db_periodic_task(crontab(minute=4, hour=10))
 def timetable_source_stats():
+    """
+    update the other /status graph
+    """
+
     now = timezone.now()
 
     sources = (
@@ -278,3 +299,35 @@ def timetable_source_stats():
     history.append(stats)
 
     cache.set("timetable-source-stats", history, None)
+
+
+@db_periodic_task(crontab(minute=10, hour=1))
+def compress_avl_archive():
+    """
+    move files named things like
+    2024-03-15_060942.json
+    into
+    2024-03-15.zip
+    """
+
+    today_str = timezone.now().date().isoformat()
+
+    for path in settings.AVL_ARCHIVE_DIR.iterdir():
+        if not path.name.isdigit():
+            continue
+
+        date_str = None
+        archive = None
+
+        for file_path in sorted(path.iterdir()):
+            if file_path.suffix != ".json":
+                continue
+            if file_path.name.startswith(today_str):
+                break
+            if not date_str or not file_path.name.startswith(date_str):
+                date_str = file_path.name[:10]
+                archive = zipfile.ZipFile(
+                    path / f"{date_str}.zip", "a", compression=zipfile.ZIP_DEFLATED
+                )
+            archive.write(file_path, file_path.name)
+            file_path.unlink()

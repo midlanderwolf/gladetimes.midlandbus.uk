@@ -1,5 +1,3 @@
-"""Various ways of getting live departures from some web service"""
-
 import datetime
 import logging
 from zoneinfo import ZoneInfo
@@ -16,7 +14,7 @@ from django.utils import timezone
 from xmltodict import unparse
 
 from bustimes.utils import get_stop_times
-from vehicles.models import Vehicle, VehicleJourney
+from vehicles.models import VehicleJourney
 
 
 TIMEZONE = ZoneInfo("Europe/London")
@@ -84,35 +82,17 @@ class RemoteDepartures(Departures):
         return requests.get(self.get_request_url(), **self.get_request_kwargs())
 
     def get_service(self, line_name: str):
-        """Given a line name string, returns the Service matching a line name
-        (case-insensitively), or a line name string
-        """
         if line_name:
+            # try to find matching service (case-insensitively)
             line_name_lower = line_name.lower()
-            if line_name_lower in self.services_by_name:
-                return self.services_by_name[line_name_lower]
-            # if line_name_lower in self.services_by_alternative_name:
-            #     return self.services_by_alternative_name[line_name_lower]
+            if service := self.services_by_name.get(line_name_lower):
+                return service
 
-            # Translink Glider
-            if f"g{line_name_lower}" in self.services_by_name:
-                return self.services_by_name[f"g{line_name_lower}"]
+            # FlixBus
+            elif service := self.services_by_name.get(f"uk{line_name_lower}"):
+                return service
 
-            alternatives = {
-                "Puls": "pulse",
-                # 'FLCN': 'falcon',
-                # "TUBE": "oxford tube",
-                "SPRI": "spring",
-                "PRO": "pronto",
-                "SA": "the sherwood arrow",
-                "Yo-Y": "yo-yo",
-                "Port": "portway park and ride",
-                "Bris": "brislington park and ride",
-                "sp": "sprint",
-            }
-            alternative = alternatives.get(line_name)
-            if alternative:
-                return self.get_service(alternative)
+        # fallback
         return line_name
 
     def departures_from_response(self, res):
@@ -192,61 +172,6 @@ class TflDepartures(RemoteDepartures):
         )
 
 
-class EdinburghDepartures(RemoteDepartures):
-    def get_request_url(self) -> str:
-        return "https://tfe-opendata.com/api/v1/live_bus_times/" + self.stop.naptan_code
-
-    def departures_from_response(self, res) -> list:
-        routes = res.json()
-        if routes:
-            departures = []
-            for route in routes:
-                service = self.get_service(route["routeName"])
-                for departure in route["departures"]:
-                    time = ciso8601.parse_datetime(departure["departureTime"])
-                    departures.append(
-                        {
-                            "time": None if departure["isLive"] else time,
-                            "live": time if departure["isLive"] else None,
-                            "service": service,
-                            "destination": departure["destination"],
-                            "vehicle": departure["vehicleId"],
-                            "tripId": departure["tripId"],
-                        }
-                    )
-            vehicles = Vehicle.objects.filter(
-                source__name="TfE",
-                code__in=[item["vehicle"] for item in departures],
-            ).only(
-                "id",
-                "code",
-                "slug",
-                "fleet_code",
-                "fleet_number",
-                "reg",
-                "latest_journey_id",
-            )
-            vehicles = {vehicle.code: vehicle for vehicle in vehicles}
-            for item in departures:
-                vehicle = vehicles.get(item["vehicle"])
-                if vehicle:
-                    item["link"] = (
-                        f"{vehicle.get_absolute_url()}#journeys/{vehicle.latest_journey_id}"
-                    )
-                    item["vehicle"] = vehicle
-            hour = datetime.timedelta(hours=1)
-            if all(
-                ((departure["time"] or departure["live"]) - self.now) >= hour
-                for departure in departures
-            ):
-                for departure in departures:
-                    if departure["time"]:
-                        departure["time"] -= hour
-                    else:
-                        departure["live"] -= hour
-            return departures
-
-
 class TimetableDepartures(Departures):
     per_page = 12
 
@@ -319,23 +244,31 @@ class TimetableDepartures(Departures):
 
         # for eg Victoria Coach Station where there are so many departures at the same time:
         if len(today_times) == self.per_page:
-            while today_times[0].departure == today_times[-1].departure:
-                today_times += all_today_times[len(today_times) : len(today_times) + 8]
+            while all(
+                today_times[0].departure == time.departure for time in today_times[1:]
+            ) and (
+                more_times := all_today_times[len(today_times) : len(today_times) + 8]
+            ):
+                today_times += more_times
 
         times = [self.get_row(stop_time) for stop_time in today_times]
 
         # prefetch journeys to show which vehicle is operating journey
+        dates = {time["date"] for time in times}
         prefetch_related_objects(
             [time["stop_time"].trip for time in times],
             Prefetch(
                 "vehiclejourney_set",
-                VehicleJourney.objects.filter(date=date).select_related("vehicle"),
+                VehicleJourney.objects.filter(date__in=dates).select_related("vehicle"),
                 to_attr="vehicle_journeys",
             ),
         )
         for time in times:
-            if time["stop_time"].trip.vehicle_journeys:
-                time["vehicle"] = time["stop_time"].trip.vehicle_journeys[0].vehicle
+            trip_date = time["date"]
+            for journey in time["stop_time"].trip.vehicle_journeys:
+                if journey.date == trip_date:
+                    time["vehicle"] = journey.vehicle
+                    break
 
         # # add tomorrow's times until there are 10, or the next day until there more than 0
         # i = 0

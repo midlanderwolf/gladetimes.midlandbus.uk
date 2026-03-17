@@ -5,6 +5,7 @@ Usage:
 """
 
 import datetime
+import hashlib
 import logging
 import os
 import sys
@@ -185,7 +186,7 @@ def get_calendar_date(
 
 
 def get_registration(service_code: str) -> Registration | None:
-    parts = service_code.split("_")[0].split(":")
+    parts = service_code.split(":")
     if len(parts[0]) != 9:
         prefix = parts[0][:2]
         suffix = str(int(parts[0][2:]))
@@ -193,7 +194,8 @@ def get_registration(service_code: str) -> Registration | None:
     if parts[1] and parts[1].isdigit():
         try:
             return Registration.objects.get(
-                registration_number=f"{parts[0]}/{int(parts[1])}"
+                Q(registration_number=f"{parts[0]}/{int(parts[1])}")
+                | Q(registration_number=service_code.replace(":", "/"))
             )
         except Registration.DoesNotExist:
             pass
@@ -390,7 +392,7 @@ def get_description(txc_service):
                 destination, callback=initialisms
             )
 
-        if not description:
+        if not description and origin not in STUPID_ORIGINS_DESTINATIONS:
             description = f"{origin} - {destination}"
             vias = txc_service.vias
             if vias:
@@ -473,7 +475,7 @@ class Command(BaseCommand):
                 operator_code = operator_element.findtext("OperatorCode")
 
         if operator_code:
-            if self.source.name == "L" and len(operator_code) == 2:
+            if self.source.name == "L":
                 if operator := get_operator_by("L", operator_code):
                     return operator
             elif operator := get_operator_by("National Operator Codes", operator_code):
@@ -557,8 +559,7 @@ class Command(BaseCommand):
         )
         # do this first to prevent IntegrityError (VehicleJourney trip field)
         old_routes.update(service=None)
-        for route in old_routes:
-            route.delete()
+        old_routes.delete()
 
         old_services = self.source.service_set.filter(current=True, route=None)
         if old_services.update(current=False):
@@ -612,7 +613,7 @@ class Command(BaseCommand):
                         with archive.open(filename) as open_file:
                             self.handle_file(open_file, filename)
         except zipfile.BadZipFile:
-            with archive_path.open() as open_file:
+            with archive_path.open("rb") as open_file:
                 self.handle_file(open_file, str(archive_path))
 
         if not filenames:
@@ -816,7 +817,7 @@ class Command(BaseCommand):
         return calendar
 
     @cache
-    def get_note(self, note_code, note_text):
+    def get_note(self, note_code=None, note_text=None):
         return Note.objects.get_or_create(
             code=note_code or "", text=(note_text or "")[:255]
         )[0]
@@ -954,7 +955,7 @@ class Command(BaseCommand):
                     trip_notes.append(Trip.notes.through(trip=trip, note=note))
 
             if operator_ref in operator_notes:
-                note = self.get_note(operator_ref, operator_notes[operator_ref])
+                note = self.get_note(note_text=operator_notes[operator_ref])
                 trip_notes.append(Trip.notes.through(trip=trip, note=note))
 
             if journey.frequency_interval:
@@ -1040,23 +1041,42 @@ class Command(BaseCommand):
         StopTime.notes.through.objects.bulk_create(stop_time_notes, batch_size=1000)
 
     def should_defer_to_other_source(self, operators: dict, line_name: str):
+        nocs = {operator.noc for operator in operators.values()}
+
+        go_ahead_london_nocs = {
+            "LGEN",
+            "LONC",
+            "MBGA",
+            "BTRI",
+            "DLBU",
+            "KNCO",
+            "GAHL",
+        }
+
         if not (self.source.is_tnds() or self.source.name == "TfGM"):
+            if not nocs.isdisjoint(go_ahead_london_nocs):
+                # defer to TfL source
+                return Route.objects.filter(
+                    source__name="L",
+                    service__current=True,
+                    service__operator__in=go_ahead_london_nocs,
+                    line_name__iexact=line_name,
+                ).exists()
+
             return False
         elif self.source.name == "L":  # TfL data is always best
             return False
         elif not operators:
             return False
 
-        nocs = [operator.noc for operator in operators.values()]
-
         if self.source.name != "TfGM":
             if any(noc not in self.incomplete_operators for noc in nocs):
                 return False  # jointly-operated service?
 
         if "FHAL" in nocs:
-            nocs.append("FHUD")
+            nocs.add("FHUD")
         elif "FHUD" in nocs:
-            nocs.append("FHAL")
+            nocs.add("FHAL")
 
         return Route.objects.filter(
             ~Q(source=self.source),
@@ -1065,7 +1085,9 @@ class Command(BaseCommand):
             line_name__iexact=line_name,
         ).exists()
 
-    def handle_service(self, filename: str, transxchange, txc_service, today, stops):
+    def handle_service(
+        self, filename: str, transxchange, txc_service, today, stops, file_hash=None
+    ):
         skip_journeys = False
 
         if (
@@ -1125,7 +1147,7 @@ class Command(BaseCommand):
 
         service = None
 
-        for i, line in enumerate(txc_service.lines):
+        for line in txc_service.lines:
             line.line_name = line.line_name.replace("_", " ")
 
             # prefer a BODS-type source over TNDS
@@ -1145,6 +1167,7 @@ class Command(BaseCommand):
 
             if operators:
                 q = Q(operator__in=operators.values())
+
                 # prevent certain seemingly-the-same services being merged
                 if (
                     description
@@ -1275,7 +1298,7 @@ class Command(BaseCommand):
                 )
             elif service_code and service.mode == "bus" and service_code[:4] == "tfl_":
                 # London bus red
-                service.colour_id = 47
+                service.colour_id = 127
             else:
                 # use the operator's colour
                 for operator in operators.values():
@@ -1283,13 +1306,12 @@ class Command(BaseCommand):
                         service.colour_id = operator.colour_id
                         break
 
+            # Lines and Services can have a MarketingName
+            # (a line_brand is a thing I've made up)
+
             line_brand = line.line_brand or line.marketing_name
             if line_brand:
                 logger.info(line_brand)
-                if service.description:
-                    service.description = service.description.removesuffix(
-                        f" [{line.line_brand}]"
-                    )
 
             if txc_service.marketing_name:
                 logger.info(txc_service.marketing_name)
@@ -1305,6 +1327,12 @@ class Command(BaseCommand):
                     service.public_use = False
                 else:
                     line_brand = txc_service.marketing_name
+
+                    if service.description and " [" in service.description:
+                        service.description = service.description.removesuffix(
+                            f" [{line_brand}]"
+                        )
+
             if (
                 not line_brand
                 and service.colour
@@ -1399,6 +1427,7 @@ class Command(BaseCommand):
                 "service_code": txc_service.service_code,
                 "public_use": service.public_use,
                 "version": self.version,
+                "source": self.source,
             }
 
             for key in ("outbound_description", "inbound_description"):
@@ -1469,8 +1498,39 @@ class Command(BaseCommand):
                     route_defaults["revision_number_context"] = parts[0]
                     logger.info(f"{filename} looks like TransMach")
 
+            if file_hash:
+                route_defaults["file_hash"] = file_hash
+
+            route_defaults["code"] = route_code
+
+            # TfGM: all files are in a subfolder
+            # with a name like "TfGM TXC 260225 OpenData" that changes every release
+            # even if the file didn't change
+
+            if file_hash:
+                existing_route = self.source.route_set.filter(
+                    code=route_code, file_hash=file_hash
+                ).first()
+
+                if not existing_route and "/" in route_code:
+                    part = route_code.split("/")[-1]
+
+                    existing_route = self.source.route_set.filter(
+                        version=self.version,
+                        code__endswith=f"/{part}",
+                        file_hash=file_hash,
+                    ).first()
+
+                if existing_route:
+                    route, route_created = Route.objects.update_or_create(
+                        route_defaults, id=existing_route.id
+                    )
+                    self.route_ids.add(route.id)
+                    # file hasn't changed, so we don't need to re-load journeys
+                    continue
+
             route, route_created = Route.objects.update_or_create(
-                route_defaults, source=self.source, code=route_code
+                route_defaults, code=route_code, source=self.source
             )
 
             self.route_ids.add(route.id)
@@ -1571,6 +1631,12 @@ class Command(BaseCommand):
                 self.garages[garage_code] = garage
 
     def handle_file(self, open_file, filename: str):
+        sha1 = hashlib.sha1(usedforsecurity=False)
+        while chunk := open_file.read(65536):
+            sha1.update(chunk)
+        file_hash = sha1.hexdigest()
+        open_file.seek(0)
+
         transxchange = TransXChange(open_file)
 
         if not transxchange.journeys:
@@ -1586,4 +1652,6 @@ class Command(BaseCommand):
         self.do_garages(transxchange.garages)
 
         for txc_service in transxchange.services.values():
-            self.handle_service(filename, transxchange, txc_service, today, stops)
+            self.handle_service(
+                filename, transxchange, txc_service, today, stops, file_hash
+            )

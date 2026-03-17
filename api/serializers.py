@@ -37,7 +37,6 @@ class VehicleSerializer(serializers.ModelSerializer):
                 "id": obj.operator_id,
                 "slug": obj.operator.slug,
                 "name": obj.operator.name,
-                "parent": obj.operator.parent,
             }
 
     def get_livery(self, obj):
@@ -49,6 +48,9 @@ class VehicleSerializer(serializers.ModelSerializer):
                 "right": obj.get_livery(90),
             }
             
+    def get_previous_reg(self, obj):
+        return obj.data_get(key="Previous reg")
+
     def get_previous_reg(self, obj):
         return obj.data_get(key="Previous reg")
 
@@ -84,7 +86,6 @@ class OperatorSerializer(serializers.ModelSerializer):
             "aka",
             "vehicle_mode",
             "region_id",
-            "parent",
             "url",
             "twitter",
         ]
@@ -228,6 +229,10 @@ class TripSerializer(serializers.ModelSerializer):
                 bearing = None
                 location = None
                 icon = None
+            if hasattr(stop_time, "note_codes"):
+                notes = stop_time.note_codes
+            else:
+                notes = None
             yield {
                 "id": stop_time.id,
                 "stop": {
@@ -248,6 +253,7 @@ class TripSerializer(serializers.ModelSerializer):
                     stop_time, "expected_departure", None
                 ),
                 # "call_condition": stop_time.call_condition,
+                "note_codes": notes,
             }
             previous_stop_id = stop_time.stop_id
 

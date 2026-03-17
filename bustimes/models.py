@@ -6,6 +6,7 @@ from django.db.models import Q
 from django.db.models.functions import Upper
 from django.urls import reverse
 from django.utils.timezone import localdate
+from timezone_field import TimeZoneField
 
 from .fields import SecondsField
 from .formatting import format_timedelta, time_datetime
@@ -16,7 +17,7 @@ class TimetableDataSource(models.Model):
     search = models.CharField(
         max_length=255,
         blank=True,
-        help_text="for BODS sources, usually one of the operator's NOCs",
+        help_text="for BODS sources, usually one of the operator's NOCs. But remember that searching for 'ANEA' for example will return *all* Arriva datasets, not just the ANEA one",
     )
     url = models.URLField(
         blank=True,
@@ -77,6 +78,8 @@ class Route(models.Model):
         "busstops.Service", models.CASCADE, null=True, blank=True
     )
     public_use = models.BooleanField(null=True)
+    file_hash = models.CharField(max_length=40, null=True, blank=True, db_index=True)
+    timezone = TimeZoneField(null=True, blank=True)
 
     class Meta:
         unique_together = ("source", "code")
@@ -372,13 +375,7 @@ class Trip(models.Model):
     next_trip = models.OneToOneField("Trip", models.SET_NULL, null=True, blank=True)
 
     def __str__(self):
-        return format_timedelta(self.start) or ""
-
-    def start_time(self):
-        return format_timedelta(self.start)
-
-    def end_time(self):
-        return format_timedelta(self.end)
+        return format_timedelta(self.start, plus_one=True) or ""
 
     def start_datetime(self, date):
         return time_datetime(self.start, date)

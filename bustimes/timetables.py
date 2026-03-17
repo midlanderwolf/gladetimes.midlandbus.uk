@@ -149,27 +149,27 @@ class Timetable:
         # for merged multi-operator routes: reverse the polarity if they disagree which direction is inbound/outbound
         stops = {}  # stops by source and direction
         for trip in trips:
-            if trip.route.source_id not in stops:
-                stops[trip.route.source_id] = {
+            if trip.operator_id not in stops:
+                stops[trip.operator_id] = {
                     True: set(),  # inbound
                     False: set(),  # outbound
                 }
-            stops[trip.route.source_id][trip.inbound].update(
+            stops[trip.operator_id][trip.inbound].update(
                 stop.stop_id for stop in trip.times
             )
 
         if len(stops) == 2:
-            source_a, source_b = stops
+            operator_a, operator_b = stops
 
             if (
-                len(stops[source_a][True] & stops[source_b][False])
-                > len(stops[source_a][True] & stops[source_b][True])
+                len(stops[operator_a][True] & stops[operator_b][False])
+                > len(stops[operator_a][True] & stops[operator_b][True])
             ) and (
-                len(stops[source_a][False] & stops[source_b][True])
-                > len(stops[source_a][False] & stops[source_b][False])
+                len(stops[operator_a][False] & stops[operator_b][True])
+                > len(stops[operator_a][False] & stops[operator_b][False])
             ):
                 for trip in trips:
-                    if trip.route.source_id == source_a:
+                    if trip.operator_id == operator_a:
                         trip.inbound = not trip.inbound
 
     def render(self):
@@ -259,28 +259,29 @@ class Timetable:
         self.apply_stops()
 
         # correct origin and destination/inbound and outbound descriptions being the wrong way round
-        if self.groupings and len(self.origins_and_destinations) == 1:
-            rows = self.groupings[0].rows
-            if type(rows[0].stop) is Stop or type(rows[-1].stop) is Stop:
-                pass
-            else:
-                origin = self.origins_and_destinations[0][0]
-                destination = self.origins_and_destinations[0][-1]
-                actual_origin = rows[0].stop.get_qualified_name()
-                actual_destination = rows[-1].stop.get_qualified_name()
-                if (
-                    origin in actual_destination
-                    and origin not in actual_origin
-                    or destination in actual_origin
-                    and destination not in actual_destination
-                ):
-                    self.origins_and_destinations = [
-                        tuple(reversed(pair)) for pair in self.origins_and_destinations
-                    ]
-                    self.inbound_outbound_descriptions = [
-                        tuple(reversed(pair))
-                        for pair in self.inbound_outbound_descriptions
-                    ]
+        # if self.groupings and len(self.origins_and_destinations) == 1:
+        #     rows = self.groupings[0].rows
+        #     if type(rows[0].stop) is Stop or type(rows[-1].stop) is Stop:
+        #         pass
+        #     else:
+        #         origin = self.origins_and_destinations[0][0]
+        #         destination = self.origins_and_destinations[0][-1]
+        #         actual_origin = rows[0].stop.get_qualified_name()
+        #         actual_destination = rows[-1].stop.get_qualified_name()
+        #         if (
+        #             SequenceMatcher(None, destination, actual_destination).quick_ratio()
+        #             + SequenceMatcher(None, origin, actual_origin).quick_ratio()
+        #             <
+        #             SequenceMatcher(None, destination, actual_origin).quick_ratio()
+        #             + SequenceMatcher(None, origin, actual_destination).quick_ratio()
+        #         ):
+        #             self.origins_and_destinations = [
+        #                 tuple(reversed(pair)) for pair in self.origins_and_destinations
+        #             ]
+        #             self.inbound_outbound_descriptions = [
+        #                 tuple(reversed(pair))
+        #                 for pair in self.inbound_outbound_descriptions
+        #             ]
 
         return self
 
@@ -313,7 +314,6 @@ class Timetable:
         for grouping in self.groupings:
             grouping.apply_stops(stops)
 
-    @cached_property
     def has_multiple_operators(self) -> bool:
         if self.operators and len(self.operators) > 1:
             return True
@@ -517,10 +517,6 @@ class Grouping:
             for row in self.rows
         )
 
-    @cached_property
-    def has_notes_column(self):
-        return any(row.pick_up_only or row.set_down_only for row in self.rows)
-
     def has_minor_stops(self):
         return any(row.is_minor() for row in self.rows)
 
@@ -601,28 +597,93 @@ class Grouping:
             yield date, [by_trip.get(trip.id) for trip in self.trips]
 
     def sort_rows(self):
-        sorter = graphlib.TopologicalSorter()
-
         stop_times = {}
+        successors = {}  # key -> set of successor keys
+        in_degree = {}  # key -> number of predecessors
+        # count how many trips have (prev, key) as an adjacent pair
+        adjacency_count = {}
+        # collect sequence numbers per stop key (can be null/wrong)
+        sequences = {}
+
         for trip in self.trips:
             prev = None
             for stop_time in trip.times:
                 key = stop_time.get_key()
-                if prev:
-                    sorter.add(key, prev)
-                prev = key
                 stop_times[key] = stop_time
+                successors.setdefault(key, set())
+                in_degree.setdefault(key, 0)
 
-        try:
-            self.rows = [
-                Row(Stop(stop_times[key].stop_id, stop_times[key].stop_code))
-                for key in sorter.static_order()
-            ]
-        except graphlib.CycleError:
+                if stop_time.sequence is not None:
+                    sequences[key] = -stop_time.sequence
+
+                if prev:
+                    if key not in successors[prev]:
+                        successors[prev].add(key)
+                        in_degree[key] += 1
+                    pair = (prev, key)
+                    adjacency_count[pair] = adjacency_count.get(pair, 0) + 1
+                prev = key
+
+        def chain_length(node):
+            """Count stops in the unambiguous chain from node before a fork or merge."""
+            length = 1
+            current = node
+            while True:
+                succs = successors.get(current, set())
+                if len(succs) != 1:
+                    break
+                (nxt,) = succs
+                if in_degree.get(nxt, 0) != 1:
+                    break  # merge point: another predecessor still pending
+                length += 1
+                current = nxt
+            return length
+
+        def sort_key(k):
+            adj = adjacency_count.get((last, k), 0) if last is not None else 0
+            if adj > 0:
+                # At a branch point: among direct successors, prefer shorter
+                # chains so that short terminus branches (e.g. a Street
+                # terminus stop) stay grouped near their branch point rather
+                # than being stranded at the bottom of the timetable.
+                return (True, -chain_length(k), adj, sequences.get(k, 0))
+            else:
+                # Initial selection or no direct-successor relationship:
+                # use sequence number only (chain_length would wrongly prefer
+                # short-chain route-starts over long-chain route-starts).
+                return (False, 0, adj, sequences.get(k, 0))
+
+        # Kahn's algorithm, but when multiple nodes are ready,
+        # prefer the direct successor of the last emitted node
+        # (with most trips using that edge as tie-break),
+        # then prefer lower sequence number.
+        # This keeps variant-only stops grouped together
+        # instead of interleaving them.
+        ready = [key for key, deg in in_degree.items() if deg == 0]
+        result = []
+        last = None
+
+        while ready:
+            best = max(ready, key=sort_key)
+
+            ready.remove(best)
+            result.append(best)
+            last = best
+
+            for succ in successors.get(best, ()):
+                in_degree[succ] -= 1
+                if in_degree[succ] == 0:
+                    ready.append(succ)
+
+        if len(result) != len(stop_times):
             # cycle detected, so we will use difflib later
             # longest trips first, to minimise duplicate rows
             self.trips.sort(key=lambda t: -len(t.times))
         else:
+            self.rows = [
+                Row(Stop(stop_times[key].stop_id, stop_times[key].stop_code))
+                for key in result
+            ]
             for row in self.rows:
                 row.timing_status = stop_times[row.stop.stop_code].timing_status
 
@@ -930,21 +991,36 @@ class Row:
         self.times = times or []
 
     @cached_property
-    def has_waittimes(self):
+    def has_waittimes(self) -> bool:
         for cell in self.times:
             if type(cell) is Cell and cell.wait_time:
                 return True
+        return False
 
     @cached_property
-    def set_down_only(self):
+    def set_down_only(self) -> bool:
         return all(cell.set_down_only() for cell in self.times if type(cell) is Cell)
 
     @cached_property
-    def pick_up_only(self):
+    def pick_up_only(self) -> bool:
         return all(cell.pick_up_only() for cell in self.times if type(cell) is Cell)
 
     @cached_property
-    def od(self):
+    def note(self):
+        note = None
+        for cell in self.times:
+            if type(cell) is Cell:
+                if hasattr(cell.stoptime, "note"):
+                    if note is None:
+                        note = cell.stoptime.note
+                    elif note != cell.stoptime.note:
+                        return
+                else:
+                    return
+        return note
+
+    @cached_property
+    def od(self) -> bool:
         """is the origin or destination of any trip"""
         return any(cell.first or cell.last for cell in self.times if type(cell) is Cell)
 

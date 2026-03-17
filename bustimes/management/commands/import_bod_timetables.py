@@ -1,6 +1,5 @@
 """Import timetable data "fresh from the cow" """
 
-import hashlib
 import logging
 import xml.etree.ElementTree as ET
 import zipfile
@@ -20,7 +19,7 @@ from busstops.models import DataSource, Service
 
 from ...download_utils import download, download_if_modified
 from ...models import Route, TimetableDataSource, Trip
-from ...utils import log_time_taken
+from ...utils import get_sha1, log_time_taken
 from .import_transxchange import Command as TransXChangeCommand
 
 logger = logging.getLogger(__name__)
@@ -96,14 +95,6 @@ def get_command():
     return command
 
 
-def get_sha1(path):
-    sha1 = hashlib.sha1(usedforsecurity=False)
-    with path.open("rb") as open_file:
-        while data := open_file.read(65536):
-            sha1.update(data)
-    return sha1.hexdigest()
-
-
 def handle_file(command, path, qualify_filename=False):
     # the downloaded file might be plain XML, or a zipped archive - we just don't know yet
     full_path = settings.DATA_DIR / path
@@ -125,7 +116,7 @@ def handle_file(command, path, qualify_filename=False):
                             logger.exception(e)
     except zipfile.BadZipFile:
         # plain XML
-        with full_path.open() as open_file:
+        with full_path.open("rb") as open_file:
             if qualify_filename:
                 filename = path
             else:
@@ -208,7 +199,7 @@ def bus_open_data(api_key, specific_operator):
         if not is_noc(source.search):
             params = parse_qs(source.search)
             operator_datasets = [
-                item for item in datasets if (params | item["params"]) == item["params"]
+                item for item in datasets if (item["params"] | params) == item["params"]
             ]
         else:
             operator_datasets = [

@@ -49,11 +49,12 @@ class StopPointAdmin(GISModelAdmin):
         "service__region",
         "admin_area",
     ]
-    raw_id_fields = ["stop_area", "locality", "admin_area"]
+    raw_id_fields = ["source", "parents", "stop_area", "locality", "admin_area"]
     search_fields = ["atco_code"]
     ordering = ["atco_code"]
     inlines = [StopCodeInline]
     show_full_result_count = False
+    readonly_fields = ["search_vector"]
 
     def get_search_results(self, request, queryset, search_term):
         if not search_term:
@@ -121,7 +122,6 @@ class OperatorAdmin(admin.ModelAdmin):
         "operator_codes",
         "noc",
         "vehicle_mode",
-        "parent",
         "region_id",
         "services",
         "vehicles",
@@ -133,7 +133,6 @@ class OperatorAdmin(admin.ModelAdmin):
         "region",
         "vehicle_mode",
         "payment_methods",
-        "parent",
         "group",
     )
     search_fields = ("noc", "name")
@@ -468,6 +467,7 @@ class LocalityAdmin(GISModelAdmin):
     search_fields = ("id", "name")
     raw_id_fields = ("adjacent", "parent")
     list_filter = ("modified_at", "created_at", "admin_area__region", "admin_area")
+    readonly_fields = ["search_vector"]
 
 
 @admin.register(models.OperatorCode)
@@ -578,6 +578,7 @@ class DataSourceAdmin(admin.ModelAdmin):
 @admin.register(models.SIRISource)
 class SIRISourceAdmin(admin.ModelAdmin):
     list_display = ("name", "url", "requestor_ref", "areas", "is_poorly")
+    autocomplete_fields = ("operators", "admin_areas")
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)

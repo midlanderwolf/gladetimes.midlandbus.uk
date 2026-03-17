@@ -9,7 +9,7 @@ from django.contrib.auth.models import Permission
 from django.test import TestCase, override_settings
 
 from accounts.models import User
-from busstops.models import DataSource, Operator, Region, Service
+from busstops.models import DataSource, Operator, OperatorGroup, Region, Service
 
 from .models import (
     Livery,
@@ -39,19 +39,18 @@ class VehiclesTests(TestCase):
         cls.wifi = VehicleFeature.objects.create(name="Wi-Fi")
         cls.usb = VehicleFeature.objects.create(name="USB")
 
+        group = OperatorGroup.objects.create(
+            name="Madrigal Electromotive", slug="madrigal-electromotive"
+        )
         cls.bova = Operator.objects.create(
             region=ea,
             name="Bova and Over",
             noc="BOVA",
             slug="bova-and-over",
-            parent="Madrigal Electromotive",
+            group=group,
         )
         cls.lynx = Operator.objects.create(
-            region=ea,
-            name="Lynx",
-            noc="LYNX",
-            slug="lynx",
-            parent="Madrigal Electromotive",
+            region=ea, name="Lynx", noc="LYNX", slug="lynx", group=group
         )
         cls.chicken = Operator.objects.create(
             region=ea, name="Chicken Bus", noc="CLUCK", slug="chicken"
@@ -165,13 +164,13 @@ class VehiclesTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_parent(self):
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(5):
             response = self.client.get("/groups/Madrigal Electromotive/vehicles")
         self.assertContains(response, "Lynx")
         self.assertContains(response, "Madrigal Electromotive")
         self.assertContains(response, "Optare")
 
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(2):
             response = self.client.get("/groups/Shatton Group/vehicles")
         self.assertEqual(404, response.status_code)
 
@@ -245,7 +244,7 @@ class VehiclesTests(TestCase):
         self.assertNotContains(response, "/operators/lynx/map")
 
     def test_vehicle_views(self):
-        with self.assertNumQueries(6):
+        with self.assertNumQueries(7):
             response = self.client.get(self.vehicle_1.get_absolute_url() + "?date=poop")
         self.assertContains(response, "Optare Tempo")
         self.assertContains(response, "Trent Barton")
@@ -254,7 +253,7 @@ class VehiclesTests(TestCase):
         self.assertContains(response, ">00:47<")
         self.assertContains(response, ">13:00<")
 
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(6):
             response = self.client.get(self.vehicle_2.get_absolute_url())
         self.assertEqual(200, response.status_code)
 
@@ -1000,7 +999,7 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
                         "fleet_number": 1,
                         "fleet_code": "1",
                         "reg": "FD54JYA",
-                        'previous_reg': '',
+                        "previous_reg": "",
                         "vehicle_type": {
                             "id": self.vehicle_1.vehicle_type_id,
                             "name": "Optare Tempo",
@@ -1021,7 +1020,6 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
                             "id": "LYNX",
                             "slug": "lynx",
                             "name": "Lynx",
-                            "parent": "Madrigal Electromotive",
                         },
                         "garage": None,
                         "name": "",
@@ -1035,7 +1033,7 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
                         "fleet_number": 50,
                         "fleet_code": "50",
                         "reg": "UWW2X",
-                        'previous_reg': '',
+                        "previous_reg": "",
                         "vehicle_type": {
                             "id": self.vehicle_2.vehicle_type_id,
                             "name": "Optare Spectra",
@@ -1058,7 +1056,6 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
                             "id": "LYNX",
                             "slug": "lynx",
                             "name": "Lynx",
-                            "parent": "Madrigal Electromotive",
                         },
                         "garage": None,
                         "name": "",

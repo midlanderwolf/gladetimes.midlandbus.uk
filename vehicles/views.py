@@ -4,11 +4,12 @@ import logging
 from itertools import pairwise, groupby
 from urllib.parse import unquote
 from functools import partial
+from http import HTTPStatus
 import subprocess
 import xmltodict
 from django.conf import settings
 from django.contrib.auth.models import Permission
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.contrib.gis.geos import GEOSException, Point
 from django.core.cache import cache
 from django.core.exceptions import PermissionDenied, BadRequest
@@ -25,6 +26,7 @@ from django.utils.cache import get_conditional_response, set_response_etag
 from django.views.decorators.cache import cache_control
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_safe
+from django.utils.decorators import method_decorator
 from django.views.generic.detail import DetailView
 from haversine import Unit, haversine, haversine_vector
 from redis.exceptions import ConnectionError
@@ -32,10 +34,18 @@ from sql_util.utils import Exists, SubqueryMax, SubqueryMin
 
 from accounts.models import User
 from buses.utils import cdn_cache_control
-from busstops.models import SERVICE_ORDER_REGEX, Operator, Service, StopUsage
+from busstops.models import (
+    SERVICE_ORDER_REGEX,
+    Operator,
+    OperatorGroup,
+    Service,
+    StopUsage,
+)
 from busstops.utils import get_bounding_box
 from bustimes.models import Garage, Route, StopTime
 from bustimes.utils import contiguous_stoptimes_only, get_other_trips_in_block
+from photos.forms import PhotoForm
+from photos.utils import add_flickr_photo
 
 from . import filters, forms
 from .management.commands import import_bod_avl
@@ -164,11 +174,20 @@ def get_vehicle_order(vehicle) -> tuple[str, int, str]:
 
 
 @require_safe
-def operator_vehicles(request, slug=None, parent=None):
+def operator_vehicles(request, slug=None, group_slug=None):
     """fleet list"""
 
-    operators = Operator.objects.select_related("region")
-    if slug:
+    operators = Operator.objects.select_related("region", "group")
+    if group_slug:
+        try:
+            group = OperatorGroup.objects.get(slug=group_slug)
+        except OperatorGroup.DoesNotExist:
+            # cool URIs don't change
+            group = get_object_or_404(OperatorGroup, name=group_slug)
+        operators = group.operator_set.in_bulk()
+        vehicles = Vehicle.objects.filter(operator__group=group)
+    elif slug:
+        group = None
         try:
             operator = operators.get(slug=slug.lower())
         except Operator.DoesNotExist:
@@ -176,20 +195,14 @@ def operator_vehicles(request, slug=None, parent=None):
                 operators, operatorcode__code=slug, operatorcode__source__name="slug"
             )
         vehicles = operator.vehicle_set
-    else:
-        assert parent
-        operators = operators.filter(parent=parent).in_bulk()
-        if not operators:
-            raise Http404
-        vehicles = Vehicle.objects.filter(operator__in=operators)
 
     if "withdrawn" not in request.GET:
         vehicles = vehicles.filter(withdrawn=False)
 
     vehicles = vehicles.order_by("fleet_number", "fleet_code", "reg", "code")
 
-    if parent:
-        context = {}
+    if group_slug:
+        context = {"object": group}
     else:
         vehicles = vehicles.annotate(feature_names=features_string_agg)
         vehicles = vehicles.annotate(
@@ -197,7 +210,10 @@ def operator_vehicles(request, slug=None, parent=None):
         )
         vehicles = vehicles.select_related("latest_journey")
 
-        context = {"object": operator, "breadcrumb": [operator.region, operator]}
+        context = {
+            "object": operator,
+            "breadcrumb": [operator.group or operator.region, operator],
+        }
 
     vehicles = vehicles.annotate(
         livery_name=Case(When(livery__show_name=True, then="livery__name")),
@@ -212,16 +228,17 @@ def operator_vehicles(request, slug=None, parent=None):
         raise Http404
 
     vehicles = sorted(vehicles, key=get_vehicle_order)
-    if not parent and operator.noc in settings.ALLOW_VEHICLE_NOTES_OPERATORS:
+    if not group and operator.noc in settings.ALLOW_VEHICLE_NOTES_OPERATORS:
         vehicles = sorted(vehicles, key=lambda v: v.notes)
 
-    if parent:
+    if group:
         paginator = Paginator(vehicles, 1000)
         page = request.GET.get("page")
         vehicles = paginator.get_page(page)
 
         for v in vehicles:
             v.operator = operators[v.operator_id]
+            v.operator_name = v.operator.name.removeprefix(f"{group} ")
 
         context["paginator"] = paginator
     else:
@@ -236,7 +253,7 @@ def operator_vehicles(request, slug=None, parent=None):
         ]
     context["columns"] = columns
 
-    if not parent:
+    if not group:
         now = timezone.localtime()
 
         # midnight or 12 hours ago, whichever happened first
@@ -268,7 +285,7 @@ def operator_vehicles(request, slug=None, parent=None):
 
     context = {
         **context,
-        "parent": parent,
+        "parent": group,
         "vehicles": vehicles,
         "branding_column": any(vehicle.branding for vehicle in vehicles),
         "name_column": any(vehicle.name for vehicle in vehicles),
@@ -672,7 +689,7 @@ class VehicleDetailView(DetailView):
     model = Vehicle
     queryset = model.objects.select_related(
         "operator", "operator__region", "vehicle_type", "livery", "latest_journey"
-    ).prefetch_related("features")
+    ).prefetch_related("features", "photo_set")
 
     def get_object(self, **kwargs):
         try:
@@ -715,6 +732,11 @@ class VehicleDetailView(DetailView):
             if len(garages) == 1:
                 context["garage"] = Garage.objects.get(id=garages.pop())
 
+        if self.object.withdrawn and self.object.reg:
+            context["potential_duplicates"] = Vehicle.objects.filter(
+                ~Q(id=self.object.id), reg__iexact=self.object.reg
+            )
+
         if self.object.operator:
             context["breadcrumb"] = [
                 self.object.operator,
@@ -724,7 +746,33 @@ class VehicleDetailView(DetailView):
             context["previous"] = self.object.get_previous()
             context["next"] = self.object.get_next()
 
+        if self.request.user.has_perm("photos.add_photo"):
+            context["form"] = PhotoForm()
+
         return context
+
+    def render_to_response(self, context):
+        response = super().render_to_response(context)
+
+        if self.object.withdrawn and "potential_duplicates" in context:
+            if not all(
+                vehicle.withdrawn for vehicle in context["potential_duplicates"]
+            ):
+                response.status_code = HTTPStatus.NOT_FOUND
+
+        return response
+
+    @method_decorator(permission_required("photos.add_photo", raise_exception=True))
+    def post(self, *args, **kwargs):
+        form = PhotoForm(self.request.POST)
+        vehicle = self.get_object()
+        if form.is_valid():
+            try:
+                add_flickr_photo(form.cleaned_data["url"], vehicle, self.request)
+            except IndexError:
+                pass
+
+        return self.get(*args, **kwargs)
 
 
 def check_user(request):
