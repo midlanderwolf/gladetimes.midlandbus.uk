@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}{{ title }}{% if vehicle.operator %} – {{ vehicle.operator }}{% endif %} – gladetimes{% endblock %}
+{% block title %}{{ title }}{% if vehicle.operator %} – {{ vehicle.operator }}{% endif %} – bustimes.org{% endblock %}
 
 {% block canonical %}
     {% if not vehicle or request.GET.date or potential_duplicates %}

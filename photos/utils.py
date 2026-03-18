@@ -26,6 +26,11 @@ def add_flickr_photo(url, vehicle, request):
         "https://api.flickr.com/services/rest",
         params={"method": "flickr.photos.getInfo"},
     ).json()
+
+    if "photo" not in info:
+        print(f"Flickr API error: {info}")
+        return
+
     photo.url = info["photo"]["urls"]["url"][0]["_content"]
     photo.credit = (
         info["photo"]["owner"]["realname"] or info["photo"]["owner"]["username"]

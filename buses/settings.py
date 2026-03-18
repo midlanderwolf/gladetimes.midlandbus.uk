@@ -169,12 +169,12 @@ STORAGES = {
     "default": {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {
-            "region_name": "lon1",
-            "endpoint_url": "https://lon1.digitaloceanspaces.com",
-            "bucket_name": "bus-photos",
+            "region_name": "auto",
+            "endpoint_url": "https://bf5488db21bf1f7a287779d0cb34e793.r2.cloudflarestorage.com",
+            "bucket_name": "photos",
             "default_acl": "public-read",
             "querystring_auth": False,
-            "custom_domain": "bus-photos.lon1.digitaloceanspaces.com",
+            "custom_domain": "photos.midlandbus.uk",
         },
     },
     "staticfiles": {
