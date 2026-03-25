@@ -6,11 +6,14 @@
 # mv TxC-2.4.zip NCSD.zip
 # echo "NCSD.zip download complete"
 
-# echo "Downloading L.zip"
-# cd /root/bustimes.org/data/London
-# wget https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip
-# mv journey-planner-timetables.zip L.zip
-# echo "L.zip download complete"
+echo "Downloading L.zip"
+cd /root/bustimes.org/data/London
+wget https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip
+mv journey-planner-timetables.zip L.zip
+echo "L.zip download complete"
+docker compose exec web uv run ./manage.py import_transxchange data/TNDS/L.zip
+echo "TfL import complete"
+
 
 cd /root/bustimes.org
 
@@ -22,9 +25,9 @@ echo "Updating search indexes"
 docker compose exec web uv run ./manage.py update_search_indexes
 echo "Search index update complete"
 
-# echo "Importing NetEx Fares"
-# docker compose exec web uv run ./manage.py import_netex_fares 825ad872cc647ead18d4d67c52485d558ff3f786
-# echo " NetEx Fares Import complete"
+echo "Importing NetEx Fares"
+docker compose exec web uv run ./manage.py import_netex_fares 825ad872cc647ead18d4d67c52485d558ff3f786
+echo " NetEx Fares Import complete"
 
 echo "Importing BODS Data Catalogue"
 docker compose exec web uv run ./manage.py import_bods_data_catalogue
@@ -62,13 +65,9 @@ echo "Importing Ember Timetables"
 docker compose exec web uv run ./manage.py import_gtfs_ember
 echo "Ember Timetables import complete"
 
-# echo "Importing National Coach Services (BODS)"
-# docker compose exec web uv run ./manage.py import_transxchange data/TNDS/NCSD.zip
-# echo "National Coach Services (BODS) import complete"
-
-# echo "Importing TfL (BODS)"
-# docker compose exec web uv run ./manage.py import_transxchange data/TNDS/L.zip
-# echo "TfL import complete"
+echo "Importing National Coach Services (BODS)"
+docker compose exec web uv run ./manage.py import_transxchange data/TNDS/NCSD.zip
+echo "National Coach Services (BODS) import complete"
 
 echo "Importing Traveline National Dataset"
 docker compose exec web uv run ./manage.py import_tnds itzmxrkomg@icloud.com itzNot@Mxrk0mg 
