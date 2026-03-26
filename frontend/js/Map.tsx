@@ -215,14 +215,14 @@ export default function BusTimesMap(
     );
   }, [mapStyle, darkModeQuery.matches]);
 
-  let mapStyleURL = `https://tiles.stadiamaps.com/styles/${mapStyle}.json`;
-  // let mapStyleURL = `https://maps.fluffynet.dev/styles/dark/style.json`;
+  // let mapStyleURL = `https://tiles.stadiamaps.com/styles/${mapStyle}.json`;
+  let mapStyleURL = `https://maps.fluffynet.dev/styles/dark/style.json`;
   if (mapStyle === "os_light") {
-    mapStyleURL = "https://tiles.bustimes.org.uk/styles/light/style.json";
-    // mapStyleURL = "https://maps.fluffynet.dev/styles/light/style.json";
+    // mapStyleURL = "https://tiles.bustimes.org.uk/styles/light/style.json";
+    mapStyleURL = "https://maps.fluffynet.dev/styles/light/style.json";
   } else if (mapStyle === "os_dark") {
-    mapStyleURL = "https://tiles.bustimes.org.uk/styles/night/style.json";
-    // mapStyleURL = "https://maps.fluffynet.dev/styles/dark/style.json";
+    // mapStyleURL = "https://tiles.bustimes.org.uk/styles/night/style.json";
+    mapStyleURL = "https://maps.fluffynet.dev/styles/dark/style.json";
   } else if (mapStyle === "osm_bright") {
     mapStyleURL = osmBright;
     // } else if (mapStyle === "aws" || mapStyle === "aws_satellite") {
