@@ -269,6 +269,7 @@ class ServiceAdmin(GISModelAdmin):
         "public_use",
         "colour",
         "line_brand",
+        "create_route_links",
         "modified_at",
     )
     list_filter = (
@@ -292,9 +293,9 @@ class ServiceAdmin(GISModelAdmin):
         ToServiceLinkInline,
     ]
     readonly_fields = ["search_vector", "modified_at"]
-    list_editable = ["colour", "line_brand"]
+    list_editable = ["colour", "line_brand", "create_route_links"]
     list_select_related = ["colour"]
-    actions = ["current_false", "merge", "unmerge"]
+    actions = ["current_false", "merge", "unmerge", "generate_route_links"]
 
     @admin.display(ordering="routes")
     def routes(self, obj):
@@ -334,6 +335,15 @@ class ServiceAdmin(GISModelAdmin):
         result = queryset.order_by().update(current=False)
         log_change(request, queryset, ["current"])
         self.message_user(request, f"{result}")
+
+    def generate_route_links(self, request, queryset):
+        from bustimes.utils import generate_route_links_for_service
+
+        count = 0
+        for service in queryset:
+            if generate_route_links_for_service(service):
+                count += 1
+        self.message_user(request, f"Generated route links for {count} services")
 
     @transaction.atomic
     def merge(self, request, queryset):

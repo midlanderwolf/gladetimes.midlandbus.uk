@@ -757,6 +757,7 @@ class Service(models.Model):
 
     source = models.ForeignKey(DataSource, models.SET_NULL, null=True, blank=True)
     tracking = models.BooleanField(default=False)
+    create_route_links = models.BooleanField(default=False)
     payment_methods = models.ManyToManyField(
         "PaymentMethod", through="ServicePaymentMethod", blank=True
     )
