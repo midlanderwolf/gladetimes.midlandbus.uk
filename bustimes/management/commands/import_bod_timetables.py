@@ -126,8 +126,8 @@ def handle_file(command, path, qualify_filename=False):
             except (AttributeError, DataError) as e:
                 logger.exception(e)
 
-    if not qualify_filename:
-        command.source.upload_to_s3_etc(full_path)
+    # if not qualify_filename:
+    #     command.source.upload_to_s3_etc(full_path)
 
 
 def get_bus_open_data_paramses(sources, api_key):
