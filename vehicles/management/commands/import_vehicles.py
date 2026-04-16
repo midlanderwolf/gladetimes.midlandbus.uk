@@ -98,11 +98,17 @@ class Command(BaseCommand):
             action="store_true",
             help="Use TMSB registration format (WN69-FYL-200 -> WN69FYL)",
         )
+        parser.add_argument(
+            "--ignore-withdrawn",
+            action="store_true",
+            help="Skip vehicles that are marked as withdrawn",
+        )
 
     def handle(self, *args, **options):
         noc = options["noc"]
         use_reg = options["reg"]
         tmsb_format = options["tmsb_format"]
+        ignore_withdrawn = options["ignore_withdrawn"]
 
         try:
             operator = Operator.objects.get(noc__iexact=noc)
@@ -113,11 +119,15 @@ class Command(BaseCommand):
             name="bustimes.org", defaults={"url": "https://bustimes.org/"}
         )
 
-        self.import_vehicles(operator, source, use_reg, tmsb_format)
-        self.stdout.write(self.style.SUCCESS(f"Successfully imported vehicles for {noc}"))
+        self.import_vehicles(operator, source, use_reg, tmsb_format, ignore_withdrawn)
+        self.stdout.write(
+            self.style.SUCCESS(f"Successfully imported vehicles for {noc}")
+        )
 
     @transaction.atomic
-    def import_vehicles(self, operator, source, use_reg, tmsb_format=False):
+    def import_vehicles(
+        self, operator, source, use_reg, tmsb_format=False, ignore_withdrawn=False
+    ):
         url = (
             "https://bustimes.org/api/vehicles/"
             f"?format=json&limit=9999&operator={operator.noc}"
@@ -134,6 +144,9 @@ class Command(BaseCommand):
         updated_count = 0
 
         for vehicle_data in data["results"]:
+            if ignore_withdrawn and vehicle_data.get("withdrawn"):
+                continue
+
             # Vehicle type
             vehicle_type = None
             if vehicle_data.get("vehicle_type"):

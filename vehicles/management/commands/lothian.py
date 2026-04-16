@@ -1,4 +1,5 @@
-from ciso8601 import parse_datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from django.db.models import Q
 from django.contrib.gis.geos import GEOSGeometry
 
@@ -41,11 +42,9 @@ class Command(ImportLiveVehiclesCommand):
         timestamp = item["lastUpdated"]
         if not timestamp:
             return
-        if len(timestamp) == 19:
-            # we don't know yet, but assume it's in UTC
-            # need to revisit next British Supper Time
-            timestamp += "Z"
-        return parse_datetime(timestamp)
+        return datetime.fromisoformat(timestamp).replace(
+            tzinfo=ZoneInfo("Europe/London")
+        )
 
     def get_items(self):
         return super().get_items()["vehicles"]
