@@ -8,31 +8,43 @@ from .models import Calendar, CalendarDate, RouteLink
 
 MODES = {
     0: "tram",
+    1: "subway",
     2: "rail",
     3: "bus",
     4: "ferry",
     6: "cable car",
     200: "coach",
+    109: "rail",  # commuter rail
     1100: "air",
+    # Extended route types
+    700: "bus",  # Demand and response bus service
+    701: "bus",
+    702: "bus",
+    704: "bus",
+    900: "tram",  # Demand and response rail service
+    711: "bus",  # Bus replacement service
 }
 
 
 def get_calendars(feed, source) -> dict:
-    calendars = {
-        row.service_id: Calendar(
-            mon=row.monday,
-            tue=row.tuesday,
-            wed=row.wednesday,
-            thu=row.thursday,
-            fri=row.friday,
-            sat=row.saturday,
-            sun=row.sunday,
-            start_date=row.start_date,
-            end_date=row.end_date,
-            source=source,
-        )
-        for row in feed.calendar.itertuples()
-    }
+    calendars = {}
+
+    if feed.calendar is not None:
+        calendars = {
+            row.service_id: Calendar(
+                mon=row.monday,
+                tue=row.tuesday,
+                wed=row.wednesday,
+                thu=row.thursday,
+                fri=row.friday,
+                sat=row.saturday,
+                sun=row.sunday,
+                start_date=row.start_date,
+                end_date=row.end_date,
+                source=source,
+            )
+            for row in feed.calendar.itertuples()
+        }
 
     calendar_dates = []
 

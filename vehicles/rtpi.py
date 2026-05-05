@@ -137,7 +137,9 @@ def add_progress_and_delay(item, stop_time=None):
 
     item["progress"] = progress.to_json()
     when = parse_datetime(item["datetime"])
-    when = timezone.localtime(when)
+    # Convert to local time (where timetable times are expressed)
+    if when.tzinfo is not None:
+        when = when.astimezone(when.tzinfo)
     when = timedelta(hours=when.hour, minutes=when.minute, seconds=when.second)
 
     prev_time = progress.prev_stop_time.departure_or_arrival()

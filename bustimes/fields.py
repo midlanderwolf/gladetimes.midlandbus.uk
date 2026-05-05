@@ -36,6 +36,8 @@ class SecondsField(DurationField):
     def get_db_prep_value(value, connection, prepared=False):
         if value is None:
             return value
+        if isinstance(value, int):
+            return value
         if isinstance(value, str):
             value = parse_duration(value)
         return int(value.total_seconds())
