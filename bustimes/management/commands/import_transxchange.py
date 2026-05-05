@@ -626,7 +626,7 @@ class Command(BaseCommand):
 
         self.source.save(update_fields=["datetime"])
 
-        self.source.upload_to_s3_etc(archive_path)
+        # self.source.upload_to_s3_etc(archive_path)
 
     def finish_services(self):
         """update/create StopUsages, search_vector and geometry fields"""

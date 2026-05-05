@@ -331,6 +331,7 @@ UMAMI_TOKEN = os.environ.get("UMAMI_TOKEN")
 UMAMI_WEBSITE_ID = os.environ.get("UMAMI_WEBSITE_ID")
 
 NEW_VEHICLE_WEBHOOK_URL = os.environ.get("NEW_VEHICLE_WEBHOOK_URL")
+NEW_LICENSE_WEBHOOK_URL = os.environ.get("NEW_LICENSE_WEBHOOK_URL")
 
 DATA_DIR = os.environ.get("DATA_DIR")
 if DATA_DIR:
