@@ -110,18 +110,17 @@ class Command(BaseCommand):
             from .gtfs_utils import get_region_name
 
             country_name = get_region_name(self.region_id)
-            max_id = (
-                AdminArea.objects.aggregate(django_models.Max("id"))["id__max"] or 0
-            )
-            admin_area, created = AdminArea.objects.get_or_create(
-                region_id=self.region_id,
-                defaults={
-                    "id": max_id + 1,
-                    "name": country_name,
-                    "atco_code": self.region_id[:3],
-                },
-            )
-            if created:
+            admin_area = AdminArea.objects.filter(region_id=self.region_id).first()
+            if admin_area is None:
+                max_id = (
+                    AdminArea.objects.aggregate(django_models.Max("id"))["id__max"] or 0
+                )
+                admin_area = AdminArea.objects.create(
+                    id=max_id + 1,
+                    region_id=self.region_id,
+                    name=country_name,
+                    atco_code=self.region_id[:3],
+                )
                 logger.info(
                     f"Created admin area {admin_area.id} ({country_name}) for region {self.region_id}"
                 )
@@ -241,19 +240,40 @@ class Command(BaseCommand):
         # line as in line in a spreadsheet, not as in the Elizabeth Line
         for line in feed.trips.itertuples():
             route = self.routes[line.route_id]
+
+            # Handle pandas NA values for direction_id
             direction_id = getattr(line, "direction_id", None)
-            if direction_id is None or (
-                hasattr(direction_id, "isna") and direction_id.isna()
-            ):
+            if hasattr(direction_id, "isna") and direction_id.isna():
                 direction_id = 0
+            elif direction_id is None or direction_id == "":
+                direction_id = 0
+            else:
+                direction_id = int(direction_id)
+
+            headsign = getattr(line, "trip_headsign", None)
+            if headsign is not None and hasattr(headsign, "isna") and headsign.isna():
+                headsign = None
+
+            block_id = getattr(line, "block_id", "")
+            if block_id is not None and hasattr(block_id, "isna") and block_id.isna():
+                block_id = ""
+
+            trip_short_name = getattr(line, "trip_short_name", "")
+            if (
+                trip_short_name is not None
+                and hasattr(trip_short_name, "isna")
+                and trip_short_name.isna()
+            ):
+                trip_short_name = ""
+
             trips[line.trip_id] = Trip(
                 route=route,
                 calendar=calendars[line.service_id],
                 inbound=direction_id == 1,
-                headsign=getattr(line, "trip_headsign", None),
+                headsign=headsign,
                 ticket_machine_code=line.trip_id,
-                block=getattr(line, "block_id", ""),
-                vehicle_journey_code=getattr(line, "trip_short_name", ""),
+                block=block_id,
+                vehicle_journey_code=trip_short_name,
                 operator=self.route_operators[line.route_id],
             )
 
