@@ -44,6 +44,7 @@ TIMEZONE_TO_REGION = {
     "America/Vancouver": "CA",
     "Australia/Sydney": "AU",
     "Australia/Melbourne": "AU",
+    "Australia/Adelaide": "AU",
     "Pacific/Auckland": "NZ",
     "Asia/Tokyo": "JP",
     "Asia/Shanghai": "CN",

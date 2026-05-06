@@ -7,6 +7,7 @@ from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand
 from django.db import connection
+from django.db import models as django_models
 from django.db.models import Count, Exists, OuterRef, Q
 from django.db.models.functions import Now
 from django.utils.dateparse import parse_duration
@@ -109,19 +110,22 @@ class Command(BaseCommand):
             from .gtfs_utils import get_region_name
 
             country_name = get_region_name(self.region_id)
-            admin_area_id = abs(hash(self.region_id)) % 9000 + 1000
+            max_id = (
+                AdminArea.objects.aggregate(django_models.Max("id"))["id__max"] or 0
+            )
             admin_area, created = AdminArea.objects.get_or_create(
-                id=admin_area_id,
+                region_id=self.region_id,
                 defaults={
+                    "id": max_id + 1,
                     "name": country_name,
                     "atco_code": self.region_id[:3],
-                    "region_id": self.region_id,
                 },
             )
             if created:
                 logger.info(
-                    f"Created admin area {admin_area_id} ({country_name}) for region {self.region_id}"
+                    f"Created admin area {admin_area.id} ({country_name}) for region {self.region_id}"
                 )
+            admin_area_id = admin_area.id
 
         for stop in stops_to_create:
             if self.region_id:
@@ -237,10 +241,15 @@ class Command(BaseCommand):
         # line as in line in a spreadsheet, not as in the Elizabeth Line
         for line in feed.trips.itertuples():
             route = self.routes[line.route_id]
+            direction_id = getattr(line, "direction_id", None)
+            if direction_id is None or (
+                hasattr(direction_id, "isna") and direction_id.isna()
+            ):
+                direction_id = 0
             trips[line.trip_id] = Trip(
                 route=route,
                 calendar=calendars[line.service_id],
-                inbound=getattr(line, "direction_id", None) == 1,
+                inbound=direction_id == 1,
                 headsign=getattr(line, "trip_headsign", None),
                 ticket_machine_code=line.trip_id,
                 block=getattr(line, "block_id", ""),
@@ -294,18 +303,12 @@ class Command(BaseCommand):
             for line in feed.stop_times.itertuples():
                 timing_status = "PTP" if getattr(line, "timepoint", 1) == 1 else "OTH"
 
-                pick_up = None
-                if getattr(line, "pickup_type", 0) == 0:  # Regularly scheduled pickup
-                    pick_up = True
-                elif getattr(line, "pickup_type", 0) == 1:  # "No pickup available"
+                pick_up = True  # Default: regularly scheduled pickup
+                if getattr(line, "pickup_type", 0) == 1:  # "No pickup available"
                     pick_up = False
 
-                set_down = None
-                if (
-                    getattr(line, "drop_off_type", 0) == 0
-                ):  # Regularly scheduled drop off
-                    set_down = True
-                elif getattr(line, "drop_off_type", 0) == 1:  # "No drop off available"
+                set_down = True  # Default: regularly scheduled drop off
+                if getattr(line, "drop_off_type", 0) == 1:  # "No drop off available"
                     set_down = False
 
                 departure = int(parse_duration(line.departure_time).total_seconds())
@@ -392,17 +395,18 @@ class Command(BaseCommand):
         do_route_links(feed, self.source, self.routes, feed_stops, stop_codes)
 
     def handle(self, *args, **options):
-        # Get all GTFS sources (not just Ireland)
-        collections = DataSource.objects.filter(
-            Q(
-                url__startswith="https://www.transportforireland.ie/transitData/Data/GTFS_"
-            )
-            | Q(url__endswith=".zip")
-            | Q(url__icontains="gtfs")
-        ).distinct()
-
         if options["collections"]:
-            collections = collections.filter(name__in=options["collections"])
+            # Filter by name when specific collections are requested
+            collections = DataSource.objects.filter(name__in=options["collections"])
+        else:
+            # Get all GTFS sources (not just Ireland)
+            collections = DataSource.objects.filter(
+                Q(
+                    url__startswith="https://www.transportforireland.ie/transitData/Data/GTFS_"
+                )
+                | Q(url__endswith=".zip")
+                | Q(url__icontains="gtfs")
+            ).distinct()
 
         for source in collections:
             path: Path = settings.DATA_DIR / Path(source.url).name
