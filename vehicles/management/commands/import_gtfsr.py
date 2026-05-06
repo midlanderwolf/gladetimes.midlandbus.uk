@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
+from django.db.models import Q
 from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
 
