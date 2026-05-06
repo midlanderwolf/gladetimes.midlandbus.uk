@@ -189,9 +189,12 @@ class Command(ImportLiveVehiclesCommand):
                         f"Parsed journey datetime: {journey.datetime} (local: {journey.datetime.astimezone(self.tzinfo)})"
                     )
                 else:
-                    journey.datetime = datetime.strptime(
-                        f"{trip_data.start_date} 00:00:00", "%Y%m%d %H:%M:%S"
-                    ).replace(tzinfo=self.tzinfo)
+                    # Use vehicle timestamp instead of midnight
+                    journey.datetime = self.get_datetime(item)
+                    if not journey.datetime:
+                        journey.datetime = datetime.strptime(
+                            f"{trip_data.start_date} 00:00:00", "%Y%m%d %H:%M:%S"
+                        ).replace(tzinfo=self.tzinfo)
                     logger.info(
                         f"Parsed journey datetime (no start_time): {journey.datetime}"
                     )
