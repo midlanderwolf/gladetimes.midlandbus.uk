@@ -1,39 +1,35 @@
+import debounce from "lodash/debounce";
+
+import { Hash, type LngLatBounds, type Map as MapGL } from "maplibre-gl";
 import React, {
-  type ReactElement,
   memo,
+  type ReactElement,
   useEffect,
   useMemo,
   useRef,
 } from "react";
-
-import { Hash, type LngLatBounds, type Map as MapGL } from "maplibre-gl";
 import {
   Layer,
   type MapLayerMouseEvent,
   type MapProps,
   Source,
-  type ViewStateChangeEvent,
   useMap,
+  type ViewStateChangeEvent,
 } from "react-map-gl/maplibre";
 import { Link } from "wouter";
-
-import debounce from "lodash/debounce";
-
-import VehicleMarker, {
-  type Vehicle as VehicleLocation,
-  getClickedVehicleMarkerId,
-} from "./VehicleMarker";
-
 import { JourneyStops, Locations, type VehicleJourney } from "./JourneyMap";
 import LoadingSorry from "./LoadingSorry";
 import BusTimesMap, { ThemeContext } from "./Map";
 import StopPopup, { type Stop } from "./StopPopup";
 import { Route } from "./TripMap";
 import TripTimetable, { type Trip, tripFromJourney } from "./TripTimetable";
-import VehiclePopup from "./VehiclePopup";
-import { getBounds, getFont } from "./utils";
-
 import { decodeTimeAwarePolyline } from "./time-aware-polyline";
+import { getBounds, getFont } from "./utils";
+import VehicleMarker, {
+  getClickedVehicleMarkerId,
+  type Vehicle as VehicleLocation,
+} from "./VehicleMarker";
+import VehiclePopup from "./VehiclePopup";
 
 const apiRoot = process.env.API_ROOT;
 
@@ -456,7 +452,9 @@ function getStopName({
   common_name,
   locality_name,
   indicator,
-}: { [name: string]: string }) {
+}: {
+  [name: string]: string;
+}) {
   let name = common_name;
   if (indicator) {
     if (
@@ -854,11 +852,13 @@ export default function BigMap(
     }
 
     if (e.features?.length) {
-      setCursor("pointer");
-      // journey map
       for (const feature of e.features) {
         if (feature.layer.id === "locations") {
-          if (hoveredLocation.current) {
+          setCursor("pointer");
+          if (
+            hoveredLocation.current &&
+            hoveredLocation.current !== feature.id
+          ) {
             e.target.setFeatureState(
               { source: "locations", id: hoveredLocation.current },
               { hover: false },
@@ -873,10 +873,26 @@ export default function BigMap(
         }
       }
     }
+
+    if (hoveredLocation.current) {
+      e.target.setFeatureState(
+        { source: "locations", id: hoveredLocation.current },
+        { hover: false },
+      );
+      hoveredLocation.current = null;
+    }
+    setCursor(undefined);
   }, []);
 
-  const onMouseLeave = React.useCallback(() => {
+  const onMouseLeave = React.useCallback((e: MapLayerMouseEvent) => {
     setCursor(undefined);
+    if (hoveredLocation.current) {
+      e.target.setFeatureState(
+        { source: "locations", id: hoveredLocation.current },
+        { hover: false },
+      );
+      hoveredLocation.current = null;
+    }
   }, []);
 
   const showStops = shouldShowStops(zoom);

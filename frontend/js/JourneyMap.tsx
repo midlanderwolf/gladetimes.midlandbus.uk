@@ -1,24 +1,21 @@
+import type { Map as MapGL } from "maplibre-gl";
 import React from "react";
-
 import {
   Layer,
   type LayerProps,
   type MapLayerMouseEvent,
   Source,
 } from "react-map-gl/maplibre";
-
-import BusTimesMap, { ThemeContext } from "./Map";
-
-import type { Map as MapGL } from "maplibre-gl";
 import LoadingSorry from "./LoadingSorry";
+import BusTimesMap, { ThemeContext } from "./Map";
 import StopPopup, { type Stop } from "./StopPopup";
 import TripTimetable, { type TripTime, tripFromJourney } from "./TripTimetable";
+import { getBounds, getFont } from "./utils";
 import VehicleMarker, {
-  type Vehicle,
   getClickedVehicleMarkerId,
+  type Vehicle,
 } from "./VehicleMarker";
 import VehiclePopup from "./VehiclePopup";
-import { getBounds, getFont } from "./utils";
 
 type VehicleJourneyLocation = {
   id: number;
@@ -411,11 +408,13 @@ export default function JourneyMap({
     }
 
     if (e.features?.length) {
-      setCursor("pointer");
-
       for (const feature of e.features) {
         if (feature.layer.id === "locations") {
-          if (hoveredLocation.current) {
+          setCursor("pointer");
+          if (
+            hoveredLocation.current &&
+            hoveredLocation.current !== feature.id
+          ) {
             e.target.setFeatureState(
               { source: "locations", id: hoveredLocation.current },
               { hover: false },
@@ -430,11 +429,26 @@ export default function JourneyMap({
         }
       }
     }
+
+    if (hoveredLocation.current) {
+      e.target.setFeatureState(
+        { source: "locations", id: hoveredLocation.current },
+        { hover: false },
+      );
+      hoveredLocation.current = null;
+    }
+    setCursor(undefined);
   }, []);
 
-  const onMouseLeave = React.useCallback(() => {
+  const onMouseLeave = React.useCallback((e: MapLayerMouseEvent) => {
     setCursor(undefined);
-    // setClickedLocation(undefined);
+    if (hoveredLocation.current) {
+      e.target.setFeatureState(
+        { source: "locations", id: hoveredLocation.current },
+        { hover: false },
+      );
+      hoveredLocation.current = null;
+    }
   }, []);
 
   const [clickedStopUrl, setClickedStop] = React.useState<string>();
