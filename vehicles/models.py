@@ -796,7 +796,7 @@ class VehicleLocation:
             "journey_id": journey.id,
             "coordinates": self.latlong.coords,
             "heading": self.heading,
-            "datetime": self.datetime,
+            "datetime": timezone.localtime(self.datetime),
             "destination": journey.destination,
             "block": self.block,
         }
