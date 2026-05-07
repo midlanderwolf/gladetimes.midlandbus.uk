@@ -257,6 +257,8 @@ class Command(BaseCommand):
             block_id = getattr(line, "block_id", "")
             if block_id is not None and hasattr(block_id, "isna") and block_id.isna():
                 block_id = ""
+            if block_id == "N/A":
+                block_id = ""
 
             trip_short_name = getattr(line, "trip_short_name", "")
             if (

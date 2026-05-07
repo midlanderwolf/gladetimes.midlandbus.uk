@@ -15,7 +15,6 @@ MODES = {
     4: "ferry",
     6: "cable car",
     7: "funicular",
-
     # Rail services
     100: "rail",  # Railway Service
     101: "rail",  # High Speed Rail Service
@@ -35,7 +34,6 @@ MODES = {
     115: "rail",  # Vehicle Transport Rail Service
     116: "rail",  # Rack and Pinion Railway
     117: "rail",  # Additional Rail Service
-
     # Coach services
     200: "coach",  # Coach Service
     201: "coach",  # International Coach Service
@@ -47,7 +45,6 @@ MODES = {
     207: "coach",  # Tourist Coach Service
     208: "coach",  # Commuter Coach Service
     209: "coach",  # All Coach Services
-
     # Urban rail / metro
     400: "subway",  # Urban Railway Service
     401: "subway",  # Metro Service
@@ -55,7 +52,6 @@ MODES = {
     403: "subway",  # Urban Railway Service
     404: "subway",  # All Urban Railway Services
     405: "subway",  # Monorail
-
     # Bus services
     700: "bus",  # Bus Service
     701: "bus",  # Regional Bus Service
@@ -74,10 +70,8 @@ MODES = {
     714: "bus",  # Rail Replacement Bus Service
     715: "bus",  # Demand and Response Bus Service
     716: "bus",  # All Bus Services
-
     # Trolleybus
     800: "bus",  # Trolleybus Service
-
     # Tram services
     900: "tram",  # Tram Service
     901: "tram",  # City Tram Service
@@ -86,16 +80,12 @@ MODES = {
     904: "tram",  # Sightseeing Tram Service
     905: "tram",  # Shuttle Tram Service
     906: "tram",  # All Tram Services
-
     # Water transport
     1000: "ferry",  # Water Transport Service
-
     # Air
     1100: "air",  # Air Service
-
     # Ferry
     1200: "ferry",  # Ferry Service
-
     # Aerial lift / cable transport
     1300: "cable car",  # Aerial Lift Service
     1301: "cable car",  # Telecabin Service
@@ -105,10 +95,8 @@ MODES = {
     1305: "cable car",  # Drag Lift Service
     1306: "cable car",  # Small Telecabin Service
     1307: "cable car",  # All Telecabin Services
-
     # Funicular
     1400: "funicular",  # Funicular Service
-
     # Taxi services
     1500: "taxi",  # Taxi Service
     1501: "taxi",  # Communal Taxi Service
@@ -118,7 +106,6 @@ MODES = {
     1505: "taxi",  # Licensed Taxi Service
     1506: "taxi",  # Private Hire Service Vehicle
     1507: "taxi",  # All Taxi Services
-
     # Miscellaneous
     1700: "misc",  # Miscellaneous Service
     1702: "horse-drawn carriage",  # Horse-drawn Carriage
@@ -250,4 +237,6 @@ def do_route_links(
     RouteLink.objects.bulk_update(
         [rl for rl in route_links.values() if rl.id], fields=["geometry"]
     )
-    RouteLink.objects.bulk_create([rl for rl in route_links.values() if not rl.id])
+    RouteLink.objects.bulk_create(
+        [rl for rl in route_links.values() if not rl.id], ignore_conflicts=True
+    )
