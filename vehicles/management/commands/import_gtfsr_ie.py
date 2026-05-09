@@ -1,15 +1,8 @@
-"""
-Ireland GTFS-RT vehicle import command
-
-Inherits from the generic import_gtfsr command with Ireland-specific settings.
-"""
-
-import logging
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
+from django.contrib.gis.geos import GEOSGeometry
 from django.utils.dateparse import parse_duration
 from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
@@ -18,30 +11,57 @@ from busstops.models import DataSource, Service
 from bustimes.models import Trip
 from bustimes.utils import get_calendars
 
-from .import_gtfsr import Command as BaseCommand
-from ...models import VehicleLocation
+from ...models import Vehicle, VehicleJourney, VehicleLocation
+from ..import_live_vehicles import ImportLiveVehiclesCommand
 
-logger = logging.getLogger(__name__)
+occupancies = {
+    0: "Empty",
+    1: "Many seats available",
+    2: "Few seats available",
+    3: "Standing room only",
+    4: "Crushed standing room only",
+    5: "Full",
+    6: "Not accepting passengers",
+    7: "No data available",
+    8: "Not boardable",
+}
 
 
-class Command(BaseCommand):
-    """Ireland-specific GTFS-RT importer"""
-
+class Command(ImportLiveVehiclesCommand):
     source_name = "Realtime Transport Operators"
     vehicle_code_scheme = "NTA"
-    tzinfo = ZoneInfo("Europe/Dublin")
-    url = "https://api.nationaltransport.ie/gtfsr/v2/Vehicles"
 
     def do_source(self):
+        self.tzinfo = ZoneInfo("Europe/Dublin")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-        self.headers = {}
-        if settings.NTA_API_KEY:
-            self.headers["x-api-key"] = settings.NTA_API_KEY
+        self.url = "https://api.nationaltransport.ie/gtfsr/v2/Vehicles"
         return self
 
+    @staticmethod
+    def get_datetime(item):
+        return datetime.fromtimestamp(item.vehicle.timestamp, timezone.utc)
+
+    @staticmethod
+    def get_vehicle_identity(item):
+        return item.vehicle.vehicle.id
+
+    @staticmethod
+    def get_journey_identity(item):
+        return (
+            item.vehicle.trip.route_id,
+            item.vehicle.trip.trip_id,
+            item.vehicle.trip.start_date,
+        )
+
+    @staticmethod
+    def get_item_identity(item):
+        return item.vehicle.timestamp
+
     def get_items(self):
-        """Fetch Ireland GTFS-RT feed"""
-        response = self.session.get(self.url, headers=self.headers, timeout=10)
+        assert settings.NTA_API_KEY
+        response = self.session.get(
+            self.url, headers={"x-api-key": settings.NTA_API_KEY}, timeout=10
+        )
         response.raise_for_status()
 
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -49,16 +69,11 @@ class Command(BaseCommand):
 
         return feed.entity
 
-    @staticmethod
-    def get_datetime(item):
-        return datetime.fromtimestamp(item.vehicle.timestamp, tz=BaseCommand.tzinfo)
-
-    @staticmethod
-    def get_vehicle_identity(item):
-        return item.vehicle.vehicle.id
+    def get_vehicle(self, item):
+        vehicle_code = item.vehicle.vehicle.id
+        return Vehicle.objects.get_or_create(code=vehicle_code, source=self.source)
 
     def get_journey(self, item, vehicle):
-        """Ireland-specific journey handling"""
         # GTFS spec for working out datetimes:
         start_date = datetime.strptime(
             f"{item.vehicle.trip.start_date} 12:00:00",
@@ -69,6 +84,8 @@ class Command(BaseCommand):
             tzinfo=self.tzinfo
         )
 
+        # assert not (datetime.fromtimestamp(item.vehicle.timestamp) - start_date_time > timedelta(hours=12))
+
         journey = VehicleJourney(code=item.vehicle.trip.trip_id)
 
         if (
@@ -78,26 +95,26 @@ class Command(BaseCommand):
 
         journey.datetime = start_date_time
 
-        # Find service
         service = None
         services = Service.objects.filter(
             current=True,
             route__source=self.source,
             route__code=item.vehicle.trip.route_id,
         ).distinct()
-        if not services and "_" not in item.vehicle.trip.route_id:
+        if not services:
+            if "_" in item.vehicle.trip.route_id:
+                suffix = item.vehicle.trip.route_id.split("_", 1)[1]
+            else:
+                suffix = item.vehicle.trip.route_id
             services = Service.objects.filter(
                 current=True,
                 route__source=self.source,
-                route__code__endswith=f"_{item.vehicle.trip.route_id}",
+                route__code__endswith=f"_{suffix}",
             ).distinct()
 
         if services:
             service = services[0]
-            journey.service = service
-            journey.route_name = service.line_name
 
-        # Find trip
         trips = Trip.objects.filter(ticket_machine_code=journey.code)
         if service:
             trips = trips.filter(route__service=service)
@@ -121,18 +138,22 @@ class Command(BaseCommand):
             else:
                 trip = trips[0]
 
+        if service:
+            journey.service = service
+
         if trip:
             if not journey.service:
                 journey.service = trip.route.service
             journey.trip = trip
-            journey.destination = trip.headsign or ""
 
-            # Update vehicle operator from trip
+            journey.destination = trip.headsign or ""
             if trip.operator_id and not vehicle.operator_id:
                 vehicle.operator_id = trip.operator_id
                 vehicle.save(update_fields=["operator"])
 
-        # Store raw data
+        if journey.service:
+            journey.route_name = journey.service.line_name
+
         vehicle.latest_journey_data = json_format.MessageToDict(item)
 
         return journey
@@ -140,8 +161,8 @@ class Command(BaseCommand):
     def create_vehicle_location(self, item):
         return VehicleLocation(
             heading=item.vehicle.position.bearing or None,
-            latlong=self.create_point(
-                item.vehicle.position.longitude, item.vehicle.position.latitude
+            latlong=GEOSGeometry(
+                f"POINT({item.vehicle.position.longitude} {item.vehicle.position.latitude})"
             ),
-            occupancy=self.OCCUPANCIES.get(item.vehicle.occupancy_status or None),
+            occupancy=occupancies.get(item.vehicle.occupancy_status or None),
         )

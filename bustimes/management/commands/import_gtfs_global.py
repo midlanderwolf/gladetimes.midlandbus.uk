@@ -1,13 +1,13 @@
 import logging
 from pathlib import Path
 import gtfs_kit
-import pandas as pd
 from shapely.errors import EmptyPartError
 from zipfile import BadZipFile
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand
 from django.db import connection
+from django.db import models as django_models
 from django.db.models import Count, Exists, OuterRef, Q
 from django.db.models.functions import Now
 from django.utils.dateparse import parse_duration
@@ -18,6 +18,7 @@ from ...download_utils import download_if_modified
 from ...utils import log_time_taken
 from ...models import Route, Trip
 from ...gtfs_utils import get_calendars, MODES, do_route_links
+from .gtfs_utils import detect_region_from_feed, ensure_region_exists
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +32,19 @@ class Command(BaseCommand):
         )
         parser.add_argument("collections", nargs="*", type=str)
 
-    def handle_operator(self, line):
+    def handle_operator(self, line, region_id=None):
         agency_id = line.agency_id
-        agency_id = f"ie-{agency_id}"
-
         name = line.agency_name
+
+        # Always ensure NOC is max 10 chars
+        if region_id:
+            # Generate: US-MTAB (region + up to 4 chars from name)
+            import re
+
+            clean_name = re.sub(r"[^A-Za-z0-9]", "", name.upper())[:4]
+            agency_id = f"{region_id}-{clean_name}"
+        # Truncate to max 10 chars
+        agency_id = agency_id[:10]
 
         operator = Operator.objects.filter(
             Q(name__iexact=name) | Q(noc=agency_id)
@@ -43,18 +52,26 @@ class Command(BaseCommand):
 
         if not operator:
             operator = Operator(name=name, noc=agency_id, url=line.agency_url)
+            if region_id:
+                operator.region_id = region_id
             operator.save()
-        elif operator.url != line.agency_url:
-            operator.url = line.agency_url
-            operator.save(update_fields=["url"])
+        else:
+            if region_id and operator.region_id != region_id:
+                operator.region_id = region_id
+                operator.save(update_fields=["region_id"])
+            if operator.url != line.agency_url:
+                operator.url = line.agency_url
+                operator.save(update_fields=["url"])
 
         return operator
 
     def do_stops(self, feed: gtfs_kit.feed.Feed) -> dict[str, StopPoint]:
         stops = {}
         admin_areas = {}
+        # Prefix stop IDs with region code to avoid AdminArea conflicts
+        prefix = f"{self.region_id}-" if self.region_id else ""
         for _, line in feed.stops.iterrows():
-            stop_id = line.stop_id
+            stop_id = f"{prefix}{line.stop_id}"
             stop = StopPoint(
                 atco_code=stop_id,
                 common_name=line.stop_name,
@@ -66,10 +83,10 @@ class Command(BaseCommand):
             if ", stop" in stop.common_name and stop.common_name.count(", ") == 1:
                 stop.common_name, stop.indicator = stop.common_name.split(", ")
             stop.common_name = stop.common_name[:48]
-            stops[stop_id] = stop
+            stops[line.stop_id] = stop  # Use original ID as key for lookups
         existing_stops = StopPoint.objects.only(
             "atco_code", "common_name", "latlong", "source_id"
-        ).in_bulk(stops)
+        ).in_bulk([s.atco_code for s in stops.values()])
 
         stops_to_create = [
             stop for stop in stops.values() if stop.atco_code not in existing_stops
@@ -88,17 +105,44 @@ class Command(BaseCommand):
             stops_to_update, ["common_name", "latlong", "indicator", "source"]
         )
 
+        # Create or get admin area for this region
+        if self.region_id:
+            from .gtfs_utils import get_region_name
+
+            country_name = get_region_name(self.region_id)
+            admin_area = AdminArea.objects.filter(region_id=self.region_id).first()
+            if admin_area is None:
+                max_id = (
+                    AdminArea.objects.aggregate(django_models.Max("id"))["id__max"] or 0
+                )
+                admin_area = AdminArea.objects.create(
+                    id=max_id + 1,
+                    region_id=self.region_id,
+                    name=country_name,
+                    atco_code=self.region_id[:3],
+                )
+                logger.info(
+                    f"Created admin area {admin_area.id} ({country_name}) for region {self.region_id}"
+                )
+            admin_area_id = admin_area.id
+
         for stop in stops_to_create:
-            admin_area_id = stop.atco_code[:3]
-            if admin_area_id not in admin_areas:
-                admin_areas[admin_area_id] = AdminArea.objects.filter(
-                    id=admin_area_id
-                ).exists()
-            if admin_areas[admin_area_id]:
+            if self.region_id:
+                # Assign stops to the region's admin area
                 stop.admin_area_id = admin_area_id
 
         StopPoint.objects.bulk_create(stops_to_create, batch_size=1000)
-        return StopPoint.objects.only("atco_code", "latlong").in_bulk(stops)
+        # Return mapping of original stop_id -> StopPoint for trip lookups
+        # Need to re-fetch stops to get proper IDs
+        all_stop_ids = [stop.atco_code for stop in stops.values()]
+        stop_objects = StopPoint.objects.only("atco_code", "latlong").in_bulk(
+            all_stop_ids
+        )
+        result = {}
+        for original_id, stop in stops.items():
+            if stop.atco_code in stop_objects:
+                result[original_id] = stop_objects[stop.atco_code]
+        return result
 
     def handle_route(self, line):
         line_name = line.route_short_name if type(line.route_short_name) is str else ""
@@ -133,6 +177,8 @@ class Command(BaseCommand):
             logger.warning("unknown route type %s", line)
         service.current = True
         service.source = self.source
+        if self.region_id:
+            service.region_id = self.region_id
         service.save()
 
         if operator:
@@ -156,16 +202,23 @@ class Command(BaseCommand):
         self.routes[line.route_id] = route
         self.route_operators[line.route_id] = operator
 
-    def handle_zipfile(self, path):
+    def handle_zipfile(self, path, region_id=None):
         feed = gtfs_kit.read_feed(path, dist_units="km")
 
+        # Detect region from feed if not provided
+        if not region_id:
+            region_id = detect_region_from_feed(feed)
+            if region_id:
+                ensure_region_exists(region_id)
+
+        self.region_id = region_id
         self.operators = {}
         self.routes = {}
         self.route_operators = {}
         self.services = {}
 
         for agency in feed.agency.itertuples():
-            self.operators[agency.agency_id] = self.handle_operator(agency)
+            self.operators[agency.agency_id] = self.handle_operator(agency, region_id)
 
         for route in feed.routes.itertuples():
             self.handle_route(route)
@@ -187,16 +240,42 @@ class Command(BaseCommand):
         # line as in line in a spreadsheet, not as in the Elizabeth Line
         for line in feed.trips.itertuples():
             route = self.routes[line.route_id]
+
+            # Handle pandas NA values for direction_id
+            direction_id = getattr(line, "direction_id", None)
+            if hasattr(direction_id, "isna") and direction_id.isna():
+                direction_id = 0
+            elif direction_id is None or direction_id == "":
+                direction_id = 0
+            else:
+                direction_id = int(direction_id)
+
+            headsign = getattr(line, "trip_headsign", None)
+            if headsign is not None and hasattr(headsign, "isna") and headsign.isna():
+                headsign = None
+
+            block_id = getattr(line, "block_id", "")
+            if block_id is not None and hasattr(block_id, "isna") and block_id.isna():
+                block_id = ""
+            if block_id == "N/A":
+                block_id = ""
+
+            trip_short_name = getattr(line, "trip_short_name", "")
+            if (
+                trip_short_name is not None
+                and hasattr(trip_short_name, "isna")
+                and trip_short_name.isna()
+            ):
+                trip_short_name = ""
+
             trips[line.trip_id] = Trip(
                 route=route,
                 calendar=calendars[line.service_id],
-                inbound=line.direction_id == 1,
-                headsign=line.trip_headsign,
+                inbound=direction_id == 1,
+                headsign=headsign,
                 ticket_machine_code=line.trip_id,
-                block=""
-                if pd.isna(block_id := getattr(line, "block_id", ""))
-                else block_id,
-                vehicle_journey_code=getattr(line, "trip_short_name", ""),
+                block=block_id,
+                vehicle_journey_code=trip_short_name,
                 operator=self.route_operators[line.route_id],
             )
 
@@ -208,7 +287,10 @@ class Command(BaseCommand):
         for line in feed.stop_times.itertuples():
             if not previous_line or previous_line.trip_id != line.trip_id:
                 if trip:
-                    trip.destination = stops.get(previous_line.stop_id)
+                    # Use original stop_id (key in stops dict)
+                    dest = stops.get(previous_line.stop_id)
+                    if dest:
+                        trip.destination = dest
                     trip.end = previous_line.arrival_time
 
                 trip = trips[line.trip_id]
@@ -218,7 +300,9 @@ class Command(BaseCommand):
 
         if previous_line:
             # last trip:
-            trip.destination = stops.get(line.stop_id)
+            dest = stops.get(line.stop_id)
+            if dest:
+                trip.destination = dest
             trip.end = line.arrival_time
 
         for trip_id in trips:
@@ -241,28 +325,27 @@ class Command(BaseCommand):
             for line in feed.stop_times.itertuples():
                 timing_status = "PTP" if getattr(line, "timepoint", 1) == 1 else "OTH"
 
-                pick_up = None
-                match line.pickup_type:
-                    case 0:  # Regularly scheduled pickup
-                        pick_up = True
-                    case 1:  # "No pickup available"
-                        pick_up = False
+                pick_up = True  # Default: regularly scheduled pickup
+                if getattr(line, "pickup_type", 0) == 1:  # "No pickup available"
+                    pick_up = False
 
-                set_down = None
-                match line.drop_off_type:
-                    case 0:  # Regularly scheduled drop off
-                        set_down = True
-                    case 1:  # "No drop off available"
-                        set_down = False
+                set_down = True  # Default: regularly scheduled drop off
+                if getattr(line, "drop_off_type", 0) == 1:  # "No drop off available"
+                    set_down = False
 
                 departure = int(parse_duration(line.departure_time).total_seconds())
                 arrival = None
                 if line.arrival_time != departure:
                     arrival = int(parse_duration(line.arrival_time).total_seconds())
 
+                # Use prefixed stop_id for all regions
+                if self.region_id:
+                    stop_id = f"{self.region_id}-{line.stop_id}"
+                else:
+                    stop_id = line.stop_id
                 copy.write_row(
                     (
-                        line.stop_id,
+                        stop_id,
                         arrival,
                         departure,
                         line.stop_sequence,
@@ -319,16 +402,33 @@ class Command(BaseCommand):
         )
         old_routes.update(service=None)
 
+        # feed_stops needs to be mapping of stop_id -> object with stop_lon, stop_lat
+        # Use the original feed data (not the StopPoint objects)
         feed_stops = {row.stop_id: row for row in feed.stops.itertuples()}
-        do_route_links(feed, self.source, self.routes, feed_stops)
+
+        # Create stop_codes mapping (original stop_id -> atco_code with prefix)
+        stop_codes = None
+        if self.region_id:
+            # Map original stop_id to atco_code (with region prefix) for RouteLink creation
+            stop_codes = {
+                stop_id: f"{self.region_id}-{stop_id}" for stop_id in stops.keys()
+            }
+
+        do_route_links(feed, self.source, self.routes, feed_stops, stop_codes)
 
     def handle(self, *args, **options):
-        collections = DataSource.objects.filter(
-            url__startswith="https://www.transportforireland.ie/transitData/Data/GTFS_"
-        )
-
         if options["collections"]:
-            collections = collections.filter(name__in=options["collections"])
+            # Filter by name when specific collections are requested
+            collections = DataSource.objects.filter(name__in=options["collections"])
+        else:
+            # Get all GTFS sources (not just Ireland)
+            collections = DataSource.objects.filter(
+                Q(
+                    url__startswith="https://www.transportforireland.ie/transitData/Data/GTFS_"
+                )
+                | Q(url__endswith=".zip")
+                | Q(url__icontains="gtfs")
+            ).distinct()
 
         for source in collections:
             path: Path = settings.DATA_DIR / Path(source.url).name
@@ -341,7 +441,9 @@ class Command(BaseCommand):
                 self.source = source
                 try:
                     with log_time_taken(logger):
-                        self.handle_zipfile(path)
+                        # Determine region from source or data
+                        region_id = getattr(source, "region_id", None)
+                        self.handle_zipfile(path, region_id)
                 except (OSError, BadZipFile) as e:
                     logger.exception(e)
 
