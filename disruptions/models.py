@@ -25,6 +25,7 @@ class Situation(models.Model):
                 "BODS cancellations",
                 "Bus Open Data",
                 "Translink",
+                "Nottingham City Transport",
             )
         },
         default=236,

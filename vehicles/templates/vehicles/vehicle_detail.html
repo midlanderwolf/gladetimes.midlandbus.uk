@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}{{ title }}{% if vehicle.operator %} – {{ vehicle.operator }}{% endif %} – gladetimes{% endblock %}
+{% block title %}{{ title }}{% if vehicle.operator %} – {{ vehicle.operator }}{% endif %} – bustimes.org{% endblock %}
 
 {% block canonical %}
     {% if not vehicle or request.GET.date or potential_duplicates %}
@@ -17,6 +17,7 @@
 
 {{ object.name }}{% endif %}">
         {% with photos=vehicle.photo_set.all %}{% if photos %}
+            <meta name="twitter:card" content="summary_large_image">
             <meta property="og:image" content="{{ photos.0.image_1200_630.url }}">
             <meta property="og:image:width" content="1200">
             <meta property="og:image:height" content="630">
@@ -81,7 +82,12 @@
     {% endif %}
 
     <ul class="tabs">
-        {% if object.id %}<li><a href="{{ object.get_absolute_url }}">Timetable</a></li>{% endif %}
+        {% if object.id %}
+            <li><a href="{{ object.get_absolute_url }}">Timetable</a></li>
+            {% if object.geometry %}
+                <li><a href="{{ object.get_absolute_url }}#map">Map</a></li>
+            {% endif %}
+        {% endif %}
         <li>Vehicles</li>
     </ul>
 {% endif %}
@@ -140,10 +146,10 @@
             <td class="tabular">{% if journey.code|length < 20 %}{{ journey.code }}{% endif %}</td>
             {% if journey.trip_id %}
                 <td class="link tabular">
-                    <a href="{% if journey.locations is not False %}#journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.datetime|time:"H:i" }}</a>
+                    <a href="{% if journey.locations is not False %}#journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.datetime|time:"H:i" }}{% if journey.datetime.date > date %}⁺¹{% endif %}</a>
                 </td>
             {% else %}
-                <td class="tabular">{{ journey.datetime|time:"H:i" }}</td>
+                <td class="tabular">{{ journey.datetime|time:"H:i" }}{% if journey.datetime.date > date %}⁺¹{% endif %}</td>
             {% endif %}
             <td>{% firstof journey.destination journey.direction %}</td>
             {% if journey.locations is not False %}
@@ -215,7 +221,9 @@
 
 {% block foot %}
     {% if journeys or date %}
-        <script>{% if vehicle %}VEHICLE_ID{% else %}SERVICE_ID{% endif %} = {{ object.id }};{% if not vehicle %}LIVERIES_CSS_URL = "/liveries.{{ liveries_css_version }}.css";{% endif %}
+        <script>
+            {% if vehicle %}VEHICLE_ID{% else %}SERVICE_ID{% endif %} = {{ object.id }};
+            {% if not vehicle %}LIVERIES_CSS_URL = "/liveries.{{ liveries_css_version }}.css";{% endif %}
         </script>
         <link rel="stylesheet" href="{% static 'dist/js/app.css' %}">
         <script async src="{% static 'dist/js/app.js' %}"></script>

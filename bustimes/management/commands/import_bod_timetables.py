@@ -38,7 +38,7 @@ def clean_up(timetable_data_source, current_sources, incomplete=False):
         ).exists():
             logger.warning(
                 f"""{timetable_data_source} has no current data
-https://bustimes.org/admin/busstops/service/?route__source__source={timetable_data_source.id}"""
+https://gladetimes.midlandbus.uk/admin/busstops/service/?route__source__source={timetable_data_source.id}"""
             )
         return
 
