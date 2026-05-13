@@ -26,6 +26,7 @@ class Situation(models.Model):
                 "Bus Open Data",
                 "Translink",
                 "Nottingham City Transport",
+                "Intalink",
             )
         },
         default=236,
