@@ -159,7 +159,7 @@ def tfl_disruptions():
             situations.add(situation.id)
 
     response = session.get(
-        "https://api.tfl.gov.uk/Line/Mode/bus/Status",
+        "https://api.tfl.gov.uk/Line/Mode/bus,river-bus,tram,cable-car/Status",
         params=settings.TFL,
         timeout=30,
     )

@@ -381,7 +381,7 @@ interactions:
       User-Agent:
       - python-requests/2.28.1
     method: GET
-    uri: https://api.tfl.gov.uk/Line/Mode/bus/Status
+    uri: https://api.tfl.gov.uk/Line/Mode/bus,river-bus,tram,cable-car/Status
   response:
     body:
       string: "[{\"$type\":\"Tfl.Api.Presentation.Entities.Line, Tfl.Api.Presentation.Entities\",\"id\":\"1\",\"name\":\"1\",\"modeName\":\"bus\",\"disruptions\":[],\"created\":\"2022-11-29T14:31:06.777Z\",\"modified\":\"2022-11-29T14:31:06.777Z\",\"lineStatuses\":[{\"$type\":\"Tfl.Api.Presentation.Entities.LineStatus,
