@@ -38,17 +38,17 @@ occupancies = {
 def get_destination_ref(destination_ref: str) -> str | None:
     destination_ref = destination_ref.removeprefix("NT")  # Nottingham City Transport
 
-    if (
-        " " in destination_ref
-        or len(destination_ref) < 4
-        or not destination_ref[:4].isdigit()
-        or destination_ref[:3] == "000"
-        or destination_ref[:3] == "999"
-        or destination_ref[:3] == "980"
-        or destination_ref[:3] == "900"
-    ):
-        # destination ref is not in the expected ATCO code format - maybe a postcode or other placeholder
-        return
+    # if (
+    #     " " in destination_ref
+    #     or len(destination_ref) < 4
+    #     or not destination_ref[:4].isdigit()
+    #     or destination_ref[:3] == "000"
+    #     or destination_ref[:3] == "999"
+    #     or destination_ref[:3] == "980"
+    #     or destination_ref[:3] == "900"
+    # ):
+    #     # destination ref is not in the expected ATCO code format - maybe a postcode or other placeholder
+    #     return
 
     return destination_ref
 

@@ -21,13 +21,17 @@ TEST = "test" in sys.argv or "pytest" in sys.argv[0]
 DEBUG = bool(os.environ.get("DEBUG", False))
 DEBUG = False
 
-DEFAULT_FROM_EMAIL = '"bustimes.org" <bustimes.org@bustimes.org>'
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL",
+    '"bustimes.org" <bustimes.org@bustimes.org>',
+)
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-EMAIL_PORT = 465
-EMAIL_USE_SSL = True
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() in {"1", "true", "yes"}
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in {"1", "true", "yes"}
 EMAIL_TIMEOUT = 10
 if TEST:
     EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
@@ -350,4 +354,4 @@ STADIA_MAPS_API_KEY = os.environ.get("STADIA_MAPS_API_KEY")
 TURNSTILE_SITEKEY = os.environ.get("TURNSTILE_SITEKEY", "0x4AAAAAAAFWiyCqdh2c-5sy")
 TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET")
 
-ABBREVIATE_HOURLY = False  # we override this in some tests, that's all
+ABBREVIATE_HOURLY = True  # we override this in some tests, that's all

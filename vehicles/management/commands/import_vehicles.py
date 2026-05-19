@@ -6,6 +6,9 @@ from busstops.models import Operator, DataSource
 from ...models import VehicleType, Livery, VehicleFeature, Vehicle
 
 
+SPARE_TICKET_MACHINE_NOTES = "Spare ticket machine"
+
+
 def normalize_fleet_number(fleet_number):
     """Normalize fleet number by capitalizing letters and extracting from combined codes"""
     if not fleet_number:
@@ -145,6 +148,9 @@ class Command(BaseCommand):
 
         for vehicle_data in data["results"]:
             if ignore_withdrawn and vehicle_data.get("withdrawn"):
+                continue
+
+            if vehicle_data.get("notes") == SPARE_TICKET_MACHINE_NOTES:
                 continue
 
             # Vehicle type
