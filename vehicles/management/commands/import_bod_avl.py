@@ -1,5 +1,6 @@
 import functools
 import io
+import re
 import zipfile
 from datetime import timedelta
 
@@ -15,7 +16,6 @@ from django.utils import timezone
 from django.utils.dateparse import parse_duration
 
 from busstops.models import (
-    Locality,
     Operator,
     OperatorCode,
     Service,
@@ -56,15 +56,36 @@ def get_destination_ref(destination_ref: str) -> str | None:
 @functools.cache
 def get_destination_name(destination_ref: str) -> str:
     try:
-        return Locality.objects.get(stoppoint=destination_ref).name
-    except Locality.DoesNotExist:
+        stop = StopPoint.objects.select_related("locality").get(
+            atco_code=destination_ref
+        )
+    except StopPoint.DoesNotExist:
         if (
             destination_ref.isdigit()
             and destination_ref[0:1] != "0"
             and destination_ref[2:3] == "0"
         ):
             return get_destination_name(f"0{destination_ref}")
-    return ""
+        return ""
+
+    name_parts = []
+    locality_name = stop.locality.name if stop.locality else ""
+    if stop.common_name:
+        stop_name = re.sub(
+            r"\s*\((?:bay|stand|stance|stop)\s+[^)]*\)\s*$",
+            "",
+            stop.common_name,
+            flags=re.IGNORECASE,
+        )
+        if locality_name and locality_name.lower() in stop_name.lower():
+            return stop_name
+        if locality_name:
+            name_parts.append(locality_name)
+        if stop_name:
+            name_parts.append(stop_name)
+    elif locality_name:
+        name_parts.append(locality_name)
+    return ", ".join(name_parts)
 
 
 def get_line_name_query(line_ref: str) -> Q:
@@ -288,10 +309,11 @@ class Command(ImportLiveVehiclesCommand):
             if (
                 destination_ref.isdigit()
                 and destination_ref[0] != "0"
+                and len(destination_ref) > 3
                 and destination_ref[3] == "0"
             ):
                 atco_code__startswith |= Q(
-                    atco_code__startswith=f"0{destination_ref}[:3]"
+                    atco_code__startswith=f"0{destination_ref[:3]}"
                 )
 
             stops = StopPoint.objects.filter(
