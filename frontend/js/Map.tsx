@@ -39,7 +39,7 @@ const imagesByName: { [imageName: string]: string } = {
 const mapStyles: { [key: string]: string } = {
   light: "Light",
   dark: "Dark",
-  satellite: "Satellite",
+  // satellite: "Satellite",
 };
 
 type StyleSwitcherProps = {
@@ -207,7 +207,7 @@ export default function BusTimesMap(
   const fluffynetUrls: { [key: string]: string } = {
     light: "https://maps.fluffynet.dev/styles/glade-light/style.json",
     dark: "https://maps.fluffynet.dev/styles/glade-dark/style.json",
-    satellite: "https://maps.fluffynet.dev/styles/satellite/style.json",
+    // satellite: "https://maps.fluffynet.dev/styles/satellite/style.json",
   };
   const mapStyleURL = fluffynetUrls[mapStyle];
 

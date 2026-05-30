@@ -14,8 +14,3 @@ intalink_disruptions_task = db_periodic_task(crontab(minute="*/6"))(
 mcgills_disruptions_task = db_periodic_task(crontab(minute="*/6"))(
     mcgills.mcgills_disruptions
 )
-nctx_disruptions_task = db_periodic_task(crontab(minute="*/6"))(nctx.nctx_disruptions)
-intalink_disruptions_task = db_periodic_task(crontab(minute="*/6"))(
-    intalink.intalink_disruptions
-)
-nctx_disruptions_task = db_periodic_task(crontab(minute="*/6"))(nctx.nctx_disruptions)

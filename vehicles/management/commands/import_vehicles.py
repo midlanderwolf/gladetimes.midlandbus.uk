@@ -136,104 +136,111 @@ class Command(BaseCommand):
             f"?format=json&limit=9999&operator={operator.noc}"
         )
 
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-        except requests.RequestException as e:
-            raise CommandError(f"Failed to fetch data from API: {e}")
-
         created_count = 0
         updated_count = 0
 
-        for vehicle_data in data["results"]:
-            if ignore_withdrawn and vehicle_data.get("withdrawn"):
-                continue
+        while url:
+            try:
+                response = requests.get(url)
+                response.raise_for_status()
+                data = response.json()
+            except requests.RequestException as e:
+                raise CommandError(f"Failed to fetch data from API: {e}")
 
-            if vehicle_data.get("notes") == SPARE_TICKET_MACHINE_NOTES:
-                continue
+            for vehicle_data in data["results"]:
+                if ignore_withdrawn and vehicle_data.get("withdrawn"):
+                    continue
 
-            # Vehicle type
-            vehicle_type = None
-            if vehicle_data.get("vehicle_type"):
-                vehicle_type, _ = VehicleType.objects.get_or_create(
-                    id=vehicle_data["vehicle_type"]["id"],
-                    defaults={
-                        "name": vehicle_data["vehicle_type"]["name"],
-                        "style": vehicle_data["vehicle_type"]["style"],
-                        "fuel": vehicle_data["vehicle_type"]["fuel"],
-                    },
-                )
+                if vehicle_data.get("notes") == SPARE_TICKET_MACHINE_NOTES:
+                    continue
 
-            # Livery (ID-based)
-            livery = None
-            livery_data = vehicle_data.get("livery")
-            if livery_data and livery_data.get("id"):
-                livery, _ = Livery.objects.get_or_create(
-                    id=livery_data["id"],
-                    defaults={"name": livery_data.get("name", "")},
-                )
+                # Vehicle type
+                vehicle_type = None
+                if vehicle_data.get("vehicle_type"):
+                    vehicle_type, _ = VehicleType.objects.get_or_create(
+                        id=vehicle_data["vehicle_type"]["id"],
+                        defaults={
+                            "name": vehicle_data["vehicle_type"]["name"],
+                            "style": vehicle_data["vehicle_type"]["style"],
+                            "fuel": vehicle_data["vehicle_type"]["fuel"],
+                        },
+                    )
 
-            # Determine vehicle code
-            if use_reg and vehicle_data.get("reg"):
-                code = normalize_registration(vehicle_data["reg"], tmsb_format)
-            elif tmsb_format:
-                slug = vehicle_data.get("slug", "")
-                if slug and slug.startswith("tmsb-"):
-                    slug_parts = slug.split("-")
-                    if len(slug_parts) >= 4:
-                        reg_part = "-".join(slug_parts[1:])
-                        code = normalize_registration(reg_part, tmsb_format)
-                    elif vehicle_data.get("reg"):
-                        code = normalize_registration(vehicle_data["reg"], tmsb_format)
+                # Livery (ID-based)
+                livery = None
+                livery_data = vehicle_data.get("livery")
+                if livery_data and livery_data.get("id"):
+                    livery, _ = Livery.objects.get_or_create(
+                        id=livery_data["id"],
+                        defaults={"name": livery_data.get("name", "")},
+                    )
+
+                # Determine vehicle code
+                if use_reg and vehicle_data.get("reg"):
+                    code = normalize_registration(vehicle_data["reg"], tmsb_format)
+                elif tmsb_format:
+                    slug = vehicle_data.get("slug", "")
+                    if slug and slug.startswith("tmsb-"):
+                        slug_parts = slug.split("-")
+                        if len(slug_parts) >= 4:
+                            reg_part = "-".join(slug_parts[1:])
+                            code = normalize_registration(reg_part, tmsb_format)
+                        elif vehicle_data.get("reg"):
+                            code = normalize_registration(
+                                vehicle_data["reg"], tmsb_format
+                            )
+                        else:
+                            code = normalize_slug(slug)
                     else:
                         code = normalize_slug(slug)
+                elif vehicle_data.get("fleet_number"):
+                    code = normalize_fleet_number(vehicle_data["fleet_number"])
                 else:
-                    code = normalize_slug(slug)
-            elif vehicle_data.get("fleet_number"):
-                code = normalize_fleet_number(vehicle_data["fleet_number"])
-            else:
-                code = normalize_slug(vehicle_data.get("slug"))
+                    code = normalize_slug(vehicle_data.get("slug"))
 
-            defaults = {
-                "code": code,
-                "fleet_number": normalize_fleet_number(vehicle_data.get("fleet_number"))
-                if vehicle_data.get("fleet_number")
-                else None,
-                "fleet_code": vehicle_data.get("fleet_code"),
-                "reg": normalize_registration(vehicle_data.get("reg"), tmsb_format)
-                if vehicle_data.get("reg")
-                else "",
-                "operator": operator,
-                "source": source,
-                "vehicle_type": vehicle_type,
-                "livery": livery,
-                "name": vehicle_data.get("name", ""),
-                "branding": vehicle_data.get("branding", ""),
-                "notes": vehicle_data.get("notes", ""),
-                "withdrawn": vehicle_data.get("withdrawn", False),
-            }
+                defaults = {
+                    "code": code,
+                    "fleet_number": normalize_fleet_number(
+                        vehicle_data.get("fleet_number")
+                    )
+                    if vehicle_data.get("fleet_number")
+                    else None,
+                    "fleet_code": vehicle_data.get("fleet_code"),
+                    "reg": normalize_registration(vehicle_data.get("reg"), tmsb_format)
+                    if vehicle_data.get("reg")
+                    else "",
+                    "operator": operator,
+                    "source": source,
+                    "vehicle_type": vehicle_type,
+                    "livery": livery,
+                    "name": vehicle_data.get("name", ""),
+                    "branding": vehicle_data.get("branding", ""),
+                    "notes": vehicle_data.get("notes", ""),
+                    "withdrawn": vehicle_data.get("withdrawn", False),
+                }
 
-            # Features (API can return null)
-            features = []
-            special_features = vehicle_data.get("special_features") or []
+                # Features (API can return null)
+                features = []
+                special_features = vehicle_data.get("special_features") or []
 
-            for feature_name in special_features:
-                feature, _ = VehicleFeature.objects.get_or_create(name=feature_name)
-                features.append(feature)
+                for feature_name in special_features:
+                    feature, _ = VehicleFeature.objects.get_or_create(name=feature_name)
+                    features.append(feature)
 
-            try:
-                vehicle = Vehicle.objects.get(operator=operator, code__iexact=code)
-                for key, value in defaults.items():
-                    setattr(vehicle, key, value)
-                vehicle.save()
-                updated_count += 1
-            except Vehicle.DoesNotExist:
-                vehicle = Vehicle.objects.create(**defaults)
-                created_count += 1
+                try:
+                    vehicle = Vehicle.objects.get(operator=operator, code__iexact=code)
+                    for key, value in defaults.items():
+                        setattr(vehicle, key, value)
+                    vehicle.save()
+                    updated_count += 1
+                except Vehicle.DoesNotExist:
+                    vehicle = Vehicle.objects.create(**defaults)
+                    created_count += 1
 
-            if features:
-                vehicle.features.set(features)
+                if features:
+                    vehicle.features.set(features)
+
+            url = data.get("next")
 
         self.stdout.write(
             f"Vehicles for {operator.noc}: "

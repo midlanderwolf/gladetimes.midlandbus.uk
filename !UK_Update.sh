@@ -1,18 +1,18 @@
 # docker compose exec web uv run ./manage.py
 
-# echo "Downloading NCSD.zip"
-# cd /root/bustimes.org/data/TNDS
-# wget https://coach.bus-data.dft.gov.uk/TxC-2.4.zip
-# mv TxC-2.4.zip NCSD.zip
-# echo "NCSD.zip download complete"
+echo "Downloading NCSD.zip"
+cd /root/bustimes.org/data/TNDS
+wget https://coach.bus-data.dft.gov.uk/TxC-2.4.zip
+mv TxC-2.4.zip NCSD.zip
+echo "NCSD.zip download complete"
 
-# echo "Downloading L.zip"
-# cd /root/bustimes.org/data/London
-# wget https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip
-# mv journey-planner-timetables.zip L.zip
-# echo "L.zip download complete"
-# docker compose exec web uv run ./manage.py import_transxchange data/TNDS/L.zip
-# echo "TfL import complete"
+echo "Downloading L.zip"
+cd /root/bustimes.org/data/London
+wget https://tfl.gov.uk/tfl/syndication/feeds/journey-planner-timetables.zip
+mv journey-planner-timetables.zip L.zip
+echo "L.zip download complete"
+docker compose exec web uv run ./manage.py import_transxchange data/TNDS/L.zip
+echo "TfL import complete"
 
 
 cd /root/bustimes.org
