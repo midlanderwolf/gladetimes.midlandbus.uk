@@ -253,13 +253,17 @@ def snap(request, trip_id=None, journey_id=None):
 def maybe_download_file(local_path, s3_key):
     if not local_path.exists():
         import boto3
+        from botocore.exceptions import NoCredentialsError, ClientError
 
         if not local_path.parent.exists():
             local_path.parent.mkdir(parents=True)
         client = boto3.client("s3", endpoint_url="https://ams3.digitaloceanspaces.com")
-        client.download_file(
-            Bucket="bustimes-data", Key=s3_key, Filename=str(local_path)
-        )
+        try:
+            client.download_file(
+                Bucket="bustimes-data", Key=s3_key, Filename=str(local_path)
+            )
+        except (NoCredentialsError, ClientError):
+            pass
 
 
 class SourceListView(ListView):
@@ -305,27 +309,36 @@ def route_xml(request, source, code=""):
         raise Http404
 
     if source.is_tnds():
-        filename = Path(source.url).name
+        if source.url:
+            filename = Path(source.url).name
+        else:
+            filename = f"{source.name.lower()}.zip"
+        if not filename or filename == ".":
+            filename = f"{source.name.lower()}.zip"
         path = settings.DATA_DIR / "TNDS" / filename
         maybe_download_file(path, source.get_s3_path())
-        with zipfile.ZipFile(path) as archive:
-            if code:
-                if code.endswith(".zip"):
-                    archive = zipfile.ZipFile(archive.open(code))
-                    code = ""
+        if path.exists():
+            with zipfile.ZipFile(path) as archive:
+                if code:
+                    if code.endswith(".zip"):
+                        archive = zipfile.ZipFile(archive.open(code))
+                        code = ""
 
-                elif ".zip/" in code:
-                    sub_archive, code = code.split("/", 1)
-                    archive = zipfile.ZipFile(archive.open(sub_archive))
+                    elif ".zip/" in code:
+                        sub_archive, code = code.split("/", 1)
+                        archive = zipfile.ZipFile(archive.open(sub_archive))
 
-            if code:
-                try:
-                    return FileResponse(archive.open(code), content_type="text/plain")
-                except KeyError as e:
-                    raise Http404(e)
-            return HttpResponse(
-                "\n".join(archive.namelist()), content_type="text/plain"
-            )
+                if code:
+                    try:
+                        return FileResponse(
+                            archive.open(code), content_type="text/plain"
+                        )
+                    except KeyError as e:
+                        raise Http404(e)
+                return HttpResponse(
+                    "\n".join(archive.namelist()), content_type="text/plain"
+                )
+        raise Http404
 
     content_type = "application/xml"
 
