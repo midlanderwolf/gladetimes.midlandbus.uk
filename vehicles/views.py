@@ -1318,8 +1318,11 @@ def overland(request, uuid):
     for item in data["locations"][-1:]:
         when = item["properties"]["timestamp"]
         device_id = item["properties"]["device_id"]
-        operator, vehicle, line_name, journey_ref = device_id.split(":")
+        course = item["properties"].get("course")
+
+        operator, vehicle, line_name, journey_ref, destination = device_id.split(":")
         lon, lat = item["geometry"]["coordinates"]
+
         activity = {
             "RecordedAtTime": when,
             "MonitoredVehicleJourney": {
@@ -1327,10 +1330,13 @@ def overland(request, uuid):
                 "VehicleRef": vehicle,
                 "PublishedLineName": line_name,
                 "VehicleJourneyRef": journey_ref,
+                "DestinationName": destination,
+                "DestinationRef": destination,
                 "VehicleLocation": {
                     "Longitude": lon,
                     "Latitude": lat,
                 },
+                "Bearing": course,
             },
         }
 
@@ -1356,5 +1362,3 @@ def overland(request, uuid):
 
     # https://github.com/aaronpk/Overland-iOS#api
     return JsonResponse({"result": "ok"})
-
-    
