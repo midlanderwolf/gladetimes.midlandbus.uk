@@ -39,7 +39,7 @@ const imagesByName: { [imageName: string]: string } = {
 const mapStyles: { [key: string]: string } = {
   light: "Light",
   dark: "Dark",
-  // satellite: "Satellite",
+  satellite: "Satellite",
 };
 
 type StyleSwitcherProps = {
