@@ -65,8 +65,7 @@ class Command(BaseCommand):
         return variations_dict
 
     def handle_region(self, region: str) -> None:
-        lics = Licence.objects.filter(traffic_area=region)
-        lics = lics.in_bulk(field_name="licence_number")
+        lics = Licence.objects.in_bulk(field_name="licence_number")
         lics_to_update = set()
         lics_to_create = []
 
@@ -124,9 +123,7 @@ class Command(BaseCommand):
                     print(licence.address, line["Address"])
                 licence.address = line["Address"]
 
-            if licence.traffic_area:
-                assert licence.traffic_area == line["Current Traffic Area"]
-            else:
+            if licence.traffic_area != line["Current Traffic Area"]:
                 licence.traffic_area = line["Current Traffic Area"]
 
             licence.discs = line["Discs in Possession"] or None

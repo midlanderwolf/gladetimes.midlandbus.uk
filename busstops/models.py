@@ -999,29 +999,29 @@ class Service(models.Model):
 
         stop_times = StopTime.objects.filter(
             trip__route__service=self, stop__isnull=False
-        )
-        stop_times = stop_times.distinct(
-            "trip__inbound", "trip__route__line_name", "stop_id"
-        ).order_by()
-        stop_times = stop_times.values(
+        ).values(
             "trip__route__line_name",
             "trip__inbound",
             "sequence",
             "id",
             "stop_id",
             "timing_status",
-        )
-        stop_usages = [
-            (
-                st["trip__route__line_name"],
-                st["trip__inbound"],
-                st["sequence"] or 0,
-                st["id"],
-                st["stop_id"],
-                st["timing_status"],
-            )
-            for st in stop_times
-        ]
+        ).iterator()
+
+        seen = set()
+        stop_usages = []
+        for st in stop_times:
+            key = (st["trip__inbound"], st["trip__route__line_name"], st["stop_id"])
+            if key not in seen:
+                seen.add(key)
+                stop_usages.append((
+                    st["trip__route__line_name"],
+                    st["trip__inbound"],
+                    st["sequence"] or 0,
+                    st["id"],
+                    st["stop_id"],
+                    st["timing_status"],
+                ))
         stop_usages.sort()
 
         proposed = [
