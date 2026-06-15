@@ -607,9 +607,10 @@ class Command(BaseCommand):
 
             def add(base: str, origin: str, data: bytes) -> None:
                 if base in seen:
-                    raise CommandError(
+                    logger.warning(
                         f"duplicate basename {base!r}: {seen[base]} and {origin}"
                     )
+                    return
                 seen[base] = origin
                 flat.writestr(base, data)
 

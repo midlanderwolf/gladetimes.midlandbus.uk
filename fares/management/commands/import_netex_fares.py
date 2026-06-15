@@ -115,10 +115,26 @@ class Command(BaseCommand):
     base_url = "https://data.bus-data.dft.gov.uk"
 
     def handle_file(self, source, open_file, filename=None):
+        if hasattr(open_file, "read"):
+            data = open_file.read()
+            if isinstance(data, bytes):
+                if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                    data = data.decode("utf-16").encode("utf-8")
+                elif data[:3] == b"\xef\xbb\xbf":
+                    data = data[3:]
+                elif not data.strip():
+                    return
+            open_file = io.BytesIO(data) if isinstance(data, bytes) else io.StringIO(data)
+        elif isinstance(open_file, bytes) and open_file[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            open_file = io.BytesIO(open_file.decode("utf-16").encode("utf-8"))
+
         iterator = ET.iterparse(open_file)
 
         if not filename:
-            filename = open_file.name
+            try:
+                filename = open_file.name
+            except AttributeError:
+                pass
 
         try:
             for _, element in iterator:
@@ -530,7 +546,7 @@ class Command(BaseCommand):
             for filename in archive.namelist():
                 if filename in filenames:
                     logger.warn(f"duplicate filename {filename} in {archive}")
-                else:
+                elif filename.endswith(".xml"):
                     self.handle_file(dataset, archive.open(filename), filename)
                     filenames.add(filename)
 
@@ -571,12 +587,11 @@ class Command(BaseCommand):
             self.fare_products = {}
             self.fare_zones = get_existing_fare_zones(dataset)
 
-            if (
-                content_type := response.headers["Content-Type"]
-            ) == "text/xml" or content_type == "application/xml":
-                # maybe not fully RFC 6266 compliant
-                filename = filename_from_content_disposition(response)
-                self.handle_file(dataset, response.raw, filename)
+                if (
+                    content_type := response.headers["Content-Type"]
+                ) == "text/xml" or content_type == "application/xml":
+                    filename = filename_from_content_disposition(response)
+                    self.handle_file(dataset, io.BytesIO(response.content), filename)
             else:
                 assert content_type == "application/zip"
                 try:

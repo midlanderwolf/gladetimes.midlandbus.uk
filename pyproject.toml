@@ -49,6 +49,7 @@ dependencies = [
     "django-imagekit>=6.1.0",
     "django-storages>=1.14.6",
     "transxchange-parser",
+    "certifi>=2026.5.20",
 ]
 
 [dependency-groups]
