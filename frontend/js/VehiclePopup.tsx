@@ -3,7 +3,6 @@ import { Popup, type PopupEvent } from "react-map-gl/maplibre";
 import TimeAgo from "react-timeago";
 import { Link } from "wouter";
 import type { Vehicle } from "./VehicleMarker";
-import { now } from "./clockSkew";
 
 function getTimeDelta(seconds: number) {
   const minutes = Math.round(seconds / 60);
@@ -60,7 +59,15 @@ export default function VehiclePopup({
     line_name += item.destination;
   }
 
-  if (item.journey_id) {
+  if (item.trip_id) {
+    if (!activeLink) {
+      if (snazzyTripLink) {
+        line_name = <Link href={`/trips/${item.trip_id}`}>{line_name}</Link>;
+      } else {
+        line_name = <a href={`/trips/${item.trip_id}`}>{line_name}</a>;
+      }
+    }
+  } else if (item.journey_id) {
     if (!activeLink) {
       if (snazzyTripLink) {
         line_name = (
@@ -145,7 +152,7 @@ export default function VehiclePopup({
       )}
       <Delay item={item} />
       <div>
-        <TimeAgo date={item.datetime} now={now} key={item.datetime} />
+        <TimeAgo date={item.datetime} key={item.datetime} />
       </div>
     </Popup>
   );

@@ -3,17 +3,14 @@
 /*jslint
     browser: true
 */
+/*global
+    STOP_CODE
+*/
 
 (function() {
     if (!window.fetch) {
         return;
     }
-
-    var pathMatch = window.location.pathname.match(/^\/(stops|stations)\/([^/]+)/);
-    if (!pathMatch) {
-        return;
-    }
-    var basePath = '/' + pathMatch[1] + '/' + pathMatch[2];
 
     var search = window.location.search,
         now;
@@ -38,7 +35,7 @@
 
         departures.classList.add('loading');
 
-        fetch(basePath + '/departures' + newSearch).then(function(response) {
+        fetch('/stops/' + STOP_CODE + '/departures' + newSearch).then(function(response) {
             if (response.ok) {
                 response.text().then(function(text) {
                     departures.outerHTML = text;
@@ -51,7 +48,7 @@
                         if (newSearch) {
                             history.pushState(null, "", newSearch);
                         } else {
-                            history.pushState(null, "", basePath);
+                            history.pushState(null, "", '/stops/' + STOP_CODE);
                         }
                     }
                 });

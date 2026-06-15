@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}{{ object }} – {% if operators %}{{ operators.0 }} – {% endif %}Bus Times{% endblock %}
+{% block title %}{{ object }} – {% if operators %}{{ operators.0 }} – {% endif %}gladetimes{% endblock %}
 
 {% block head %}
     <meta property="og:title" content="{{ object }}">
@@ -51,7 +51,7 @@
     {% endif %}
 </p>
 
-{% if object.actual_public_use is false %}
+{% if object.public_use is false %}
     <p>🧑‍🎓 This may be a “closed-door” school or works service, not open to the public</p>
 {% endif %}
 
@@ -124,7 +124,7 @@
     {% include 'operator-contact-details.html' %}
 {% endfor %}
 
-{% if object.actual_public_use is not false and payment_methods %}
+{% if object.public_use is not false and payment_methods %}
     <p>
         {% for method in payment_methods %}
             {% if not loop.first %}{% if loop.last %} or {% else %}, {% endif %}{% endif %}{% if method.url %}<a href="{{ method.url }}">{% endif %}
@@ -144,15 +144,13 @@
     <script>
         SERVICE_ID = {{ object.id }};
         EXTENT = [{{ object.geometry.extent|join(",") }}];
-        LIVERIES_CSS_URL  = "/liveries.{{ liveries_css_version() }}.css";
-    {% if related %}
+        LIVERIES_CSS_URL  = "/liveries.{{ liveries_css_version() }}.css";{% if related %}
         SERVICES = [
             {"id": {{ object.id }}, "line_names": {{ object.line_names|tojson }}},
         {% for service in related %}
             {"id": {{ service.id }}, "line_names": {{ service.line_names|tojson }}},
         {% endfor %}
-        ];
-    {% endif %}
+        ];{% endif %}
     </script>
     <script async src="{{ static('dist/js/app.js') }}"></script>
     {% else %}

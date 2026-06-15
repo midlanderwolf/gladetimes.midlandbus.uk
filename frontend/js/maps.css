@@ -64,10 +64,6 @@
   z-index: 1;
 }
 
-.maplibregl-popup.location-popup {
-  pointer-events: none;
-}
-
 body .maplibregl-popup-content {
   border-radius: 6px;
 }
@@ -226,4 +222,20 @@ body.dark-mode .maplibregl-ctrl-group,
 
 .map-style-switcher input {
   margin-left: 0;
+}
+
+.big-map .maplibregl-ctrl-bottom-right,
+.service-map .maplibregl-ctrl-bottom-right {
+  bottom: 100px;
+}
+
+@media screen and (min-width: 48em) {
+  .has-sidebar .maplibregl-ctrl-bottom-right {
+    bottom: 100px;
+  }
+}
+
+.has-sidebar .maplibregl-ctrl-bottom-right,
+.no-ads .maplibregl-ctrl-bottom-right {
+  bottom: 0;
 }

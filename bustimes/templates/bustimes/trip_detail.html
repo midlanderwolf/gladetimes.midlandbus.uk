@@ -1,6 +1,6 @@
 {% extends 'map.html' %}
 
-{% block title %}{{ object.route.line_name }} – {{ object.operator }} – bustimes.org{% endblock %}
+{% block title %}{{ object.route.line_name }} – {{ object.operator }} – gladetimes{% endblock %}
 
 {% block canonical %}<meta name="robots" content="noindex,noarchive">{% endblock %}
 
@@ -10,19 +10,6 @@
     <link rel="stylesheet" href="{% static 'dist/js/app.css' %}">
     <link rel="stylesheet" media="print" href="/liveries.{{ liveries_css_version }}.css" onload="this.onload=null;this.removeAttribute('media')">
 {% endblock head %}
-
-{% block content %}
-    <div id="hugemap">
-        <noscript class="sorry">
-            <p>Sorry, the map requires JavaScript.
-            You can still use most of the rest of the website.</p>
-
-            {% if object.route.service.current %}
-                <p><a href="{{ object.route.service.get_absolute_url }}">{{ object.route.line_name }} timetable</a></p>
-            {% endif %}
-        </noscript>
-    </div>
-{% endblock content %}
 
 {% block footer %}
     <script id="trip-data" type="application/json">{{ stops_json }}</script>

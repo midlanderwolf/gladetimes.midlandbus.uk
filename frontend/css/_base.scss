@@ -1,9 +1,9 @@
 @charset "UTF-8";
 
 :root {
-    --brand-color: #ffff9e;
-    --brand-color-darker: #de8;
-    --brand-color-darker-darker: #cd7;
+    --brand-color: #6b5a88;
+    --brand-color-darker: #340756;
+    --brand-color-darker-darker: #270641;
     --border-color: var(--brand-color-darker);
     --border-color-darker: var(--brand-color-darker-darker);
 
@@ -11,31 +11,33 @@
     --white: #fff;
     --red: #f00;
 
-    --background-color: var(--white);
-    --text-color: #222;
+    --background-color: #f0edf4;
+    --text-color: #111;
 
-    --link-color: #54c;
+    --link-color: #340756;
     --active-link-color: var(--black);
     --summary-marker-color: var(--border-color);
+    --header-text-color: #fff;
 
     color-scheme: light;
 }
 
 .dark-mode {
-    --brand-color: #444;
-    --brand-color-darker: #555;
-    --brand-color-darker-darker: #666;
+    --brand-color: #270641;
+    --brand-color-darker: #340756;
+    --brand-color-darker-darker: #4a3d68;
 
-    --border-color: #444;
-    --border-color-darker: #555;
+    --border-color: #555;
+    --border-color-darker: #666;
 
-    --background-color: #222;
-    --text-color: #fff;
+    --background-color: #120419;
+    --text-color: #f0f0f0;
 
-    --link-color: #E4BFFF;
-    --active-link-color: #fff;
+    --link-color: #C245D2;
+    --active-link-color: #f0f0f0;
 
-    --summary-marker-color: #eee;
+    --summary-marker-color: #ccc;
+    --header-text-color: #fff;
 
     color-scheme: dark;
 }
@@ -43,7 +45,7 @@
 body {
     background: var(--background-color);
     color: var(--text-color);
-    font-family:-apple-system,BlinkMacSystemFont,Aptos,"Segoe UI Variable","Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-family:"Filson Pro";
     font-size: 16px;
     line-height: 1.5;
     margin: 0;
@@ -65,10 +67,6 @@ code,
 pre {
     font-size: 14px;
     font-family: ui-monospace, Monaco, Consolas, monospace;
-}
-
-pre {
-    white-space: pre-wrap;
 }
 
 header,
@@ -280,6 +278,12 @@ h1 {
         url("../CharlesWright-Bold.woff") format("woff");
 }
 
+@font-face {
+    font-family: "Filson Pro";
+    src:  url("../FilsonProRegular.woff2") format("woff2"),
+         url("../FilsonProRegular.woff") format("woff");
+}
+
 .reg {
     font-family: "Charles Wright";
     text-align: center;
@@ -439,7 +443,6 @@ form p select {
 .loading,
 .htmx-request {
     opacity: .5;
-    transition: opacity .2s;
 
     &,
     & a {
@@ -747,13 +750,6 @@ table {
     margin-right: .75em;
 }
 
-#skew {
-    font-size: 10px;
-    position: absolute;
-    top: 0;
-    left: 50%;
-}
-
 #hugemap {
     position: absolute;
     top: 56px;  /* header */
@@ -805,8 +801,16 @@ table {
     display: block;
 }
 
+#fares {
+    display: none;
+}
+
+#fares:target {
+    display: block;
+}
+
 .ad-wrapper + #map .service-map {
-    margin-top: 100px;
+    margin-top: 90px;
 }
 
 .sorry {  // "Loading..." or "Sorry no buses tracking"
@@ -921,8 +925,8 @@ th a,
     padding: .25em .5em;
 }
 
-.stop-name[rowspan="2"] {
-    white-space: normal;
+.stop-name[rowspan="2"] a {
+    padding: 1.25em 0;
 }
 
 .stop-name .note {
@@ -1218,7 +1222,6 @@ input:not(:checked) + label {
 
 .map-sidebar .navigation {
     overflow: hidden;
-    margin: 1em 0;
 }
 
 .trip-timetable {
@@ -1395,11 +1398,6 @@ input:not(:checked) + label {
     font-variant-numeric: tabular-nums;
 }
 
-.stop-popup-times td {
-    border: 0;
-    padding: 0;
-}
-
 .message {
     border: 1px solid var(--border-color);
     padding: 1em;
@@ -1574,7 +1572,7 @@ body.has-overlay {
         width: 100%;
         z-index: 9999;
         pointer-events: auto;
-        height: 100px;
+        height: 90px;
         overflow: hidden;
         background: var(--background-color);
     }
@@ -1685,3 +1683,4 @@ footer {
         display: none;
     }
 }
+ 

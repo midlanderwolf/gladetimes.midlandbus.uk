@@ -2,7 +2,7 @@ FROM node:20-slim
 
 WORKDIR /app/
 
-COPY package.json package-lock.json .npmrc /app/
+COPY package.json package-lock.json /app/
 RUN npm ci
 
 COPY frontend /app/frontend
@@ -10,7 +10,7 @@ COPY .parcelrc tsconfig.json /app/
 RUN npm run lint && npm run build
 
 
-FROM ghcr.io/bustimes/bustimes.org/bustimes-base:3.14
+FROM ghcr.io/jclgoodwin/bustimes.org/bustimes-base:3.14
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 

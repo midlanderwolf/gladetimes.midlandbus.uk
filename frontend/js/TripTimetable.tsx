@@ -1,4 +1,5 @@
 import React, { type ReactElement } from "react";
+import type { StopTime, VehicleJourney } from "./JourneyMap";
 import type { Vehicle } from "./VehicleMarker";
 
 export type TripTime = {
@@ -7,6 +8,7 @@ export type TripTime = {
     name: string;
     atco_code?: string;
     location?: [number, number];
+    icon?: string | null;
     bearing?: number | null;
   };
   track?: [number, number][] | null;
@@ -60,37 +62,26 @@ function Row({
 }: {
   stop: TripTime;
   onMouseEnter?: (stop: TripTime) => void;
-  vehicle?: Vehicle | null;
+  vehicle?: Vehicle;
   aimedColumn?: boolean;
   highlightedStop?: string;
   first: boolean;
   last: boolean;
 }) {
-  const handlePointerEnter = React.useCallback(
-    (event: React.PointerEvent) => {
-      // on touch there's no hover, so a tap on the stop-name link should follow
-      // it rather than open the popup (otherwise iOS treats the first tap as a
-      // hover and you have to tap a second time). tapping elsewhere on the row
-      // still opens the popup
-      if (
-        event.pointerType === "touch" &&
-        event.target instanceof HTMLElement &&
-        event.target.closest("a")
-      ) {
-        return;
+  const handleMouseEnter = React.useCallback(() => {
+    if (onMouseEnter) {
+      if (stop.stop.location) {
+        onMouseEnter(stop);
       }
-      if (onMouseEnter) {
-        if (stop.stop.location) {
-          onMouseEnter(stop);
-        }
-      }
-    },
-    [stop, onMouseEnter],
-  );
+    }
+  }, [stop, onMouseEnter]);
 
   let className: string | undefined;
 
   let stopName: string | ReactElement = stop.stop.name;
+  if (stop.stop.icon) {
+    stopName = `${stopName} (${stop.stop.icon})`;
+  }
   if (stop.stop.atco_code) {
     const url = `/stops/${stop.stop.atco_code}`;
     if (url === highlightedStop) {
@@ -166,7 +157,7 @@ function Row({
 
   return (
     <React.Fragment>
-      <tr className={className} onPointerEnter={handlePointerEnter}>
+      <tr className={className} onMouseEnter={handleMouseEnter}>
         <td className="stop-name" rowSpan={rowSpan}>
           {stopName}
         </td>
@@ -182,6 +173,27 @@ function Row({
   );
 }
 
+export const tripFromJourney = (journey: VehicleJourney): Trip | undefined => {
+  if (journey.stops) {
+    return {
+      times: journey.stops.map((stop, i: number) => {
+        return {
+          id: stop.id,
+          stop: {
+            atco_code: stop.atco_code,
+            name: stop.name,
+            location: stop.coordinates || undefined,
+          },
+          timing_status: stop.minor ? "OTH" : "PTP",
+          aimed_arrival_time: stop.aimed_arrival_time,
+          aimed_departure_time: stop.aimed_departure_time,
+          actual_departure_time: stop.actual_departure_time,
+        };
+      }),
+    };
+  }
+};
+
 const TripTimetable = React.memo(function TripTimetable({
   trip,
   onMouseEnter,
@@ -190,7 +202,7 @@ const TripTimetable = React.memo(function TripTimetable({
 }: {
   trip: Trip;
   onMouseEnter?: (stop: TripTime) => void;
-  vehicle?: Vehicle | null;
+  vehicle?: Vehicle;
   highlightedStop?: string;
 }) {
   const [showEarlierStops, setShowEarlierStops] = React.useState(false);
@@ -198,17 +210,14 @@ const TripTimetable = React.memo(function TripTimetable({
   const aimedColumn = trip.times?.some(
     (item: TripTime) => item.aimed_arrival_time || item.aimed_departure_time,
   );
-
-  let actualColumn: string | null = null;
-  if (
+  const actualColumn =
+    vehicle ||
     trip.times?.some(
-      (item) => item.expected_arrival_time || item.expected_departure_time,
-    )
-  ) {
-    actualColumn = "Ex\u00ADpected";
-  } else if (vehicle || trip.times.some((item) => item.actual_departure_time)) {
-    actualColumn = "Actual";
-  }
+      (item: TripTime) =>
+        item.actual_departure_time ||
+        item.expected_arrival_time ||
+        item.expected_departure_time,
+    );
 
   let earlierStops = false;
 
@@ -239,7 +248,7 @@ const TripTimetable = React.memo(function TripTimetable({
           <tr>
             <th className="stop-name" />
             {aimedColumn ? <th>Sched&shy;uled</th> : null}
-            {actualColumn ? <th>{actualColumn}</th> : null}
+            {actualColumn ? <th>Actual</th> : null}
           </tr>
         </thead>
         <tbody>

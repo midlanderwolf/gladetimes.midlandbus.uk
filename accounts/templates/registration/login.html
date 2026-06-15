@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}Log in to bustimes.org{% endblock %}
+{% block title %}Log in to gladetimes{% endblock %}
 
 {% block canonical %}<meta name="robots" content="noindex,noarchive">{% endblock %}
 
@@ -23,7 +23,7 @@
 </form>
 
 <ul class="horizontal">
-    <li><a href="{% url 'register' %}?next={{ next }}">Request an account</a></li>
+    <li><a href="{% url 'register' %}?next={{ next }}">Create an account</a></li>
     <li><a href="{% url 'password_reset' %}?next={{ next }}">Lost password?</a></li>
 </ul>
 

@@ -6,11 +6,10 @@ function getDecodedDimensionFromPolyline(polyline: string, index: number) {
   while (b >= 0x1f) {
     b = polyline.charCodeAt(index) - 64;
     index += 1;
-    result += b * 2 ** shift;
+    result += b << shift;
     shift += 5;
   }
-  // Bitwise ops would truncate to 32 bits, which overflows for unix timestamps.
-  return [index, result % 2 !== 0 ? -(result + 1) / 2 : result / 2];
+  return [index, (result & 1) !== 0 ? ~result >> 1 : result >> 1];
 }
 
 export function decodeTimeAwarePolyline(

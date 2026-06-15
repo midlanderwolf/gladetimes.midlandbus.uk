@@ -11,7 +11,18 @@ services:
       - NTA_API_KEY
       - AWS_ACCESS_KEY_ID
       - AWS_SECRET_ACCESS_KEY
+      - NEW_VEHICLE_WEBHOOK_URL
+      - NEW_LICENSE_WEBHOOK_URL
       - PYTHONWARNINGS=all
+      - FLICKR_API_KEY
+      - FLICKR_API_SECRET
+      - DEFAULT_FROM_EMAIL
+      - EMAIL_HOST
+      - EMAIL_HOST_USER
+      - EMAIL_HOST_PASSWORD
+      - EMAIL_PORT
+      - EMAIL_USE_TLS
+      - EMAIL_USE_SSL
     volumes:
       - .:/app
     ports:

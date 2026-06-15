@@ -5,6 +5,8 @@
 {% include "situations.html" %}
 
 {% if situation %}
+   <style>{{ css }}</style>
+
     {% for aj in situation.affectedjourney_set.all %}
 
         {{ situation.publication_window.lower }}–{{ situation.publication_window.upper|time }}
@@ -17,20 +19,7 @@
         {% endfor %}
     {% endfor %}
 
-    <h2>Affected stops</h2>
-
-    {% include 'list.html' with list=stops %}
-
-    <h2>Affected services</h2>
-
-    {% include 'service_list.html' with services=services class="has-smalls" %}
-
-    {% if xml %}
-       <style>{{ css }}</style>
-
-        <h2>XML</h2>
-        <p><code>{{ xml }}</code></p>
-    {% endif %}
+    <p><code>{{ xml }}</code></p>
 {% endif %}
 
 {% endblock content %}

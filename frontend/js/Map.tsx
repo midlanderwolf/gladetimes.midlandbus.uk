@@ -1,38 +1,30 @@
-import { ErrorBoundary, captureException } from "@sentry/react";
-import React, { memo, useEffect, createContext } from "react";
-import { createRoot } from "react-dom/client";
-
-import MapGL, {
-  NavigationControl,
-  GeolocateControl,
-  AttributionControl,
-  type MapProps,
-  useControl,
-  useMap,
-  Popup,
-  type LngLat,
-  type MapLayerMouseEvent,
-  type PopupEvent,
-} from "react-map-gl/maplibre";
-
 import arrow from "data-url:../history-arrow.png";
-import linePattern from "data-url:../line-pattern.png";
-import routeStopMarkerCircle from "data-url:../route-stop-marker-circle.png";
-import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle.png";
-import routeStopMarkerDark from "data-url:../route-stop-marker-dark.png";
 import routeStopMarker from "data-url:../route-stop-marker.png";
-import stopMarkerCircle from "data-url:../stop-marker-circle.png";
+import routeStopMarkerCircle from "data-url:../route-stop-marker-circle.png";
+import routeStopMarkerDark from "data-url:../route-stop-marker-dark.png";
+import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
-import osmBright from "url:../osm_bright.json";
-// import maplibreWorkerUrl from "url:maplibre-gl/dist/maplibre-gl-worker.mjs";
+import stopMarkerCircle from "data-url:../stop-marker-circle.png";
+import { captureException, ErrorBoundary } from "@sentry/react";
 import type {
   Map as MapLibreMap,
   MapStyleImageMissingEvent,
-  // setWorkerUrl,
 } from "maplibre-gl";
+import React, { createContext, memo, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+import MapGL, {
+  AttributionControl,
+  GeolocateControl,
+  type LngLat,
+  type MapLayerMouseEvent,
+  type MapProps,
+  NavigationControl,
+  Popup,
+  type PopupEvent,
+  useControl,
+  useMap,
+} from "react-map-gl/maplibre";
 import { ErrorFallback } from "./LoadingSorry";
-
-// setWorkerUrl(maplibreWorkerUrl);
 
 const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
@@ -42,19 +34,12 @@ const imagesByName: { [imageName: string]: string } = {
   "route-stop-marker-dark": routeStopMarkerDark,
   "route-stop-marker-dark-circle": routeStopMarkerDarkCircle,
   "history-arrow": arrow,
-  "line-pattern": linePattern,
 };
 
 const mapStyles: { [key: string]: string } = {
-  alidade_smooth: "Smooth",
-  alidade_smooth_dark: "Smooth dark",
-  // alidade_satellite: "Satellite",
-  osm_bright: "Bright",
-  // outdoors: "Outdoors",
-  // aws: "Traffic",
-  // aws_satellite: "Satellite",
-  os_light: "Ordnance Survey light",
-  os_dark: "Ordnance Survey night",
+  light: "Light",
+  dark: "Dark",
+  satellite: "Satellite",
 };
 
 type StyleSwitcherProps = {
@@ -166,12 +151,12 @@ export default function BusTimesMap(
       // ignore
     }
 
-    return darkModeQuery.matches ? "alidade_smooth_dark" : "alidade_smooth";
+    return darkModeQuery.matches ? "dark" : "light";
   });
 
   useEffect(() => {
     const handleChange = (e: MediaQueryListEvent) => {
-      setMapStyle(e.matches ? "alidade_smooth_dark" : "alidade_smooth");
+      setMapStyle(e.matches ? "dark" : "light");
     };
 
     if (darkModeQuery.addEventListener) {
@@ -186,9 +171,7 @@ export default function BusTimesMap(
   const handleMapStyleChange = React.useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const style = e.target.value;
-      const defaultStyle = darkModeQuery.matches
-        ? "alidade_smooth_dark"
-        : "alidade_smooth";
+      const defaultStyle = darkModeQuery.matches ? "dark" : "light";
       setMapStyle(style);
       try {
         if (style === defaultStyle) {
@@ -216,31 +199,17 @@ export default function BusTimesMap(
   useEffect(() => {
     document.body.classList.toggle(
       "dark-mode",
-      mapStyle.endsWith("_dark") ||
-        (mapStyle.endsWith("_satellite") && darkModeQuery.matches),
+      mapStyle === "dark" ||
+        (mapStyle === "satellite" && darkModeQuery.matches),
     );
   }, [mapStyle, darkModeQuery.matches]);
 
-  let mapStyleURL = `https://tiles.stadiamaps.com/styles/${mapStyle}.json`;
-  if (mapStyle === "os_light") {
-    mapStyleURL = "https://tiles.bustimes.org.uk/styles/light/style.json";
-  } else if (mapStyle === "os_dark") {
-    mapStyleURL = "https://tiles.bustimes.org.uk/styles/night/style.json";
-  } else if (mapStyle === "osm_bright") {
-    mapStyleURL = osmBright;
-    // } else if (mapStyle === "aws" || mapStyle === "aws_satellite") {
-    //   const region = "eu-west-1";
-    //   let style = "Standard";
-    //   let traffic = "&traffic=All";
-    //   if (mapStyle === "aws_satellite") {
-    //     style = "Hybrid";
-    //     traffic = "";
-    //   }
-    //   // const colorScheme = "Light";
-    //   const apiKey =
-    //     "v1.public.eyJqdGkiOiIzN2Q2N2JhYi05NTYyLTRlOGItYjQ4Zi1iMDE4OTk3ZTExODUifX12J0dnJVXJbfadbzrJW3oeYvqHGJxm0iSO2aUyyDSZVER5A7gOTdKF5-iQxaqDcRIkJTZ4rIxdGqXVLG-MkDWi8n8jWEkIBploD6QX0lEp-dtl4cd0lhfcXfBgar8kgJCaBPcjaglztZs_SXOVWIgQmlY5hSzVxBnoezvFxW2dk7BBzlRREHscAjP9Oyx_c3wUJReYAc4rA8JxXWYVyLbe9a-FgapbrgQkSTKbjPChPfesLZjTZek1FChtCNs4EDOg8RX_sCFSDPIXtG-cR8IBsCSmMTgA8pubXyJuhIRgy2VOfSuwBGK983sX8i4uujcpsv7IUZR_b7oj9MRV9Vk.ZGQzZDY2OGQtMWQxMy00ZTEwLWIyZGUtOGVjYzUzMjU3OGE4";
-    //   mapStyleURL = `https://maps.geo.${region}.amazonaws.com/v2/styles/${style}/descriptor?key=${apiKey}&color-scheme=Light${traffic}`;
-  }
+  const fluffynetUrls: { [key: string]: string } = {
+    light: "https://maps.fluffynet.dev/styles/glade-light/style.json",
+    dark: "https://maps.fluffynet.dev/styles/glade-dark/style.json",
+    // satellite: "https://maps.fluffynet.dev/styles/satellite/style.json",
+  };
+  const mapStyleURL = fluffynetUrls[mapStyle];
 
   return (
     <ErrorBoundary fallback={ErrorFallback}>
@@ -254,20 +223,20 @@ export default function BusTimesMap(
           dragRotate={false}
           minZoom={4}
           maxZoom={18}
-          // projection="globe"
+          projection="globe"
           mapStyle={mapStyleURL}
           RTLTextPlugin={""}
           attributionControl={false}
           // onError={(e) => captureException(e)}
           onContextMenu={onContextMenu}
         >
-          <AttributionControl compact={false} position="top-right" />
           <NavigationControl showCompass={false} />
           <GeolocateControl trackUserLocation />
           <StyleSwitcherControl
             style={mapStyle}
             onChange={handleMapStyleChange}
           />
+          <AttributionControl />
           <MapChild onInit={props.onMapInit} />
 
           {props.children}

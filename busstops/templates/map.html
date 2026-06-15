@@ -1,11 +1,11 @@
 {% extends 'page.html' %}
 
-{% block title %}Map – bustimes.org{% endblock %}
+{% block title %}Map – gladetimes{% endblock %}
 
 {% load static %}
 
 {% block head %}
-    <meta property="og:title" content="Map – bustimes.org">
+    <meta property="og:title" content="Map – gladetimes">
     <link rel="stylesheet" href="{% static 'dist/js/app.css' %}">
     <link rel="stylesheet" media="print" href="/liveries.{{ liveries_css_version }}.css" onload="this.onload=null;this.removeAttribute('media')">
 {% endblock head %}
@@ -14,7 +14,7 @@
 
 {% block header %}
    <header class="site-header">
-        <a href="/" class="site-name">bustimes.org</a>
+        <a href="/" class="site-name">gladetimes</a>
         <ul>
             <li><a href="/map{% if object.latlong %}#16/{{ object.latlong.y|floatformat:4 }}/{{ object.latlong.x|floatformat:4 }}{% endif %}">Map</a></li>
         </ul>

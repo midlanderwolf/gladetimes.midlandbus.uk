@@ -7,6 +7,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { ErrorFallback } from "./LoadingSorry";
 import ServiceMap from "./ServiceMap";
+const History = lazy(() => import("./History"));
 const MapRouter = lazy(() => import("./MapRouter"));
 
 if (process.env.NODE_ENV === "production") {
@@ -54,7 +55,20 @@ const createRootOptions = {
 };
 
 let rootElement: HTMLElement | null;
-if (window.SERVICE_ID && (rootElement = document.getElementById("map-link"))) {
+if ((rootElement = document.getElementById("history"))) {
+  // vehicle journey history
+  const root = createRoot(rootElement, createRootOptions);
+  root.render(
+    <React.StrictMode>
+      <Sentry.ErrorBoundary fallback={ErrorFallback}>
+        <History />
+      </Sentry.ErrorBoundary>
+    </React.StrictMode>,
+  );
+} else if (
+  window.SERVICE_ID &&
+  (rootElement = document.getElementById("map-link"))
+) {
   const root = createRoot(rootElement, createRootOptions);
   root.render(
     <React.StrictMode>

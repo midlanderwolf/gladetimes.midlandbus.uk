@@ -5,7 +5,6 @@ import loadjs from "loadjs";
 import LoadingSorry from "./LoadingSorry";
 import type { ServiceMapMapProps } from "./ServiceMapMap";
 import type { Vehicle } from "./VehicleMarker";
-import { recordSkew } from "./clockSkew";
 
 const ServiceMapMap = lazy(() => import("./ServiceMapMap"));
 
@@ -146,7 +145,6 @@ export default function ServiceMap({ serviceId, buttonText }: ServiceMapProps) {
       const url = `/vehicles.json?service=${Array.from(selectedServices).join(",")}`;
       fetch(url).then(
         (response) => {
-          recordSkew(response);
           response.json().then((items) => {
             setVehicles(items);
             clearTimeout(timeout);

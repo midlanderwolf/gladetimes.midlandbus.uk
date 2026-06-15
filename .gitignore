@@ -18,3 +18,8 @@
 .env.sentry-build-plugin
 
 /.parcel-cache/
+IE_update.log
+UK_update.log
+update.log
+IE_Update.sh
+UK_Update.sh

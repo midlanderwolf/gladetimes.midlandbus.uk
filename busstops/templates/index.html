@@ -1,8 +1,7 @@
 {% extends 'page.html' %}
 
 {% block canonical %}
-    <link rel="canonical" href="https://bustimes.org">
-    <meta name="description" content="Bus timetables, maps and tracking">
+    <link rel="canonical" href="https://gladetimes">
 {% endblock canonical %}
 
 {% block bodyclass %}narrow{% endblock %}
@@ -11,7 +10,7 @@
 
 {% block content %}
 
-<p>Maps, timetables and more</p>
+<p>tracking, random shit and whatever else i decide to put on here</p>
 
 {% load cache %}
 {% cache 600 "index_stats" %}
@@ -89,11 +88,27 @@
             <li><a href="/regions/MU">Munster</a></li>
             <li><a href="/regions/UL">Ulster</a></li>
         </ul>
-    </li>
     {% endif %}
-    <!-- <li><a href="/regions/IM">Isle of Man</a></li> -->
-    <!-- <li><a href="/regions/GG">Guernsey</a></li> -->
-    <!-- <li><a href="/regions/JE">Jersey</a></li> -->
+    <!-- <li><a href="/regions/IM">Isle of Man</a></li>
+    <li><a href="/regions/GG">Guernsey</a></li>
+    <li><a href="/regions/JE">Jersey</a></li>
+    </li> -->
+    <li>Other countries
+        <ul class="long">
+            <li><a href="/regions/AU">Australia</a></li>
+            <li><a href="/regions/FI">Finland</a></li>
+            <li><a href="/regions/FR">France</a></li>
+            <li><a href="/regions/DE">Germany</a></li>
+            <li><a href="/regions/PL">Poland</a></li>
+            <li><a href="/regions/ES">Spain</a></li>
+            <li><a href="/regions/US">United States</a></li>
+    </li>
 </ul>
+
+{% if popular_services %}
+    <h2>Popular pages</h2>
+
+    {% include 'service_list.html' with services=popular_services class="has-smalls" %}
+{% endif %}
 
 {% endblock content %}

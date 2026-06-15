@@ -36,13 +36,7 @@ export const useDarkMode = () => {
 };
 
 export function getFont(theme: string) {
-  if (theme.indexOf("os_") === 0) {
-    return ["Source Sans Pro Regular", "Arial Unicode MS Regular"];
-  }
-  if (theme.indexOf("aws") === 0) {
-    return ["Amazon Ember Condensed RC Regular", "Noto Sans Regular"];
-  }
-  return ["Stadia Regular"];
+  return ["Noto Sans Regular", "Open Sans Regular"];
 }
 
 export function getBounds<T>(
@@ -63,5 +57,4 @@ export function getBounds<T>(
     }, bounds);
     return bounds;
   }
-  return initialBounds;
 }

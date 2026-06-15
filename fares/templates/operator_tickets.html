@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}Tickets – {{ operator }} – bustimes.org{% endblock %}
+{% block title %}Tickets – {{ operator }} – gladetimes{% endblock %}
 
 {% block bodyclass %}narrow{% endblock %}
 
@@ -17,7 +17,7 @@ A wider range (singles, returns etc.) may be available from your driver.</p>
 
         {% for category in grouping.categories %}
 
-            <a href="{% url 'operator_ticket' operator.slug category.id %}" class="ticket">
+            <a href="tickets/{{ category.id }}" class="ticket">
                 <h3>{{ category.title }}</h3>
 
                 {% if category.description.strip %}

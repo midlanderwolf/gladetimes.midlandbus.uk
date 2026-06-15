@@ -19,14 +19,19 @@ CSRF_FAILURE_VIEW = "busstops.views.csrf_failure"
 
 TEST = "test" in sys.argv or "pytest" in sys.argv[0]
 DEBUG = bool(os.environ.get("DEBUG", False))
+DEBUG = False
 
-DEFAULT_FROM_EMAIL = '"bustimes.org" <bustimes.org@bustimes.org>'
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL",
+    '"bustimes.org" <bustimes.org@bustimes.org>',
+)
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-EMAIL_PORT = 465
-EMAIL_USE_SSL = True
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() in {"1", "true", "yes"}
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in {"1", "true", "yes"}
 EMAIL_TIMEOUT = 10
 if TEST:
     EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
@@ -169,18 +174,16 @@ STORAGES = {
     "default": {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {
-            "region_name": "lon1",
-            "endpoint_url": "https://lon1.digitaloceanspaces.com",
-            "bucket_name": "bus-photos",
+            "region_name": "auto",
+            "endpoint_url": "https://bf5488db21bf1f7a287779d0cb34e793.r2.cloudflarestorage.com",
+            "bucket_name": "photos",
             "default_acl": "public-read",
             "querystring_auth": False,
-            "custom_domain": "bus-photos.lon1.digitaloceanspaces.com",
+            "custom_domain": "photos.midlandbus.uk",
         },
     },
     "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
-        if TEST
-        else "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
 IMAGEKIT_DEFAULT_CACHEFILE_STRATEGY = "imagekit.cachefiles.strategies.Optimistic"
@@ -242,13 +245,6 @@ if REDIS_URL and not TEST:
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": REDIS_URL,
         "KEY_PREFIX": os.environ.get("CACHE_KEY_PREFIX", ""),
-        "OPTIONS": {
-            "socket_timeout": 3,
-            "socket_connect_timeout": 2,
-            "socket_keepalive": True,
-            "health_check_interval": 30,
-            "retry_on_timeout": True,
-        },
     }
     if "default" not in CACHES:
         CACHES["default"] = CACHES["redis"]
@@ -274,8 +270,6 @@ def traces_sampler(context):
         url = context["wsgi_environ"]["RAW_URI"]
     except KeyError:
         return 0
-    if "__profile__" in url:
-        return 1
     if (
         url == "/version"
         or url.startswith("/vehicles.json")
@@ -285,10 +279,10 @@ def traces_sampler(context):
     ):
         return 0
     if url.startswith("/stops/") or url.startswith("/services/"):
-        return 0.00005
+        return 0.000005
     if url.startswith("/vehicles"):
-        return 0.00001
-    return 0.00003
+        return 0.000001
+    return 0.000003
 
 
 if not TEST:  # pragma: nocover
@@ -302,16 +296,11 @@ if not TEST:  # pragma: nocover
 
         sentry_sdk.init(
             dsn=os.environ.get("SENTRY_DSN"),
-            integrations=[
-                DjangoIntegration(signals_spans=False),
-                RedisIntegration(),
-                HueyIntegration(),
-            ],
+            integrations=[DjangoIntegration(), RedisIntegration(), HueyIntegration()],
             ignore_errors=[KeyboardInterrupt, RuntimeError],
             release=os.environ.get("COMMIT_HASH")
             or os.environ.get("KAMAL_CONTAINER_NAME"),
             traces_sampler=traces_sampler,
-            send_default_pii=False,
         )
         ignore_logger("django.security.DisallowedHost")
 
@@ -342,7 +331,11 @@ ALLOW_VEHICLE_NOTES_OPERATORS = (
     "ie-1178",  # Dublin Express
 )
 
+UMAMI_TOKEN = os.environ.get("UMAMI_TOKEN")
+UMAMI_WEBSITE_ID = os.environ.get("UMAMI_WEBSITE_ID")
+
 NEW_VEHICLE_WEBHOOK_URL = os.environ.get("NEW_VEHICLE_WEBHOOK_URL")
+NEW_LICENSE_WEBHOOK_URL = os.environ.get("NEW_LICENSE_WEBHOOK_URL")
 
 DATA_DIR = os.environ.get("DATA_DIR")
 if DATA_DIR:
@@ -361,4 +354,4 @@ STADIA_MAPS_API_KEY = os.environ.get("STADIA_MAPS_API_KEY")
 TURNSTILE_SITEKEY = os.environ.get("TURNSTILE_SITEKEY", "0x4AAAAAAAFWiyCqdh2c-5sy")
 TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET")
 
-ABBREVIATE_HOURLY = False  # we override this in some tests, that's all
+ABBREVIATE_HOURLY = True  # we override this in some tests, that's all

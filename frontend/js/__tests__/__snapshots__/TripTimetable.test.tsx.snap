@@ -35,7 +35,7 @@ exports[`renders trip timetable 1`] = `
           <a
             href="/stops/2900N1237"
           >
-            County Hall Bus Shelter
+            County Hall Bus Shelter (A)
           </a>
         </td>
         <td>
@@ -50,7 +50,7 @@ exports[`renders trip timetable 1`] = `
           <a
             href="/stops/2900N12909"
           >
-            Norwich Bus Station
+            Norwich Bus Station (F)
           </a>
         </td>
         <td>
@@ -71,7 +71,7 @@ exports[`renders trip timetable 1`] = `
           <a
             href="/stops/2900N12245"
           >
-            Norwich Tombland
+            Norwich Tombland (CM)
           </a>
         </td>
         <td>
@@ -85,7 +85,7 @@ exports[`renders trip timetable 1`] = `
           <a
             href="/stops/2900N12233"
           >
-            Norwich Anglia Square
+            Norwich Anglia Square (B)
           </a>
         </td>
         <td>
@@ -141,7 +141,7 @@ exports[`renders trip timetable 2`] = `
           <a
             href="/stops/2900N1237"
           >
-            County Hall Bus Shelter
+            County Hall Bus Shelter (A)
           </a>
         </td>
         <td>
@@ -159,7 +159,7 @@ exports[`renders trip timetable 2`] = `
           <a
             href="/stops/2900N12909"
           >
-            Norwich Bus Station
+            Norwich Bus Station (F)
           </a>
         </td>
         <td>
@@ -180,7 +180,7 @@ exports[`renders trip timetable 2`] = `
           <a
             href="/stops/2900N12245"
           >
-            Norwich Tombland
+            Norwich Tombland (CM)
           </a>
         </td>
         <td>
@@ -194,7 +194,7 @@ exports[`renders trip timetable 2`] = `
           <a
             href="/stops/2900N12233"
           >
-            Norwich Anglia Square
+            Norwich Anglia Square (B)
           </a>
         </td>
         <td>
@@ -250,7 +250,7 @@ exports[`renders trip timetable 3`] = `
           <a
             href="/stops/2900N1237"
           >
-            County Hall Bus Shelter
+            County Hall Bus Shelter (A)
           </a>
         </td>
         <td>
@@ -268,7 +268,7 @@ exports[`renders trip timetable 3`] = `
           <a
             href="/stops/2900N12909"
           >
-            Norwich Bus Station
+            Norwich Bus Station (F)
           </a>
         </td>
         <td>
@@ -289,7 +289,7 @@ exports[`renders trip timetable 3`] = `
           <a
             href="/stops/2900N12245"
           >
-            Norwich Tombland
+            Norwich Tombland (CM)
           </a>
         </td>
         <td>
@@ -303,7 +303,7 @@ exports[`renders trip timetable 3`] = `
           <a
             href="/stops/2900N12233"
           >
-            Norwich Anglia Square
+            Norwich Anglia Square (B)
           </a>
         </td>
         <td>

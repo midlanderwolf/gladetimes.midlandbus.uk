@@ -13,11 +13,9 @@ jobs:
       contents: read
 
     steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        persist-credentials: false
+    - uses: actions/checkout@v6
 
-    - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+    - uses: actions/setup-node@v6
       with:
         node-version: '20'
         cache: 'npm'
@@ -26,14 +24,27 @@ jobs:
     - run: npm run lint
     - run: npm run build
 
+    - uses: actions/upload-artifact@v7
+      with:
+        name: dist
+        path: busstops/static
+        if-no-files-found: error
+
   test-backend:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
+    needs: test-frontend
     container:
-      image: ghcr.io/bustimes/bustimes.org/bustimes-base:3.14
+      image: ghcr.io/jclgoodwin/bustimes.org/bustimes-base:3.14
 
     permissions:
-      packages: read  # to use the bustimes-base docker image
+      # Gives the action the necessary permissions for publishing new
+      # comments in pull requests.
+      pull-requests: write
+      # Gives the action the necessary permissions for pushing data to the
+      # python-coverage-comment-action branch, and for editing existing
+      # comments (to avoid publishing multiple comments in the same PR)
+      contents: write
 
     services:
       postgres:
@@ -45,67 +56,40 @@ jobs:
         options: >-
           --mount type=tmpfs,destination=/var/lib/postgresql
           --health-cmd pg_isready
-          --health-interval 3s
-          --health-timeout 3s
+          --health-interval 10s
+          --health-timeout 5s
           --health-retries 5
-          --health-start-period 5s
         ports:
           - 5432:5432
 
     steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+    - uses: actions/checkout@v6
+
+    - uses: astral-sh/setup-uv@v7
+
+    - run: uv sync --group test --frozen
+
+    - run: rm -r busstops/static
+
+    - uses: actions/download-artifact@v8
       with:
-        persist-credentials: false
-
-    - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-
-    - run: uv sync --group test --frozen && mkdir staticfiles
+        name: dist
+        path: busstops/static
 
     - name: run tests
       env:
         DATABASE_URL: postgis://postgres:postgres@postgres/postgres
         SECRET_KEY: secret
-      run: uv run coverage run --parallel-mode --concurrency=multiprocessing ./manage.py test --parallel=2 --keepdb --durations 10
-
-    - name: generate coverage HTML report
       run: |
-        uv run coverage combine
+        uv run ./manage.py collectstatic --noinput && \
+        uv run coverage run --parallel-mode --concurrency=multiprocessing ./manage.py test --parallel=2 --keepdb --durations 10
+
+    - name: generate coverage report
+      run: |
+        uv run coverage combine && \
         uv run coverage html
 
-    - name: upload coverage HTML artifact
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+    - name: Coverage comment
+      uses: py-cov-action/python-coverage-comment-action@v3
       with:
-        name: coverage-html
-        path: htmlcov
-
-  publish-coverage:
-    needs: test-backend
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-
-    permissions:
-      pages: write
-      id-token: write
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-
-    steps:
-    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-      with:
-        name: coverage-html
-        path: htmlcov
-
-    - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
-
-    - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
-      with:
-        path: htmlcov
-
-    - id: deployment
-      uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        GITHUB_TOKEN: ${{ github.token }}
