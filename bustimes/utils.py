@@ -496,3 +496,133 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
 
     # trips were contiguous, return all stops
     return stoptimes_list
+
+
+def get_route_link(
+    session, url, profile, service, from_atco, from_point, to_atco, to_point
+):
+    from bustimes.models import RouteLink
+    from django.contrib.gis.geos import LineString
+
+    try:
+        response = session.get(
+            f"{url}{profile}/{from_point.x},{from_point.y};{to_point.x},{to_point.y}",
+            params={"overview": "full", "geometries": "geojson"},
+            timeout=10,
+        )
+        data = response.json()
+    except Exception:
+        return None
+
+    if data.get("code") != "Ok" or not data.get("routes"):
+        return None
+
+    geometry = data["routes"][0]["geometry"]
+    distance = data["routes"][0]["distance"]
+
+    coords = geometry["coordinates"]
+    line_geometry = LineString(coords, srid=4326)
+
+    return RouteLink(
+        service=service,
+        from_stop_id=from_atco,
+        to_stop_id=to_atco,
+        distance_metres=int(distance),
+        geometry=line_geometry,
+    )
+
+
+def generate_route_links_for_service(service):
+    import requests
+
+    from bustimes.models import RouteLink
+
+    mode = service.mode or "bus"
+    if mode in ("bus", "coach"):
+        profile = "bus"
+    else:
+        profile = "driving"
+
+    route_links = []
+    session = requests.Session()
+    url = "http://router.project-osrm.org/route/v1/"
+
+    stops = list(
+        service.stopusage_set.select_related("stop")
+        .order_by("order")
+        .values_list("stop__atco_code", "stop__latlong")
+    )
+
+    if len(stops) < 2:
+        return False
+
+    for i in range(len(stops) - 1):
+        from_atco, from_point = stops[i]
+        to_atco, to_point = stops[i + 1]
+
+        if not from_point or not to_point:
+            continue
+
+        route_links.append(
+            get_route_link(
+                session,
+                url,
+                profile,
+                service,
+                from_atco,
+                from_point,
+                to_atco,
+                to_point,
+            )
+        )
+
+    if len(stops) > 1:
+        from_atco, from_point = stops[-1]
+        to_atco, to_point = stops[0]
+        if from_point and to_point:
+            route_links.append(
+                get_route_link(
+                    session,
+                    url,
+                    profile,
+                    service,
+                    from_atco,
+                    from_point,
+                    to_atco,
+                    to_point,
+                )
+            )
+
+    route_links = [rl for rl in route_links if rl is not None]
+
+    seen = set()
+    unique_route_links = []
+    for rl in route_links:
+        key = (rl.from_stop_id, rl.to_stop_id)
+        if key not in seen:
+            seen.add(key)
+            unique_route_links.append(rl)
+    route_links = unique_route_links
+
+    if route_links:
+        RouteLink.objects.bulk_create(
+            route_links,
+            update_conflicts=True,
+            update_fields=["geometry", "distance_metres"],
+            unique_fields=["service", "from_stop", "to_stop"],
+        )
+
+        from django.contrib.gis.geos import MultiLineString
+
+        geometries = list(
+            RouteLink.objects.filter(service=service).values_list("geometry", flat=True)
+        )
+        if geometries:
+            service.geometry = MultiLineString(geometries, srid=4326)
+            service.save(update_fields=["geometry"])
+        else:
+            service.update_geometry()
+
+        return True
+
+    return False

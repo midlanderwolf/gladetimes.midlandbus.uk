@@ -6,10 +6,10 @@ from django.conf import settings
 
 
 def get_content(slug):
-    content = f"[{slug}](https://bustimes.org/vehicles/{slug})"
+    content = f"[{slug}](https://gladetimes.midlandbus.uk/vehicles/{slug})"
 
-    if slug[:4] in ("sndr", "obus", "scmy", "amsy", "kctb", "simo", "lynx"):
-        content = f"{content} <@813528710404898817>"
+    if slug[:4] in ("tbtn", "nctr", "kbus", "ndtr", "noct"):
+        content = f"{content} <@1238439672708075520>"
 
     return content
 
@@ -44,7 +44,7 @@ class Command(BaseCommand):
                 response = session.post(
                     settings.NEW_VEHICLE_WEBHOOK_URL,
                     json={
-                        "username": "bot",
+                        "username": "gladetimes New Vehicle Notifier",
                         "content": get_content(notify.payload),
                     },
                     timeout=10,

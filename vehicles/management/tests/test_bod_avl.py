@@ -83,6 +83,20 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             locality=southwold,
             active=True,
             common_name="Kings Head",
+            indicator="Stand 2",
+        )
+        StopPoint.objects.create(
+            atco_code="390071067",
+            locality=southwold,
+            active=True,
+            common_name="Bus Station (Stand 2)",
+        )
+        shudehill = Locality.objects.create(admin_area=suffolk, name="Shudehill")
+        StopPoint.objects.create(
+            atco_code="390071068",
+            locality=shudehill,
+            active=True,
+            common_name="Shudehill Interchange",
         )
         StopPoint.objects.create(atco_code="0500CCITY544", active=False)
 
@@ -125,6 +139,39 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             list(command.get_operator("FOO").values("noc")),
             [{"noc": "WHIP"}, {"noc": "TGTC"}],
         )
+
+    def test_get_destination_name(self):
+        import_bod_avl.get_destination_name.cache_clear()
+
+        self.assertEqual(
+            import_bod_avl.get_destination_name("390071066"),
+            "Southwold, Kings Head",
+        )
+        self.assertEqual(
+            import_bod_avl.get_destination_name("390071067"),
+            "Southwold, Bus Station",
+        )
+        self.assertEqual(
+            import_bod_avl.get_destination_name("390071068"),
+            "Shudehill Interchange",
+        )
+
+    def test_get_service_with_short_destination_ref(self):
+        command = import_bod_avl.Command()
+        command.source = self.source
+        service = Service.objects.create(line_name="1", current=True)
+        command.services = Service.objects.filter(id=service.id)
+        item = {
+            "RecordedAtTime": "2026-05-19T10:00:00+00:00",
+            "MonitoredVehicleJourney": {
+                "LineRef": "1",
+                "OperatorRef": "NOPE",
+                "DestinationRef": "0",
+                "VehicleLocation": {"Latitude": "52.0", "Longitude": "-1.0"},
+            },
+        }
+
+        self.assertIsNone(command.get_service(Operator.objects.none(), item, "1", ""))
 
     @time_machine.travel("2020-05-01", tick=False)
     def test_new_bod_avl_a(self):
@@ -466,7 +513,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
 
         journey = VehicleJourney.objects.get()
         self.assertEqual(journey.direction, "inbound")
-        self.assertEqual(journey.destination, "Southwold")
+        self.assertEqual(journey.destination, "Southwold, Kings Head")
 
         with mock.patch("vehicles.views.redis_client", redis_client):
             response = self.client.get(f"/journeys/{journey.id}.json")
@@ -477,7 +524,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 "code": "146_20201128_12_58",
                 "current": True,
                 "datetime": "2020-11-28T12:58:25Z",
-                "destination": "Southwold",
+                "destination": "Southwold, Kings Head",
                 "direction": "inbound",
                 "route_name": "146",
                 "service_id": None,
@@ -508,8 +555,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             with self.assertNumQueries(5):
                 response = self.client.get(journey.get_absolute_url())
             self.assertContains(response, "146")
-            self.assertContains(response, ">Southwold<")
-            self.assertContains(response, f'<a href="/journeys/{journey.id}">Map</a>')
+            self.assertContains(response, ">Southwold, Kings Head<")
+            self.assertContains(response, f'<a href="#journeys/{journey.id}">Map</a>')
 
             with (
                 mock.patch("vehicles.views.redis_client.geosearch", return_value=[]),
@@ -543,7 +590,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                         },
                         "heading": 142,
                         "datetime": "2020-11-28T15:07:06Z",
-                        "destination": "Southwold",
+                        "destination": "Southwold, Kings Head",
                         "service": {"line_name": "146"},
                     }
                 ],
@@ -565,7 +612,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                         },
                         "heading": 142,
                         "datetime": "2020-11-28T15:07:06Z",
-                        "destination": "Southwold",
+                        "destination": "Southwold, Kings Head",
                         "service": {"line_name": "146"},
                     }
                 ],

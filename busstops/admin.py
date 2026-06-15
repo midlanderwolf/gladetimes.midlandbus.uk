@@ -276,6 +276,7 @@ class ServiceAdmin(GISModelAdmin):
         "public_use",
         "colour",
         "line_brand",
+        "create_route_links",
         "modified_at",
     )
     list_filter = (
@@ -299,7 +300,7 @@ class ServiceAdmin(GISModelAdmin):
         ToServiceLinkInline,
     ]
     readonly_fields = ["search_vector", "modified_at"]
-    list_editable = ["colour", "line_brand"]
+    list_editable = ["colour", "line_brand", "create_route_links"]
     list_select_related = ["colour"]
     actions = ["current_false", "public_use_true", "merge", "unmerge"]
 

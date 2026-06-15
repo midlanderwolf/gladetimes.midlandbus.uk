@@ -47,6 +47,9 @@ class VehicleSerializer(serializers.ModelSerializer):
                 "left": obj.get_livery(),
                 "right": obj.get_livery(90),
             }
+            
+    def get_previous_reg(self, obj):
+        return obj.data_get(key="Previous reg")
 
     def get_previous_reg(self, obj):
         return obj.data_get(key="Previous reg")

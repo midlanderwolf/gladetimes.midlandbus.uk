@@ -35,25 +35,53 @@ Status = namedtuple(
 
 
 def same_journey(journey, last_journey, now):
-    if journey.datetime == last_journey.datetime:
-        return True
-    if journey.datetime and not last_journey.datetime.second:
-        # seems safe to assume that last journey had a different departure time
-        return False
+    # If trip_id is available, use it for comparison
+    if journey.trip_id and last_journey.trip_id:
+        return journey.trip_id == last_journey.trip_id
+
+    # Compare key journey attributes
+    # Use hour + minute to detect trip changes on same day
+    journey_time = None
+    last_journey_time = None
+    if journey.datetime:
+        journey_time = journey.datetime.hour * 3600 + journey.datetime.minute * 60
+    if last_journey.datetime:
+        last_journey_time = (
+            last_journey.datetime.hour * 3600 + last_journey.datetime.minute * 60
+        )
+
     return (
         journey.service_id,
         journey.route_name,
         journey.code,
         journey.direction,
-        # journey.trip_id,
-        timezone.localdate(now),
+        journey_time,
     ) == (
         last_journey.service_id,
         last_journey.route_name,
         last_journey.code,
         last_journey.direction,
-        # last_journey.trip_id or journey.trip_id,
-        timezone.localdate(last_journey.datetime),
+        last_journey_time,
+    )
+    if last_journey.datetime:
+        last_journey_time = (
+            last_journey.datetime.hour * 3600
+            + last_journey.datetime.minute * 60
+            + last_journey.datetime.second
+        )
+
+    return (
+        journey.service_id,
+        journey.route_name,
+        journey.code,
+        journey.direction,
+        journey_time,
+    ) == (
+        last_journey.service_id,
+        last_journey.route_name,
+        last_journey.code,
+        last_journey.direction,
+        last_journey_time,
     )
 
 
@@ -475,9 +503,12 @@ class ImportLiveVehiclesCommand(BaseCommand):
             total_items += 1
 
             if self.identifiers.get(vehicle_identity) == self.get_item_identity(item):
-                if journey_identity == self.journeys_ids[vehicle_identity]:
+                if (
+                    vehicle_identity in self.journeys_ids
+                    and journey_identity == self.journeys_ids[vehicle_identity]
+                ):
                     continue
-                print(self.journeys_ids[vehicle_identity], item)
+                print(self.journeys_ids.get(vehicle_identity), item)
             if (
                 vehicle_identity not in self.journeys_ids
                 or journey_identity != self.journeys_ids[vehicle_identity]
@@ -500,7 +531,10 @@ class ImportLiveVehiclesCommand(BaseCommand):
 
     def update(self) -> int:
         with sentry_sdk.start_transaction(name=f"{self.source.name} update"):
-            now = timezone.localtime()
+            if hasattr(self, "tzinfo") and self.tzinfo:
+                now = timezone.localtime(timezone.now(), self.tzinfo)
+            else:
+                now = timezone.localtime()
             self.source.datetime = now
 
             wait = self.wait

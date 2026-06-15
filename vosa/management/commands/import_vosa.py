@@ -128,9 +128,7 @@ class Command(BaseCommand):
                     print(licence.address, line["Address"])
                 licence.address = line["Address"]
 
-            if licence.traffic_area:
-                assert licence.traffic_area == line["Current Traffic Area"]
-            else:
+            if licence.traffic_area != line["Current Traffic Area"]:
                 licence.traffic_area = line["Current Traffic Area"]
 
             licence.discs = line["Discs in Possession"] or None

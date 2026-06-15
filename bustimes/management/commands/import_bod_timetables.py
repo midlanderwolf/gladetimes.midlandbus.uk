@@ -38,7 +38,7 @@ def clean_up(timetable_data_source, current_sources, incomplete=False):
         ).exists():
             logger.warning(
                 f"""{timetable_data_source} has no current data
-https://bustimes.org/admin/busstops/service/?route__source__source={timetable_data_source.id}"""
+https://gladetimes.midlandbus.uk/admin/busstops/service/?route__source__source={timetable_data_source.id}"""
             )
         return
 
@@ -126,8 +126,8 @@ def handle_file(command, path, qualify_filename=False):
             except (AttributeError, DataError) as e:
                 logger.exception(e)
 
-    if not qualify_filename:
-        command.source.upload_to_s3_etc(full_path)
+    # if not qualify_filename:
+    #     command.source.upload_to_s3_etc(full_path)
 
 
 def get_bus_open_data_paramses(sources, api_key):
@@ -401,7 +401,7 @@ def stagecoach(specific_operator=None):
 
     timetable_data_sources = TimetableDataSource.objects.filter(
         Q(url__startswith="https://opendata.stagecoachbus.com/")
-        | Q(url__endswith="/TfGMtxcnew.zip"),
+        | Q(url__startswith="https://cdn.midlandbus.uk/"),
         active=True,
     )
     if specific_operator:

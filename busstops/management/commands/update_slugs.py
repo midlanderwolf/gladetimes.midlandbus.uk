@@ -25,5 +25,8 @@ class Command(BaseCommand):
                     )
                 except IntegrityError:
                     pass
-                service.slug = ideal_slug
-                service.save(update_fields=["slug"])
+                try:
+                    service.slug = ideal_slug
+                    service.save(update_fields=["slug"])
+                except IntegrityError:
+                    pass
