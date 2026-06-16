@@ -1,5 +1,6 @@
 import functools
 import io
+import logging
 import re
 import zipfile
 from datetime import datetime, timedelta
@@ -533,9 +534,9 @@ class Command(ImportLiveVehiclesCommand):
                 operators, item, route_name, vehicle.operator_id
             )
 
-            if not operators and journey.service and journey.service.operator.all():
+            if not operators and journey.service and journey.service.operator.all().distinct():
                 # create new OperatorCode
-                operator = journey.service.operator.all()[0]
+                operator = journey.service.operator.all().distinct()[0]
                 try:
                     OperatorCode.objects.create(
                         source=self.source, operator=operator, code=operator_ref

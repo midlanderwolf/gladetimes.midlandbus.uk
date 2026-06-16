@@ -6,7 +6,7 @@ from django.db import transaction
 
 from busstops.models import Operator
 from bustimes.models import Garage
-from vehicles.models import Livery, Vehicle, VehicleType
+from vehicles.models import Livery, Vehicle, VehicleFeature, VehicleType
 
 logger = logging.getLogger(__name__)
 
@@ -65,31 +65,36 @@ class Command(BaseCommand):
         livery_by_id = {l.id: l for l in Livery.objects.all()}
         operator_by_noc = {o.noc: o for o in Operator.objects.all()}
         garage_index = self._build_garage_index()
+        feature_by_name = {f.name: f for f in VehicleFeature.objects.all()}
 
         created = 0
         updated = 0
         errors = 0
         batch = []
+        features_batch = []
 
         for item in fetch_all(f"{API_BASE}/vehicles/"):
             try:
-                vehicle = self._build_vehicle(
-                    item, type_by_name, livery_by_id, operator_by_noc, garage_index
+                vehicle, features = self._build_vehicle(
+                    item, type_by_name, livery_by_id, operator_by_noc, garage_index, feature_by_name
                 )
                 batch.append(vehicle)
+                if features:
+                    features_batch.append((item["slug"], features))
             except Exception:
                 logger.exception(f"Error building vehicle {item.get('id')}")
                 errors += 1
 
             if len(batch) >= 500:
-                c, u = self._save_batch(batch)
+                c, u = self._save_batch(batch, features_batch)
                 created += c
                 updated += u
                 batch = []
+                features_batch = []
                 self.stdout.write(f"Progress: {created + updated} vehicles")
 
         if batch:
-            c, u = self._save_batch(batch)
+            c, u = self._save_batch(batch, features_batch)
             created += c
             updated += u
 
@@ -107,7 +112,7 @@ class Command(BaseCommand):
         return index
 
     @staticmethod
-    def _build_vehicle(item, type_by_name, livery_by_id, operator_by_noc, garage_index):
+    def _build_vehicle(item, type_by_name, livery_by_id, operator_by_noc, garage_index, feature_by_name):
         slug = item["slug"]
 
         vehicle_type = None
@@ -132,6 +137,16 @@ class Command(BaseCommand):
             op_noc = operator.noc if operator else None
             garage = garage_index.get((code, op_noc))
 
+        data = {}
+        if item.get("previous_reg"):
+            data["Previous reg"] = item["previous_reg"]
+
+        features = []
+        for feature_name in item.get("special_features") or []:
+            if feature_name not in feature_by_name:
+                feature_by_name[feature_name] = VehicleFeature.objects.create(name=feature_name)
+            features.append(feature_by_name[feature_name])
+
         return Vehicle(
             slug=slug,
             code=item.get("fleet_code") or item.get("reg", "").upper().replace(" ", "") or (slug.split("-", 1)[-1] if "-" in slug else slug),
@@ -146,11 +161,12 @@ class Command(BaseCommand):
             name=item.get("name", ""),
             notes=item.get("notes", ""),
             withdrawn=item.get("withdrawn", False),
-        )
+            data=data or None,
+        ), features
 
     @staticmethod
     @transaction.atomic
-    def _save_batch(batch):
+    def _save_batch(batch, features_batch):
         slugs = [v.slug for v in batch]
         existing = {v.slug: v for v in Vehicle.objects.filter(slug__in=slugs)}
 
@@ -183,7 +199,15 @@ class Command(BaseCommand):
                     "name",
                     "notes",
                     "withdrawn",
+                    "data",
                 ],
             )
+
+        if features_batch:
+            slug_to_vehicle = {v.slug: v for v in batch if v.id}
+            for slug, features in features_batch:
+                vehicle = slug_to_vehicle.get(slug)
+                if vehicle:
+                    vehicle.features.set(features)
 
         return len(to_create), len(to_update)

@@ -706,7 +706,7 @@ class Command(BaseCommand):
                 operators = Operator.objects.filter(
                     trip__route__service=service
                 ).distinct()
-                if operators and list(operators) != list(service.operator.all()):
+                if operators and list(operators) != list(service.operator.all().distinct()):
                     service.operator.set(operators)
 
         services.update(modified_at=Now())

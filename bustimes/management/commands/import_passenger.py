@@ -47,7 +47,7 @@ def get_version(source, dates, url):
 def get_versions(session, source):
     versions = []
     try:
-        response = session.get(source.url, timeout=61)
+        response = session.get(source.url, timeout=61, allow_redirects=True)
     except requests.RequestException as e:
         logger.warning(f"{source.url} {e}")
         sleep(5)
@@ -56,6 +56,29 @@ def get_versions(session, source):
         logger.warning(f"{source.url} {response}")
         sleep(5)
         return
+
+    content_type = response.headers.get("content-type", "")
+    is_zip = (
+        source.url.endswith(".zip")
+        or "application/zip" in content_type
+        or "application/octet-stream" in content_type
+    )
+
+    if is_zip:
+        url = response.url
+        filename = os.path.basename(urlparse(url).path)
+        path = os.path.join(settings.DATA_DIR, filename)
+        if not os.path.exists(path):
+            write_file(path, response)
+        version = Version.objects.update_or_create(
+            {
+                "url": url,
+            },
+            source=source,
+            name=filename,
+        )
+        versions.append(version)
+        return versions
 
     soup = bs4.BeautifulSoup(response.text, "lxml")
 

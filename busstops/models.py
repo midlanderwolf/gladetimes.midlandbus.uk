@@ -959,7 +959,7 @@ class Service(models.Model):
                     line_name_query |= Q(line_name=line_name)
             routes = routes.filter(line_name_query)
 
-        operators = self.operator.all()
+        operators = self.operator.all().distinct()
         try:
             timetable = Timetable(
                 routes,

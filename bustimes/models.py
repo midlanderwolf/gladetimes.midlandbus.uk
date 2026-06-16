@@ -150,6 +150,10 @@ class BankHolidayDate(models.Model):
                 fields=["bank_holiday", "date"], name="unique_bank_holiday_date"
             )
         ]
+        indexes = [
+            models.Index(fields=["bank_holiday"]),
+            models.Index(fields=["date"]),
+        ]
 
 
 class CalendarBankHoliday(models.Model):
@@ -159,6 +163,10 @@ class CalendarBankHoliday(models.Model):
 
     class Meta:
         unique_together = ("bank_holiday", "calendar")
+        indexes = [
+            models.Index(fields=["calendar"]),
+            models.Index(fields=["bank_holiday"]),
+        ]
 
     def __str__(self):
         if self.operation:

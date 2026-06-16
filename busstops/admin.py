@@ -358,7 +358,7 @@ class ServiceAdmin(GISModelAdmin):
         for other in others:
             if other.current:
                 other.route_set.update(service=first)
-                first.operator.add(*other.operator.all())
+                first.operator.add(*other.operator.all().distinct())
             other.vehiclejourney_set.update(service=first)
             other.servicecode_set.filter(
                 ~Exists(
@@ -412,7 +412,7 @@ class ServiceAdmin(GISModelAdmin):
             with transaction.atomic():
                 services_by_line_name = {service.line_name: service.id}
                 service_id = service.id  # for use later
-                operators = service.operator.all()
+                operators = service.operator.all().distinct()
                 routes = service.route_set.all()
                 journeys = service.vehiclejourney_set.all()
                 bool(journeys)  # force evaluation

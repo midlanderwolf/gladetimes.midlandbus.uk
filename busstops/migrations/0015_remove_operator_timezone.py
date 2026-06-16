@@ -8,6 +8,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunSQL(
-            sql="ALTER TABLE busstops_operator DROP COLUMN timezone;",
+            sql="ALTER TABLE busstops_operator DROP COLUMN IF EXISTS timezone;",
         ),
     ]

@@ -587,11 +587,11 @@ class Command(BaseCommand):
             self.fare_products = {}
             self.fare_zones = get_existing_fare_zones(dataset)
 
-                if (
-                    content_type := response.headers["Content-Type"]
-                ) == "text/xml" or content_type == "application/xml":
-                    filename = filename_from_content_disposition(response)
-                    self.handle_file(dataset, io.BytesIO(response.content), filename)
+            if (
+                content_type := response.headers["Content-Type"]
+            ) == "text/xml" or content_type == "application/xml":
+                filename = filename_from_content_disposition(response)
+                self.handle_file(dataset, io.BytesIO(response.content), filename)
             else:
                 assert content_type == "application/zip"
                 try:

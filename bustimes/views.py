@@ -529,7 +529,7 @@ class TripDetailView(DetailView):
         if self.object.operator:
             operators = [self.object.operator]
         elif route and route.service:
-            operators = list(self.object.route.service.operator.all())
+            operators = list(self.object.route.service.operator.all().distinct())
         else:
             operators = []
 

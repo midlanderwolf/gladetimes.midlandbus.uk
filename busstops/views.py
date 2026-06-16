@@ -1145,7 +1145,7 @@ class ServiceDetailView(DetailView):
             alternative = None
 
             services = services.only("slug", "current").filter(current=True)
-            operators = service.operator.all()
+            operators = service.operator.all().distinct()
 
             if service.line_name:
                 if operators:
@@ -1162,7 +1162,7 @@ class ServiceDetailView(DetailView):
                 if not alternative and operators:
                     alternative = services.filter(
                         line_name__iexact=service.line_name,
-                        operator__in=service.operator.all(),
+                        operator__in=service.operator.all().distinct(),
                     ).first()
 
             if not alternative and service.description:
@@ -1238,7 +1238,7 @@ class ServiceDetailView(DetailView):
         ):
             return {"redirect_to": self.object}
 
-        operators = self.object.operator.all()
+        operators = self.object.operator.all().distinct()
         context["operators"] = operators
 
         context["related"] = self.object.get_similar_services()
@@ -1451,7 +1451,7 @@ def service_timetable(request, service_id):
 
     # mark disrupted stops, for the day being shown
     when = form.cleaned_data.get("date") if form.is_valid() else None
-    situations = get_service_situations(service, service.operator.all())
+    situations = get_service_situations(service, service.operator.all().distinct())
     stop_situations = build_stop_situations(
         situations, when=when or timezone.localdate()
     )
