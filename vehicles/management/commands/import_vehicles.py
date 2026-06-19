@@ -157,14 +157,9 @@ class Command(BaseCommand):
                 # Vehicle type
                 vehicle_type = None
                 if vehicle_data.get("vehicle_type"):
-                    vehicle_type, _ = VehicleType.objects.get_or_create(
-                        id=vehicle_data["vehicle_type"]["id"],
-                        defaults={
-                            "name": vehicle_data["vehicle_type"]["name"],
-                            "style": vehicle_data["vehicle_type"]["style"],
-                            "fuel": vehicle_data["vehicle_type"]["fuel"],
-                        },
-                    )
+                    vehicle_type = VehicleType.objects.filter(
+                        name=vehicle_data["vehicle_type"]["name"]
+                    ).first()
 
                 # Livery (ID-based)
                 livery = None

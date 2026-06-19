@@ -35,6 +35,7 @@ class Situation(models.Model):
                 "Nottingham City Transport",
                 "Intalink",
                 "McGill's",
+                "Arriva UK",
             )
         },
         default=236,
