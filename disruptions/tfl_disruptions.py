@@ -62,11 +62,8 @@ def handle_disruption(item: dict, source: DataSource):
 
     consequence.stops.add(*stops)
 
-    try:
-        period = situation.validityperiod_set.get()
-    except ValidityPeriod.DoesNotExist:
-        period = ValidityPeriod(situation=situation, period=window)
-        period.save()
+    situation.validityperiod_set.all().delete()
+    ValidityPeriod.objects.create(situation=situation, period=window)
 
     return situation
 
@@ -121,14 +118,10 @@ def handle_status(item: dict, source: DataSource):
         situation.current = True
         situation.save()
 
-        if created:
-            for period in validity_periods:
-                window = DateTimeTZRange(period["fromDate"], period["toDate"], "[]")
-                vp = ValidityPeriod(
-                    situation=situation,
-                    period=window,
-                )
-                vp.save()
+        situation.validityperiod_set.all().delete()
+        for period in validity_periods:
+            window = DateTimeTZRange(period["fromDate"], period["toDate"], "[]")
+            ValidityPeriod.objects.create(situation=situation, period=window)
 
         consequence = situation.consequence_set.first()
         if not consequence:

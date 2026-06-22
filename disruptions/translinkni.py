@@ -48,17 +48,13 @@ def handle_item(item: dict, source: DataSource, current_situations: dict):
     situation.text = soup.get_text().strip().replace("\n\xa0\n", "\n\n")
     situation.save()
 
-    for i, period_element in enumerate(item["timestamps"]["validity"]):
-        period = ValidityPeriod(situation=situation)
-        if not created and i == 0:
-            try:
-                period = situation.validityperiod_set.get()
-            except ValidityPeriod.MultipleObjectsReturned:
-                situation.validityperiod_set.all().delete()
-            except ValidityPeriod.DoesNotExist:
-                pass
-        period.period = get_period(period_element)
-        period.save()
+    # Delete existing validity periods and recreate
+    ValidityPeriod.objects.filter(situation=situation).delete()
+
+    for period_element in item["timestamps"]["validity"]:
+        ValidityPeriod.objects.create(
+            situation=situation, period=get_period(period_element)
+        )
 
     consequence = Consequence(situation=situation)
     if not created and i == 0:

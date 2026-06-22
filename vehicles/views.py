@@ -217,7 +217,7 @@ def operator_vehicles(request, slug=None, group_slug=None):
             vehicles = vehicles.annotate(
                 pending_edits=Exists("vehiclerevision", filter=Q(pending=True))
             )
-        vehicles = vehicles.select_related("latest_journey")
+        vehicles = vehicles.select_related("latest_journey", "latest_journey__trip")
 
         context = {
             "object": operator,
@@ -303,15 +303,21 @@ def operator_vehicles(request, slug=None, group_slug=None):
 
         context["today"] = today
 
+        has_block = False
         for vehicle in vehicles:
             if vehicle.latest_journey:
                 when = vehicle.latest_journey.datetime
+                block = vehicle.latest_journey.trip_id and vehicle.latest_journey.trip.block or ""
+                if block:
+                    has_block = True
                 vehicle.last_seen = {
                     "service": vehicle.latest_journey.route_name,
+                    "block": block,
                     "when": when,
                     "today": when >= today,
                 }
 
+        context["block_column"] = has_block
         context["map"] = any(
             hasattr(vehicle, "last_seen") and vehicle.last_seen["today"]
             for vehicle in vehicles

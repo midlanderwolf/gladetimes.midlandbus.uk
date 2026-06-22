@@ -43,17 +43,20 @@ def handle_alert(alert: dict, source: DataSource, operators: dict, services):
 
     situation.save()
 
-    for i, period_data in enumerate(periods):
-        period = ValidityPeriod(situation=situation)
-        if created and i == 0:
-            try:
-                period = situation.validityperiod_set.get()
-            except ValidityPeriod.DoesNotExist:
-                pass
+    # Delete existing validity periods and recreate
+    ValidityPeriod.objects.filter(situation=situation).delete()
+
+    # Deduplicate periods by start/end time
+    seen_periods = set()
+    for period_data in periods:
         start = period_data["start"]
         end = period_data.get("end")
-        period.period = DateTimeTZRange(start, end, "[]")
-        period.save()
+        period_key = (start, end)
+        if period_key not in seen_periods:
+            seen_periods.add(period_key)
+            ValidityPeriod.objects.create(
+                situation=situation, period=DateTimeTZRange(start, end, "[]")
+            )
 
     consequence = Consequence(situation=situation)
     if not created:

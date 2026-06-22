@@ -37,7 +37,7 @@
         <strong class="name{% if object.colour_id %} colour colour-{{ object.colour_id }}{% endif %}">{{ object.line_brand }}</strong>
     {% endif %}
     </span>
-    <span class="description">{{ object.description }}</span>
+    <span class="description">{{ object.description }}{% if situations %}<span class="disruption-badge">Disruption</span>{% endif %}</span>
 </h1>
 
 <p>
@@ -76,6 +76,7 @@
     {% if vehicles %}
         <li><a href="{{ object.get_absolute_url() }}/vehicles">Vehicles</a>
     {% endif %}
+    <li><a href="{{ request.path }}{% if query_string %}?{{ query_string }}&detailed=1{% else %}?detailed=1{% endif %}">Detailed</a></li>
 </ul>
 
 <div id="timetable">

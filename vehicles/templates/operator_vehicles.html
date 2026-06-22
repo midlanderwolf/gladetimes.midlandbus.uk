@@ -70,7 +70,7 @@ ticket machines, a byproduct of the live bus tracking.</p>
     <thead>
         <tr>
             <th scope="col" colspan="2"></th>
-            {% if not parent %}<th scope="col" colspan="2">Last tracked</th>{% endif %}
+            {% if not parent %}<th scope="col" colspan="{% if block_column %}3{% else %}2{% endif %}">Last tracked</th>{% endif %}
             <th scope="col">Livery</th>
             {% if branding_column %}<th scope="col">Branding</th>{% endif %}
             <th scope="col">Type</th>
@@ -104,6 +104,7 @@ ticket machines, a byproduct of the live bus tracking.</p>
                 {% if not parent %}<td class="last-seen">
                     {{ vehicle.last_seen.service }}
                 </td>
+                {% if block_column %}<td class="last-seen">{{ vehicle.last_seen.block }}</td>{% endif %}
                 <td class="last-seen">
                     {% if vehicle.last_seen.today %}
                         {{ vehicle.last_seen.when|time:"H:i" }}

@@ -32,7 +32,7 @@
             {% endif %}
             </span>
             <span class="description">
-                {{ service.description }}
+                {{ service.description }}{% if service.has_disruption %}<span class="disruption-badge">Disruption</span>{% endif %}
             </span>
             {% if service.start_date > today %}<small>From {{ service.start_date|date:"j M" }}</small>{% endif %}
         </a>

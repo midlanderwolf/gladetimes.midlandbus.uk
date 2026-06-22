@@ -744,6 +744,18 @@ table {
     }
 }
 
+.disruption-badge {
+    background: var(--brand-color-darker-darker);
+    color: var(--white);
+    font-size: 0.7em;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
 
 .has-smalls .names {
     float: left;

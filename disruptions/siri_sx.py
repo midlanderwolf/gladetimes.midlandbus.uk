@@ -78,17 +78,13 @@ def handle_item(item: ET.Element, source: DataSource, current_situations: dict):
             link.url = link_element.text
             link.save()
 
-    for i, period_element in enumerate(item.findall("ValidityPeriod")):
-        period = ValidityPeriod(situation=situation)
-        if not created and i == 0:
-            try:
-                period = situation.validityperiod_set.get()
-            except ValidityPeriod.MultipleObjectsReturned:
-                situation.validityperiod_set.all().delete()
-            except ValidityPeriod.DoesNotExist:
-                pass
-        period.period = get_period(period_element)
-        period.save()
+    # Delete existing validity periods and recreate
+    ValidityPeriod.objects.filter(situation=situation).delete()
+
+    for period_element in item.findall("ValidityPeriod"):
+        ValidityPeriod.objects.create(
+            situation=situation, period=get_period(period_element)
+        )
 
     for i, consequence_element in enumerate(item.find("Consequences")):
         consequence = Consequence(situation=situation)

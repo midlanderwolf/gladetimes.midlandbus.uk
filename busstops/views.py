@@ -20,7 +20,7 @@ from django.core.cache import cache
 from django.core.mail import EmailMessage
 from django.core.paginator import Paginator
 from django.db import connection
-from django.db.models import F, OuterRef, Prefetch, Q, When, Case, Value
+from django.db.models import F, OuterRef, Prefetch, Q, When, Case, Value, Exists
 from django.db.models.functions import Coalesce, Now
 from django.http import (
     Http404,
@@ -1011,10 +1011,16 @@ class OperatorDetailView(DetailView):
 
         # services list:
 
+        disrupted_services = Consequence.objects.filter(
+            services=OuterRef("pk"),
+            situation__publication_window__contains=Now(),
+            situation__current=True,
+        )
         services = (
             self.object.service_set.with_line_names()
             .filter(current=True)
             .defer("geometry", "search_vector")
+            .annotate(has_disruption=Exists(disrupted_services))
         )
         services = services.annotate(start_date=SubqueryMin("route__start_date"))
 
@@ -1231,6 +1237,7 @@ class ServiceDetailView(DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context["query_string"] = self.request.GET.urlencode()
 
         if (
             type(self.object) is not self.model
