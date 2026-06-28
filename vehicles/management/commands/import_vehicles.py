@@ -193,6 +193,10 @@ class Command(BaseCommand):
                 else:
                     code = normalize_slug(vehicle_data.get("slug"))
 
+                data = {}
+                if vehicle_data.get("previous_reg"):
+                    data["Previous reg"] = vehicle_data["previous_reg"]
+
                 defaults = {
                     "code": code,
                     "fleet_number": normalize_fleet_number(
@@ -212,6 +216,7 @@ class Command(BaseCommand):
                     "branding": vehicle_data.get("branding", ""),
                     "notes": vehicle_data.get("notes", ""),
                     "withdrawn": vehicle_data.get("withdrawn", False),
+                    "data": data or None,
                 }
 
                 # Features (API can return null)

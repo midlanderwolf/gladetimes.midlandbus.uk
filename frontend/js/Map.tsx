@@ -40,6 +40,7 @@ const mapStyles: { [key: string]: string } = {
   light: "Light",
   dark: "Dark",
   satellite: "Satellite",
+  backup: "Backup",
 };
 
 type StyleSwitcherProps = {
@@ -200,6 +201,7 @@ export default function BusTimesMap(
     document.body.classList.toggle(
       "dark-mode",
       mapStyle === "dark" ||
+      mapStyle === "backup" ||
         (mapStyle === "satellite" && darkModeQuery.matches),
     );
   }, [mapStyle, darkModeQuery.matches]);
@@ -207,7 +209,8 @@ export default function BusTimesMap(
   const fluffynetUrls: { [key: string]: string } = {
     light: "https://maps.fluffynet.dev/styles/glade-light/style.json",
     dark: "https://maps.fluffynet.dev/styles/glade-dark/style.json",
-    // satellite: "https://maps.fluffynet.dev/styles/satellite/style.json",
+    satellite: "https://tiles.fluffynet.dev/styles/esri/style.json",
+    backup: "https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json",
   };
   const mapStyleURL = fluffynetUrls[mapStyle];
 

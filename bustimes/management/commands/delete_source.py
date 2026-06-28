@@ -15,19 +15,25 @@ class Command(BaseCommand):
         source_name = options['source_name']
         source_id = options['id']
 
-        try:
-            if source_id:
-                source = DataSource.objects.get(id=source_id)
-            elif source_name:
-                source = DataSource.objects.get(name=source_name)
-            else:
-                self.stdout.write(self.style.ERROR('Must provide either source_name or --id'))
+        if source_id:
+            try:
+                sources = [DataSource.objects.get(id=source_id)]
+            except DataSource.DoesNotExist:
+                self.stdout.write(self.style.ERROR(f'DataSource with ID {source_id} not found'))
                 return
-        except DataSource.DoesNotExist:
-            identifier = source_id if source_id else source_name
-            self.stdout.write(self.style.ERROR(f'DataSource "{identifier}" not found'))
+        elif source_name:
+            sources = list(DataSource.objects.filter(name=source_name))
+            if not sources:
+                self.stdout.write(self.style.ERROR(f'DataSource "{source_name}" not found'))
+                return
+        else:
+            self.stdout.write(self.style.ERROR('Must provide either source_name or --id'))
             return
 
+        for source in sources:
+            self._delete_source(source, source_name)
+
+    def _delete_source(self, source, source_name):
         self.stdout.write(f'Deleting data for source "{source_name}" (ID: {source.id})')
 
         with transaction.atomic():

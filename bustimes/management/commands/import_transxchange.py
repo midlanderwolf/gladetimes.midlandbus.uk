@@ -1617,6 +1617,9 @@ class Command(BaseCommand):
             if atco_code[:3] == "910":
                 stops.append(atco_code[:-1])
 
+            if atco_code[-1:].isdigit():
+                stops.append(atco_code[:-1])
+
         stops = (
             StopPoint.objects.annotate(atco_code_upper=Upper("atco_code"))
             .filter(atco_code_upper__in=stops)
@@ -1637,6 +1640,8 @@ class Command(BaseCommand):
                     stops[atco_code_upper] = stops[f"0{atco_code}"]
                 elif atco_code[:3] == "910" and atco_code[:-1] in stops:
                     stops[atco_code_upper] = stops[atco_code[:-1]]
+                elif atco_code[-1:].isdigit() and atco_code_upper[:-1] in stops:
+                    stops[atco_code_upper] = stops[atco_code_upper[:-1]]
                 else:
                     stoppoint = get_stop(
                         stop.element, f"{self.source.id}:{atco_code_upper}"
