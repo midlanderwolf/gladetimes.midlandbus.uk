@@ -16,9 +16,10 @@ from ...models import SiriSubscription, Vehicle
 class SiriPostTest(TestCase):
     @classmethod
     def setUpTestData(cls):
-        DataSource.objects.create(name="Transport for Wales")
+        source = DataSource.objects.create(name="Transport for Whales")
         SiriSubscription.objects.create(
             name="Transport for Wales",
+            source=source,
             uuid="475d1d1f-5708-4ee1-8f51-c63d948bc0b9",
             producer_url="https://bustimes.org/",
         )

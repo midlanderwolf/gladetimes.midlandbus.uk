@@ -626,3 +626,161 @@ def generate_route_links_for_service(service):
         return True
 
     return False
+
+
+def get_route_link_valhalla(
+    session, url, costing, service, from_atco, from_point, to_atco, to_point
+):
+    from bustimes.models import RouteLink
+    from django.contrib.gis.geos import LineString
+
+    try:
+        response = session.post(
+            f"{url}/route",
+            json={
+                "locations": [
+                    {"lat": from_point.y, "lon": from_point.x},
+                    {"lat": to_point.y, "lon": to_point.x},
+                ],
+                "costing": costing,
+                "directions_options": {"shape_format": "geojson", "units": "km"},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Valhalla API error for {from_atco}->{to_atco}: {e}")
+
+    trip = data.get("trip")
+    if not trip:
+        raise RuntimeError(f"No 'trip' in Valhalla response for {from_atco}->{to_atco}")
+    
+    status = trip.get("status")
+    if status != 0:
+        status_msg = trip.get("status_message", "Unknown error")
+        raise RuntimeError(f"Valhalla error for {from_atco}->{to_atco}: {status_msg}")
+
+    legs = trip.get("legs", [])
+    if not legs:
+        raise RuntimeError(f"No legs in Valhalla response for {from_atco}->{to_atco}")
+
+    shape = legs[0].get("shape")
+    if not shape:
+        raise RuntimeError(f"No shape in Valhalla response for {from_atco}->{to_atco}")
+    
+    if isinstance(shape, dict):
+        coords = shape.get("coordinates")
+    elif isinstance(shape, str):
+        import polyline
+        decoded = polyline.decode(shape)
+        coords = [[lon / 10, lat / 10] for lat, lon in decoded]
+    else:
+        raise RuntimeError(f"Shape is not a GeoJSON dict or polyline string for {from_atco}->{to_atco}: {type(shape)}")
+    
+    if not coords:
+        raise RuntimeError(f"No coordinates in shape for {from_atco}->{to_atco}")
+
+    distance_km = legs[0].get("summary", {}).get("length", 0)
+
+    line_geometry = LineString(coords, srid=4326)
+
+    if line_geometry.length == 0:
+        return None
+
+    return RouteLink(
+        service=service,
+        from_stop_id=from_atco,
+        to_stop_id=to_atco,
+        distance_metres=int(distance_km * 1000),
+        geometry=line_geometry,
+    )
+
+
+def generate_route_links_for_service_valhalla(service, url="https://valhalla.midlandbus.uk", costing="bus"):
+    import requests
+
+    from bustimes.models import RouteLink
+
+    route_links = []
+    session = requests.Session()
+
+    stops = list(
+        service.stopusage_set.select_related("stop")
+        .order_by("order")
+        .values_list("stop__atco_code", "stop__latlong")
+    )
+
+    if len(stops) < 2:
+        raise ValueError(f"Service has fewer than 2 stops with coordinates")
+
+    for i in range(len(stops) - 1):
+        from_atco, from_point = stops[i]
+        to_atco, to_point = stops[i + 1]
+
+        if not from_point or not to_point:
+            continue
+
+        route_links.append(
+            get_route_link_valhalla(
+                session,
+                url,
+                costing,
+                service,
+                from_atco,
+                from_point,
+                to_atco,
+                to_point,
+            )
+        )
+
+    if len(stops) > 1:
+        from_atco, from_point = stops[-1]
+        to_atco, to_point = stops[0]
+        if from_point and to_point:
+            route_links.append(
+                get_route_link_valhalla(
+                    session,
+                    url,
+                    costing,
+                    service,
+                    from_atco,
+                    from_point,
+                    to_atco,
+                    to_point,
+                )
+            )
+
+    route_links = [rl for rl in route_links if rl is not None]
+
+    seen = set()
+    unique_route_links = []
+    for rl in route_links:
+        key = (rl.from_stop_id, rl.to_stop_id)
+        if key not in seen:
+            seen.add(key)
+            unique_route_links.append(rl)
+    route_links = unique_route_links
+
+    if route_links:
+        RouteLink.objects.bulk_create(
+            route_links,
+            update_conflicts=True,
+            update_fields=["geometry", "distance_metres"],
+            unique_fields=["service", "from_stop", "to_stop"],
+        )
+
+        from django.contrib.gis.geos import MultiLineString
+
+        geometries = list(
+            RouteLink.objects.filter(service=service).values_list("geometry", flat=True)
+        )
+        if geometries:
+            service.geometry = MultiLineString(geometries, srid=4326)
+            service.save(update_fields=["geometry"])
+        else:
+            service.update_geometry()
+
+        return True
+
+    raise ValueError(f"Valhalla returned no valid routes for any of the {len(stops)-1} stop pairs")

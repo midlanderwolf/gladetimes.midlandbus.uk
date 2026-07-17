@@ -12,6 +12,7 @@ from sql_util.utils import SubqueryCount
 
 from bustimes.admin import log_change
 from bustimes.models import Route, RouteLink
+from bustimes.utils import generate_route_links_for_service_valhalla
 
 from . import models
 
@@ -302,7 +303,7 @@ class ServiceAdmin(GISModelAdmin):
     readonly_fields = ["search_vector", "modified_at"]
     list_editable = ["colour", "line_brand", "create_route_links"]
     list_select_related = ["colour"]
-    actions = ["current_false", "public_use_true", "merge", "unmerge"]
+    actions = ["current_false", "public_use_true", "merge", "unmerge", "generate_route_links"]
 
     @admin.display(ordering="routes")
     def routes(self, obj):
@@ -445,6 +446,26 @@ class ServiceAdmin(GISModelAdmin):
                         service_codes.filter(
                             code__istartswith=f"{service.line_name}-"
                         ).update(service=service)
+
+    def generate_route_links(self, request, queryset):
+        success = 0
+        failed = 0
+        errors = []
+        for service in queryset:
+            try:
+                result = generate_route_links_for_service_valhalla(service)
+                if result:
+                    success += 1
+                else:
+                    failed += 1
+                    errors.append(f"{service.id}: no route links generated")
+            except Exception as e:
+                failed += 1
+                errors.append(f"{service.id}: {str(e)}")
+        message = f"Route links generated: {success} succeeded, {failed} failed"
+        if errors:
+            message += "\n" + "\n".join(errors[:10])
+        self.message_user(request, message)
 
 
 @admin.register(models.ServiceLink)

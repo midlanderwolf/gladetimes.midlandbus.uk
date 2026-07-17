@@ -230,7 +230,13 @@ def route_xml(request, source, code=""):
 
     content_type = "application/xml"
 
-    if "stagecoach" in source.url:
+    if source.name in ("Arriva", "Arriva Bus UK"):
+        path = settings.DATA_DIR / "arriva" / str(source.id)
+        if not path.exists():
+            if not path.parent.exists():
+                path.parent.mkdir(parents=True)
+            download(path, "https://arrivabus.co.uk/open-data")
+    elif "stagecoach" in source.url:
         path = settings.DATA_DIR / source.url.split("/")[-1]
         if not path.exists():
             if not path.parent.exists():

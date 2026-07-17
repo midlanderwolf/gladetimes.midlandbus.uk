@@ -659,7 +659,7 @@ class VehicleJourney(models.Model):
         Service, models.SET_NULL, null=True, blank=True, db_index=False
     )
     route_name = models.CharField(max_length=64, blank=True)
-    source = models.ForeignKey(DataSource, models.CASCADE)
+    source = models.ForeignKey(DataSource, models.CASCADE, null=True)
     vehicle = models.ForeignKey(
         Vehicle, models.CASCADE, null=True, blank=True, db_index=False
     )

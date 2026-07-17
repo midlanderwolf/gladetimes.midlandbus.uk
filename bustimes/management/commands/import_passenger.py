@@ -6,11 +6,11 @@ from urllib.parse import urljoin, urlparse
 
 import bs4
 import requests
+from curl_cffi.requests import Session as CurlSession
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
-from requests import Session
 
 from busstops.models import DataSource
 
@@ -20,12 +20,12 @@ from .import_bod_timetables import clean_up, get_operator_ids, handle_file, logg
 from .import_transxchange import Command as TransXChangeCommand
 
 
-def get_version(source, dates, url):
+def get_version(session, source, dates, url):
     filename = os.path.basename(urlparse(url).path)
     path = os.path.join(settings.DATA_DIR, filename)
 
     if not os.path.exists(path):
-        response = requests.get(url, stream=True)
+        response = session.get(url, stream=True)
         url = response.url  # in case there was a redirect
         filename = os.path.basename(urlparse(url).path)
         path = os.path.join(settings.DATA_DIR, filename)
@@ -98,7 +98,7 @@ def get_versions(session, source):
             assert link.text == "Download TransXChange"
             url = urljoin(response.url, link.attrs["href"])
             assert "/txc" in url
-            versions.append(get_version(source, dates, url))
+            versions.append(get_version(session, source, dates, url))
 
             break
 
@@ -114,7 +114,7 @@ class Command(BaseCommand):
         command = TransXChangeCommand()
         command.set_up()
 
-        session = Session()
+        session = CurlSession(impersonate="chrome")
 
         prefix = "https://data.discoverpassenger.com/operator"
         suffix = "/open-data"

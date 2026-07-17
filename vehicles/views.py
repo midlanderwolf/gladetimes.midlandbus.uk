@@ -1413,7 +1413,12 @@ def siri_post(request, uuid):
 
 @csrf_exempt
 @require_POST
-def overland(request, uuid):
+def overland(request, uuid=None):
+    # https://github.com/aaronpk/Overland-iOS#api
+
+    if uuid is None:
+        uuid = request.headers["Authorization"].removeprefix("Bearer ")
+
     subscription = get_object_or_404(SiriSubscription, uuid=uuid)
 
     data = json.loads(request.body)
@@ -1423,7 +1428,9 @@ def overland(request, uuid):
         device_id = item["properties"]["device_id"]
         course = item["properties"].get("course")
 
-        operator, vehicle, line_name, journey_ref, destination = device_id.split(":")
+        parts = device_id.split(":")
+        operator, vehicle, line_name, journey_ref, destination = parts[:5]
+        vehicle_unique_id = parts[5] if len(parts) > 5 else None
         lon, lat = item["geometry"]["coordinates"]
 
         activity = {
@@ -1442,6 +1449,11 @@ def overland(request, uuid):
                 "Bearing": course,
             },
         }
+
+        if vehicle_unique_id:
+            activity["Extensions"] = {
+                "VehicleJourney": {"VehicleUniqueId": vehicle_unique_id}
+            }
 
         handle_siri_post(
             uuid,
