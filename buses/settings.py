@@ -327,6 +327,7 @@ NTA_API_KEY = os.environ.get("NTA_API_KEY")  # Ireland
 ALLOW_VEHICLE_NOTES_OPERATORS = (
     "NATX",  # National Express
     "SCLK",  # Scottish Citylink
+    "FLIX",  #Flixbus
     "ie-526",  # Irish Citylink
     "ie-1178",  # Dublin Express
 )
