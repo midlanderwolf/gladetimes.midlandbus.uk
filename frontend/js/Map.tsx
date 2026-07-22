@@ -207,8 +207,8 @@ export default function BusTimesMap(
   }, [mapStyle, darkModeQuery.matches]);
 
   const fluffynetUrls: { [key: string]: string } = {
-    light: "https://maps.fluffynet.dev/styles/glade-light/style.json",
-    dark: "https://maps.fluffynet.dev/styles/glade-dark/style.json",
+    light: "https://tiles.fluffynet.dev/styles/glade-light/style.json",
+    dark: "https://tiles.fluffynet.dev/styles/glade-dark/style.json",
     satellite: "https://tiles.fluffynet.dev/styles/esri/style.json",
     backup: "https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json",
   };

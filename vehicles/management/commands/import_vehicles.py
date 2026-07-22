@@ -8,6 +8,14 @@ from ...models import VehicleType, Livery, VehicleFeature, Vehicle
 
 SPARE_TICKET_MACHINE_NOTES = "Spare ticket machine"
 
+OPERATOR_REMAP = {
+    "ie-978": "ie-1",
+    "ie-1": "ie-2",
+    "ie-01": "ie-2",
+    "ie-7778008": "ie-WFRD",
+    "ie-7778306": "ie-03C",
+}
+
 
 def normalize_fleet_number(fleet_number):
     """Normalize fleet number by capitalizing letters and extracting from combined codes"""
@@ -106,34 +114,51 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip vehicles that are marked as withdrawn",
         )
+        parser.add_argument(
+            "--rto",
+            action="store_true",
+            help="Use RTO format (raw reg, strip NOC prefix from slug)",
+        )
 
     def handle(self, *args, **options):
         noc = options["noc"]
         use_reg = options["reg"]
         tmsb_format = options["tmsb_format"]
         ignore_withdrawn = options["ignore_withdrawn"]
+        rto = options["rto"]
 
         try:
             operator = Operator.objects.get(noc__iexact=noc)
+            api_noc = noc
         except Operator.DoesNotExist:
-            raise CommandError(f'Operator with NOC "{noc}" not found')
+            if noc in OPERATOR_REMAP:
+                remapped_noc = OPERATOR_REMAP[noc]
+                try:
+                    operator = Operator.objects.get(noc__iexact=remapped_noc)
+                    api_noc = noc
+                except Operator.DoesNotExist:
+                    raise CommandError(f'Operator with NOC "{remapped_noc}" not found')
+            else:
+                raise CommandError(f'Operator with NOC "{noc}" not found')
 
         source, _ = DataSource.objects.get_or_create(
             name="bustimes.org", defaults={"url": "https://bustimes.org/"}
         )
 
-        self.import_vehicles(operator, source, use_reg, tmsb_format, ignore_withdrawn)
+        self.import_vehicles(operator, source, use_reg, tmsb_format, ignore_withdrawn, api_noc, rto)
         self.stdout.write(
             self.style.SUCCESS(f"Successfully imported vehicles for {noc}")
         )
 
     @transaction.atomic
     def import_vehicles(
-        self, operator, source, use_reg, tmsb_format=False, ignore_withdrawn=False
+        self, operator, source, use_reg, tmsb_format=False, ignore_withdrawn=False, api_noc=None, rto=False
     ):
+        if api_noc is None:
+            api_noc = operator.noc
         url = (
             "https://bustimes.org/api/vehicles/"
-            f"?format=json&limit=9999&operator={operator.noc}"
+            f"?format=json&limit=9999&operator={api_noc}"
         )
 
         created_count = 0
@@ -170,8 +195,31 @@ class Command(BaseCommand):
                         defaults={"name": livery_data.get("name", "")},
                     )
 
+                # Determine vehicle operator (with remapping)
+                vehicle_operator = operator
+                if vehicle_data.get("operator"):
+                    api_operator_data = vehicle_data["operator"]
+                    api_operator_noc = api_operator_data.get("id") if isinstance(api_operator_data, dict) else api_operator_data
+                    if api_operator_noc in OPERATOR_REMAP:
+                        remapped_noc = OPERATOR_REMAP[api_operator_noc]
+                        try:
+                            vehicle_operator = Operator.objects.get(noc__iexact=remapped_noc)
+                        except Operator.DoesNotExist:
+                            vehicle_operator = operator
+
                 # Determine vehicle code
-                if use_reg and vehicle_data.get("reg"):
+                if rto:
+                    slug = vehicle_data.get("slug", "")
+                    slug_parts = slug.split("-")
+                    if len(slug_parts) >= 3:
+                        code = f"{slug_parts[0]}-{slug_parts[-1]}"
+                    elif vehicle_operator.noc in ["ie-1", "ie-2", "ie-03C"]:
+                        code = slug_parts[-1] if len(slug_parts) == 2 else slug
+                        if code.upper().startswith("LH"):
+                            code = code[2:]
+                    else:
+                        code = slug
+                elif use_reg and vehicle_data.get("reg"):
                     code = normalize_registration(vehicle_data["reg"], tmsb_format)
                 elif tmsb_format:
                     slug = vehicle_data.get("slug", "")
@@ -193,9 +241,9 @@ class Command(BaseCommand):
                 else:
                     code = normalize_slug(vehicle_data.get("slug"))
 
-                data = {}
+                vehicle_data_dict = {}
                 if vehicle_data.get("previous_reg"):
-                    data["Previous reg"] = vehicle_data["previous_reg"]
+                    vehicle_data_dict["Previous reg"] = vehicle_data["previous_reg"]
 
                 defaults = {
                     "code": code,
@@ -205,10 +253,10 @@ class Command(BaseCommand):
                     if vehicle_data.get("fleet_number")
                     else None,
                     "fleet_code": vehicle_data.get("fleet_code"),
-                    "reg": normalize_registration(vehicle_data.get("reg"), tmsb_format)
+                    "reg": vehicle_data.get("reg") if rto else normalize_registration(vehicle_data.get("reg"), tmsb_format)
                     if vehicle_data.get("reg")
                     else "",
-                    "operator": operator,
+                    "operator": vehicle_operator,
                     "source": source,
                     "vehicle_type": vehicle_type,
                     "livery": livery,
@@ -216,7 +264,7 @@ class Command(BaseCommand):
                     "branding": vehicle_data.get("branding", ""),
                     "notes": vehicle_data.get("notes", ""),
                     "withdrawn": vehicle_data.get("withdrawn", False),
-                    "data": data or None,
+                    "data": vehicle_data_dict or None,
                 }
 
                 # Features (API can return null)
@@ -228,14 +276,25 @@ class Command(BaseCommand):
                     features.append(feature)
 
                 try:
-                    vehicle = Vehicle.objects.get(operator=operator, code__iexact=code)
+                    vehicle = Vehicle.objects.get(operator=vehicle_operator, code__iexact=code)
                     for key, value in defaults.items():
                         setattr(vehicle, key, value)
                     vehicle.save()
                     updated_count += 1
                 except Vehicle.DoesNotExist:
-                    vehicle = Vehicle.objects.create(**defaults)
-                    created_count += 1
+                    if rto:
+                        vehicle = Vehicle.objects.filter(code__iexact=code, operator__isnull=True).first()
+                        if vehicle:
+                            for key, value in defaults.items():
+                                setattr(vehicle, key, value)
+                            vehicle.save()
+                            updated_count += 1
+                        else:
+                            vehicle = Vehicle.objects.create(**defaults)
+                            created_count += 1
+                    else:
+                        vehicle = Vehicle.objects.create(**defaults)
+                        created_count += 1
 
                 if features:
                     vehicle.features.set(features)

@@ -1,6 +1,6 @@
 import requests
 from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from busstops.models import Operator
 from bustimes.models import Garage
 from ...models import VehicleType, Livery, VehicleFeature, Vehicle
@@ -25,18 +25,21 @@ class Command(BaseCommand):
         updated_count = 0
 
         for vehicle_type_data in data['results']:
-            vehicle_type, created = VehicleType.objects.update_or_create(
-                id=vehicle_type_data['id'],
-                defaults={
-                    'name': vehicle_type_data['name'],
-                    'style': vehicle_type_data['style'],
-                    'fuel': vehicle_type_data['fuel'],
-                }
-            )
-            if created:
-                created_count += 1
-            else:
-                updated_count += 1
+            try:
+                vehicle_type, created = VehicleType.objects.update_or_create(
+                    id=vehicle_type_data['id'],
+                    defaults={
+                        'name': vehicle_type_data['name'],
+                        'style': vehicle_type_data['style'],
+                        'fuel': vehicle_type_data['fuel'],
+                    }
+                )
+                if created:
+                    created_count += 1
+                else:
+                    updated_count += 1
+            except IntegrityError:
+                pass
 
         self.stdout.write(
             f'Vehicle types: {created_count} created, {updated_count} updated'
@@ -59,22 +62,25 @@ class Command(BaseCommand):
             data = response.json()
 
             for livery_data in data['results']:
-                livery, created = Livery.objects.update_or_create(
-                    id=livery_data['id'],
-                    defaults={
-                        'name': livery_data['name'],
-                        'left_css': livery_data['left_css'],
-                        'right_css': livery_data['right_css'],
-                        'white_text': livery_data['white_text'],
-                        'text_colour': livery_data['text_colour'],
-                        'stroke_colour': livery_data['stroke_colour'],
-                        'published': True,  # Mark as published since it's from the API
-                    }
-                )
-                if created:
-                    created_count += 1
-                else:
-                    updated_count += 1
+                try:
+                    livery, created = Livery.objects.update_or_create(
+                        id=livery_data['id'],
+                        defaults={
+                            'name': livery_data['name'],
+                            'left_css': livery_data['left_css'],
+                            'right_css': livery_data['right_css'],
+                            'white_text': livery_data['white_text'],
+                            'text_colour': livery_data['text_colour'],
+                            'stroke_colour': livery_data['stroke_colour'],
+                            'published': True,
+                        }
+                    )
+                    if created:
+                        created_count += 1
+                    else:
+                        updated_count += 1
+                except IntegrityError:
+                    pass
 
             url = data.get('next')
 

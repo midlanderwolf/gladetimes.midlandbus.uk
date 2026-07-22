@@ -148,8 +148,11 @@ class Command(ImportLiveVehiclesCommand):
 
             journey.destination = trip.headsign or ""
             if trip.operator_id and not vehicle.operator_id:
-                vehicle.operator_id = trip.operator_id
-                vehicle.save(update_fields=["operator"])
+                if not Vehicle.objects.filter(
+                    code__iexact=vehicle.code, operator_id=trip.operator_id
+                ).exists():
+                    vehicle.operator_id = trip.operator_id
+                    vehicle.save(update_fields=["operator"])
 
         if journey.service:
             journey.route_name = journey.service.line_name
