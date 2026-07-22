@@ -82,10 +82,6 @@ echo "Passenger Timetables import complete"
 # docker compose exec web uv run ./manage.py import_ni
 # echo "Northern Ireland Timeabltes import complete"
 
-echo "Importing Ember Timetables"
-run docker compose exec web uv run ./manage.py import_gtfs_ember
-echo "Ember Timetables import complete"
-
 echo "Importing National Coach Services (BODS)"
 run docker compose exec web uv run ./manage.py import_transxchange data/TNDS/NCSD.zip
 echo "National Coach Services (BODS) import complete"
