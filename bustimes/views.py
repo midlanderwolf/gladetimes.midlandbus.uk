@@ -132,17 +132,13 @@ def route_link_view(request, pk):
 def maybe_download_file(local_path, s3_key):
     if not local_path.exists():
         import boto3
-        from botocore.exceptions import NoCredentialsError, ClientError
 
         if not local_path.parent.exists():
             local_path.parent.mkdir(parents=True)
         client = boto3.client("s3", endpoint_url="https://ams3.digitaloceanspaces.com")
-        try:
-            client.download_file(
-                Bucket="bustimes-data", Key=s3_key, Filename=str(local_path)
-            )
-        except (NoCredentialsError, ClientError):
-            pass
+        client.download_file(
+            Bucket="bustimes-data", Key=s3_key, Filename=str(local_path)
+        )
 
 
 class SourceListView(ListView):
@@ -197,46 +193,31 @@ def route_xml(request, source, code=""):
         raise Http404
 
     if source.is_tnds():
-        if source.url:
-            filename = Path(source.url).name
-        else:
-            filename = f"{source.name.lower()}.zip"
-        if not filename or filename == ".":
-            filename = f"{source.name.lower()}.zip"
+        filename = Path(source.url).name
         path = settings.DATA_DIR / "TNDS" / filename
         maybe_download_file(path, source.get_s3_path())
-        if path.exists():
-            with zipfile.ZipFile(path) as archive:
-                if code:
-                    if code.endswith(".zip"):
-                        archive = zipfile.ZipFile(archive.open(code))
-                        code = ""
+        with zipfile.ZipFile(path) as archive:
+            if code:
+                if code.endswith(".zip"):
+                    archive = zipfile.ZipFile(archive.open(code))
+                    code = ""
 
-                    elif ".zip/" in code:
-                        sub_archive, code = code.split("/", 1)
-                        archive = zipfile.ZipFile(archive.open(sub_archive))
+                elif ".zip/" in code:
+                    sub_archive, code = code.split("/", 1)
+                    archive = zipfile.ZipFile(archive.open(sub_archive))
 
-                if code:
-                    try:
-                        return FileResponse(
-                            archive.open(code), content_type="text/plain"
-                        )
-                    except KeyError as e:
-                        raise Http404(e)
-                return HttpResponse(
-                    "\n".join(archive.namelist()), content_type="text/plain"
-                )
-        raise Http404
+            if code:
+                try:
+                    return FileResponse(archive.open(code), content_type="text/plain")
+                except KeyError as e:
+                    raise Http404(e)
+            return HttpResponse(
+                "\n".join(archive.namelist()), content_type="text/plain"
+            )
 
     content_type = "application/xml"
 
-    if source.name in ("Arriva", "Arriva Bus UK"):
-        path = settings.DATA_DIR / "arriva" / str(source.id)
-        if not path.exists():
-            if not path.parent.exists():
-                path.parent.mkdir(parents=True)
-            download(path, "https://arrivabus.co.uk/open-data")
-    elif "stagecoach" in source.url:
+    if "stagecoach" in source.url:
         path = settings.DATA_DIR / source.url.split("/")[-1]
         if not path.exists():
             if not path.parent.exists():
@@ -535,7 +516,7 @@ class TripDetailView(DetailView):
         if self.object.operator:
             operators = [self.object.operator]
         elif route and route.service:
-            operators = list(self.object.route.service.operator.all().distinct())
+            operators = list(self.object.route.service.operator.all())
         else:
             operators = []
 

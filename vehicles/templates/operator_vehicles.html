@@ -1,11 +1,9 @@
 {% extends 'page.html' %}
 
-{% block title %}Fleet list – {% firstof parent object %} – gladetimes{% endblock %}
+{% block title %}Fleet list – {{ object }} – bustimes.org{% endblock %}
 
 {% block canonical %}
-    {% if not parent %}
-        <link rel="canonical" href="https://gladetimes{{ object.get_absolute_url }}/vehicles">
-    {% endif %}
+    <link rel="canonical" href="https://bustimes.org{% firstof group.get_vehicles_url object.get_absolute_url %}">
 {% endblock canonical %}
 
 {% block head %}
@@ -16,11 +14,7 @@
 
 {% block content %}
 
-<h1>{% firstof parent object %}</h1>
-
-<div class="ad-wrapper">
-    <div id="AFM_inContentTop_ad"></div>
-</div>
+<h1>{{ object }}</h1>
 
 {% if not parent %}
     <ul class="tabs">
@@ -49,12 +43,13 @@ ticket machines, a byproduct of the live bus tracking.</p>
     {% endif %}
 </ul>
 
-{% if not parent and object.parent %}
-    <p>There’s also <a href="/groups/{{ object.parent }}/vehicles">a list of all {{ object.parent }} vehicles</a>.</p>
+{% if object.group %}
+    <p>There’s also <a href="{{ object.group.get_absolute_url }}">a list of all {{ object.group }} vehicles</a>.</p>
 {% endif %}
 
 {% if not parent %}
     <ul class="horizontal">
+        <!-- <li>{% if dates %}<a href="{% querystring grid=None %}">Normal view</a>{% else %}<a href="{% querystring grid=True %}">Calendar view</a>{% endif %}</li> -->
         <li><a href="/vehicles/edits?operator={{ object.noc }}&status=approved">Recent changes</a></li>
         {% if request.user.trusted %}
             <li><a href="/vehicles/edits?operator={{ object.noc }}&status=pending">Pending vehicle edits</a></li>
@@ -65,12 +60,16 @@ ticket machines, a byproduct of the live bus tracking.</p>
     </ul>
 {% endif %}
 
+{% load tz %}
+
+{% timezone object.timezone|default:"Europe/London" %}
 <div class="table-wrapper">
 <table class="fleet compact">
     <thead>
         <tr>
             <th scope="col" colspan="2"></th>
-            {% if not parent %}<th scope="col" colspan="{% if block_column %}3{% else %}2{% endif %}">Last tracked</th>{% endif %}
+            {% if dates %}<th scope="col" colspan="{{ dates|length }}">{{ dates.0|date:"M" }}</th>{% endif %}
+            {% if not parent %}<th scope="col" colspan="2">Last tracked</th>{% endif %}
             <th scope="col">Livery</th>
             {% if branding_column %}<th scope="col">Branding</th>{% endif %}
             <th scope="col">Type</th>
@@ -83,10 +82,10 @@ ticket machines, a byproduct of the live bus tracking.</p>
         </tr>
     </thead>
     <tbody>
-        {% for vehicle in vehicles %}
+        {% for vehicle in vehicles %}{% with url=vehicle.get_absolute_url %}
             <tr id="{{ vehicle.slug }}">
                 <td class="tabular"{% if not vehicle.reg %} colspan="2"{% endif %}>
-                    <a href="{{ vehicle.get_absolute_url }}">
+                    <a href="{{ url }}">
                         {% if vehicle.fleet_code or vehicle.fleet_number %}
                             {% firstof vehicle.fleet_code vehicle.fleet_number %}
                         {% elif not vehicle.reg %}
@@ -96,15 +95,21 @@ ticket machines, a byproduct of the live bus tracking.</p>
                 </td>
                 {% if vehicle.reg %}
                     <td>
-                        <a href="{{ vehicle.get_absolute_url }}" class="reg">
+                        <a href="{{ url }}" class="reg">
                             {{ vehicle.get_reg }}
                         </a>
                     </td>
                 {% endif %}
+
+                {% for date in vehicle.dates %}
+                    <td>{% if date %}
+                        <a href="{{ url }}?date={{ date.isoformat }}">{{ date|date:"j" }}</a>
+                    {% endif %}</td>
+                {% endfor %}
+
                 {% if not parent %}<td class="last-seen">
                     {{ vehicle.last_seen.service }}
                 </td>
-                {% if block_column %}<td class="last-seen">{{ vehicle.last_seen.block }}</td>{% endif %}
                 <td class="last-seen">
                     {% if vehicle.last_seen.today %}
                         {{ vehicle.last_seen.when|time:"H:i" }}
@@ -125,16 +130,17 @@ ticket machines, a byproduct of the live bus tracking.</p>
                 {% if garage_column %}<td class="trivia">{{ vehicle.garage_name|default:'' }}</td>{% endif %}
                 {% for value in vehicle.column_values %}<td class="trivia">{{ value }}</td>{% endfor %}
                 {% if features_column %}<td class="trivia">{{ vehicle.feature_names }}</td>{% endif %}
-                {% if parent %}<td>{{ vehicle.operator }}</td>{% endif %}
+                {% if parent %}<td>{{ vehicle.operator_name }}</td>{% endif %}
                 <td>{{ vehicle.get_flickr_link }}</td>
                 {% if vehicle.is_editable %}
                     <td><a href="{{ vehicle.get_edit_url }}">Edit{% if vehicle.pending_edits %}<abbr title="pending edits">*</abbr>{% endif %}</a></td>
                 {% endif %}
             </tr>
-        {% endfor %}
+        {% endwith %}{% endfor %}
     </tbody>
 </table>
 </div>
+{% endtimezone %}
 
 {% include 'pagination.html' with page=vehicles %}
 

@@ -1,7 +1,6 @@
 import datetime
 import json
 import logging
-from collections import defaultdict
 from itertools import pairwise, groupby
 from urllib.parse import unquote
 from functools import partial
@@ -16,9 +15,10 @@ from django.core.cache import cache
 from django.core.exceptions import PermissionDenied, BadRequest
 from django.core.paginator import Paginator
 from django.db import IntegrityError, OperationalError, connection, transaction
-from django.db.models import Case, F, Max, OuterRef, Q, When, Value
+from django.db.models import Case, F, Max, OuterRef, Q, When, FilteredRelation, Value
 from django.db.models.aggregates import StringAgg
 from django.db.models.functions import Coalesce, Now
+from django.contrib.postgres.aggregates import ArrayAgg
 from django.http import Http404, HttpResponse, JsonResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, render, redirect
 from django.urls import reverse
@@ -217,7 +217,7 @@ def operator_vehicles(request, slug=None, group_slug=None):
             vehicles = vehicles.annotate(
                 pending_edits=Exists("vehiclerevision", filter=Q(pending=True))
             )
-        vehicles = vehicles.select_related("latest_journey", "latest_journey__trip")
+        vehicles = vehicles.select_related("latest_journey")
 
         context = {
             "object": operator,
@@ -238,24 +238,20 @@ def operator_vehicles(request, slug=None, group_slug=None):
         now = timezone.localtime()
         today = now.date()
         month_ago = today - datetime.timedelta(days=14)
-
-        vehicle_ids = list(vehicles.values_list("pk", flat=True))
-
-        vehicle_dates = defaultdict(set)
-        for vj in (
-            VehicleJourney.objects.filter(
-                vehicle_id__in=vehicle_ids,
-                date__range=(month_ago, today),
-            )
-            .values_list("vehicle_id", "date")
-            .distinct()
-            .iterator()
-        ):
-            vehicle_dates[vj[0]].add(vj[1])
-
+        vehicles = vehicles.annotate(
+            recent_journeys=FilteredRelation(
+                "vehiclejourney",
+                condition=Q(vehiclejourney__date__range=(month_ago, today)),
+            ),
+            dates=ArrayAgg(
+                "recent_journeys__date",
+                distinct=True,
+                default=[],
+            ),
+        )
         dates = [today - datetime.timedelta(days=i) for i in range(14)]
         for v in vehicles:
-            v.dates = [date if date in vehicle_dates.get(v.id, set()) else None for date in dates]
+            v.dates = [date if date in v.dates else None for date in dates]
 
         context["dates"] = dates
 
@@ -303,21 +299,15 @@ def operator_vehicles(request, slug=None, group_slug=None):
 
         context["today"] = today
 
-        has_block = False
         for vehicle in vehicles:
             if vehicle.latest_journey:
                 when = vehicle.latest_journey.datetime
-                block = vehicle.latest_journey.trip_id and vehicle.latest_journey.trip.block or ""
-                if block:
-                    has_block = True
                 vehicle.last_seen = {
                     "service": vehicle.latest_journey.route_name,
-                    "block": block,
                     "when": when,
                     "today": when >= today,
                 }
 
-        context["block_column"] = has_block
         context["map"] = any(
             hasattr(vehicle, "last_seen") and vehicle.last_seen["today"]
             for vehicle in vehicles
@@ -1413,12 +1403,7 @@ def siri_post(request, uuid):
 
 @csrf_exempt
 @require_POST
-def overland(request, uuid=None):
-    # https://github.com/aaronpk/Overland-iOS#api
-
-    if uuid is None:
-        uuid = request.headers["Authorization"].removeprefix("Bearer ")
-
+def overland(request, uuid):
     subscription = get_object_or_404(SiriSubscription, uuid=uuid)
 
     data = json.loads(request.body)
@@ -1426,13 +1411,8 @@ def overland(request, uuid=None):
     for item in data["locations"][-1:]:
         when = item["properties"]["timestamp"]
         device_id = item["properties"]["device_id"]
-        course = item["properties"].get("course")
-
-        parts = device_id.split(":")
-        operator, vehicle, line_name, journey_ref, destination = parts[:5]
-        vehicle_unique_id = parts[5] if len(parts) > 5 else None
+        operator, vehicle, line_name, journey_ref = device_id.split(":")
         lon, lat = item["geometry"]["coordinates"]
-
         activity = {
             "RecordedAtTime": when,
             "MonitoredVehicleJourney": {
@@ -1440,20 +1420,12 @@ def overland(request, uuid=None):
                 "VehicleRef": vehicle,
                 "PublishedLineName": line_name,
                 "VehicleJourneyRef": journey_ref,
-                "DestinationName": destination,
-                "DestinationRef": destination,
                 "VehicleLocation": {
                     "Longitude": lon,
                     "Latitude": lat,
                 },
-                "Bearing": course,
             },
         }
-
-        if vehicle_unique_id:
-            activity["Extensions"] = {
-                "VehicleJourney": {"VehicleUniqueId": vehicle_unique_id}
-            }
 
         handle_siri_post(
             uuid,

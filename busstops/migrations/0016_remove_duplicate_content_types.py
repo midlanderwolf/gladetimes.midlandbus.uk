@@ -14,7 +14,7 @@ def remove_duplicate_content_types(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("busstops", "0015_remove_operator_timezone"),
+        ("busstops", "0014_service_create_route_links"),
         ("contenttypes", "__latest__"),
     ]
 

@@ -114,6 +114,11 @@
 {% endif %}
 
 {% if journeys %}
+
+    {% load tz %}
+
+    {% timezone object.operator.timezone|default:"Europe/London" %}
+
     <div class="table-wrapper">
     <table>
     <thead>
@@ -146,14 +151,14 @@
             <td class="tabular">{% if journey.code|length < 20 %}{{ journey.code }}{% endif %}</td>
             {% if journey.trip_id %}
                 <td class="link tabular">
-                    <a href="{% if journey.locations is not False %}#journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.datetime|time:"H:i" }}{% if journey.datetime.date > date %}⁺¹{% endif %}</a>
+                    <a href="{% if journey.locations is not False %}/journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.trip }}</a>
                 </td>
             {% else %}
                 <td class="tabular">{{ journey.datetime|time:"H:i" }}{% if journey.datetime.date > date %}⁺¹{% endif %}</td>
             {% endif %}
             <td>{% firstof journey.destination journey.direction %}</td>
             {% if journey.locations is not False %}
-                <td class="link"><a href="#journeys/{{ journey.id }}">Map</a></td>
+                <td class="link"><a href="/journeys/{{ journey.id }}">Map</a></td>
             {% endif %}
             {% if perms.vehicles.change_vehiclejourney %}
                 <td class="link">
@@ -176,6 +181,7 @@
         </tr>
     {% endfor %}
     </tbody></table></div>
+    {% endtimezone %}
 {% endif %}
 
 {% if garage %}
@@ -218,18 +224,3 @@
 {% endif %}
 
 {% endblock content %}
-
-{% block foot %}
-    {% if journeys or date %}
-        <script>
-            {% if vehicle %}VEHICLE_ID{% else %}SERVICE_ID{% endif %} = {{ object.id }};
-            {% if not vehicle %}LIVERIES_CSS_URL = "/liveries.{{ liveries_css_version }}.css";{% endif %}
-        </script>
-        <link rel="stylesheet" href="{% static 'dist/js/app.css' %}">
-        <script async src="{% static 'dist/js/app.js' %}"></script>
-        {% if vehicle.livery %}
-        <style>{% for css in vehicle.livery.get_styles %}{{ css|safe }}{% endfor %}</style>
-        {% endif %}
-
-    {% endif %}
-{% endblock foot %}
