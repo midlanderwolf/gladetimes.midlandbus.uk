@@ -100,7 +100,7 @@ class Command(BaseCommand):
                 )
             service.colour = colours[(bg, fg)]
 
-            service.mode = MODES[row.route_type]
+            service.mode = MODES.get(row.route_type, "bus")
             if row.geometry:
                 service.geometry = row.geometry.wkt
 

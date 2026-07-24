@@ -13,102 +13,195 @@ MODES = {
     2: "rail",
     3: "bus",
     4: "ferry",
+    5: "subway",
     6: "cable car",
     7: "funicular",
     # Rail services
-    100: "rail",  # Railway Service
-    101: "rail",  # High Speed Rail Service
-    102: "rail",  # Long Distance Trains
-    103: "rail",  # Inter Regional Rail Service
-    104: "rail",  # Car Transport Rail Service
-    105: "rail",  # Sleeper Rail Service
-    106: "rail",  # Regional Rail Service
-    107: "rail",  # Tourist Railway Service
-    108: "rail",  # Rail Shuttle
-    109: "rail",  # Suburban / commuter rail
-    110: "rail",  # Replacement Rail Service
-    111: "rail",  # Special Rail Service
-    112: "rail",  # Lorry Transport Rail Service
-    113: "rail",  # All Rail Services
-    114: "rail",  # Cross-Country Rail Service
-    115: "rail",  # Vehicle Transport Rail Service
-    116: "rail",  # Rack and Pinion Railway
-    117: "rail",  # Additional Rail Service
+    100: "rail",
+    101: "rail",
+    102: "rail",
+    103: "rail",
+    104: "rail",
+    105: "rail",
+    106: "rail",
+    107: "rail",
+    108: "rail",
+    109: "rail",
+    110: "rail",
+    111: "rail",
+    112: "rail",
+    113: "rail",
+    114: "rail",
+    115: "rail",
+    116: "rail",
+    117: "rail",
     # Coach services
-    200: "coach",  # Coach Service
-    201: "coach",  # International Coach Service
-    202: "coach",  # National Coach Service
-    203: "coach",  # Shuttle Coach Service
-    204: "coach",  # Regional Coach Service
-    205: "coach",  # Special Coach Service
-    206: "coach",  # Sightseeing Coach Service
-    207: "coach",  # Tourist Coach Service
-    208: "coach",  # Commuter Coach Service
-    209: "coach",  # All Coach Services
+    200: "coach",
+    201: "coach",
+    202: "coach",
+    203: "coach",
+    204: "coach",
+    205: "coach",
+    206: "coach",
+    207: "coach",
+    208: "coach",
+    209: "coach",
+    # Suburban Railway
+    300: "rail",
     # Urban rail / metro
-    400: "subway",  # Urban Railway Service
-    401: "subway",  # Metro Service
-    402: "subway",  # Underground Service
-    403: "subway",  # Urban Railway Service
-    404: "subway",  # All Urban Railway Services
-    405: "subway",  # Monorail
+    400: "subway",
+    401: "subway",
+    402: "subway",
+    403: "subway",
+    404: "subway",
+    405: "subway",
+    # Monorail
+    500: "monorail",
+    501: "monorail",
+    502: "monorail",
+    503: "monorail",
+    504: "monorail",
+    505: "monorail",
+    506: "monorail",
+    507: "monorail",
+    # Underground / metro
+    600: "subway",
+    601: "subway",
+    602: "subway",
+    603: "subway",
+    604: "subway",
+    605: "subway",
+    606: "subway",
+    607: "subway",
     # Bus services
-    700: "bus",  # Bus Service
-    701: "bus",  # Regional Bus Service
-    702: "bus",  # Express Bus Service
-    703: "bus",  # Stopping Bus Service
-    704: "bus",  # Local Bus Service
-    705: "bus",  # Night Bus Service
-    706: "bus",  # Post Bus Service
-    707: "bus",  # Special Needs Bus
-    708: "bus",  # Mobility Bus Service
-    709: "bus",  # Mobility Bus for Registered Disabled
-    710: "bus",  # Sightseeing Bus
-    711: "bus",  # Shuttle Bus
-    712: "bus",  # School Bus
-    713: "bus",  # School and Public Service Bus
-    714: "bus",  # Rail Replacement Bus Service
-    715: "bus",  # Demand and Response Bus Service
-    716: "bus",  # All Bus Services
+    700: "bus",
+    701: "bus",
+    702: "bus",
+    703: "bus",
+    704: "bus",
+    705: "bus",
+    706: "bus",
+    707: "bus",
+    708: "bus",
+    709: "bus",
+    710: "bus",
+    711: "bus",
+    712: "bus",
+    713: "bus",
+    714: "bus",
+    715: "bus",
+    716: "bus",
     # Trolleybus
-    800: "bus",  # Trolleybus Service
+    800: "bus",
+    801: "bus",
+    802: "bus",
+    803: "bus",
+    804: "bus",
+    805: "bus",
+    806: "bus",
     # Tram services
-    900: "tram",  # Tram Service
-    901: "tram",  # City Tram Service
-    902: "tram",  # Local Tram Service
-    903: "tram",  # Regional Tram Service
-    904: "tram",  # Sightseeing Tram Service
-    905: "tram",  # Shuttle Tram Service
-    906: "tram",  # All Tram Services
+    900: "tram",
+    901: "tram",
+    902: "tram",
+    903: "tram",
+    904: "tram",
+    905: "tram",
+    906: "tram",
     # Water transport
-    1000: "ferry",  # Water Transport Service
+    1000: "ferry",
+    1001: "ferry",
+    1002: "ferry",
+    1003: "ferry",
+    1004: "ferry",
+    1005: "ferry",
+    1006: "ferry",
+    1007: "ferry",
+    1008: "ferry",
+    1009: "ferry",
+    1010: "ferry",
+    1011: "ferry",
+    1012: "ferry",
+    1013: "ferry",
+    1014: "ferry",
+    1015: "ferry",
+    1016: "ferry",
+    1017: "ferry",
+    1018: "ferry",
+    1019: "ferry",
+    1020: "ferry",
+    1021: "ferry",
     # Air
-    1100: "air",  # Air Service
+    1100: "air",
+    1101: "air",
+    1102: "air",
+    1103: "air",
+    1104: "air",
+    1105: "air",
+    1106: "air",
+    1107: "air",
+    1108: "air",
+    1109: "air",
+    1110: "air",
+    1111: "air",
+    1112: "air",
+    1113: "air",
+    1114: "air",
     # Ferry
-    1200: "ferry",  # Ferry Service
+    1200: "ferry",
+    1201: "ferry",
+    1202: "ferry",
+    1203: "ferry",
+    1204: "ferry",
+    1205: "ferry",
+    1206: "ferry",
+    1207: "ferry",
+    1208: "ferry",
+    1209: "ferry",
+    1210: "ferry",
+    1211: "ferry",
+    1212: "ferry",
+    1213: "ferry",
+    1214: "ferry",
     # Aerial lift / cable transport
-    1300: "cable car",  # Aerial Lift Service
-    1301: "cable car",  # Telecabin Service
-    1302: "cable car",  # Cable Car Service
-    1303: "cable car",  # Elevator Service
-    1304: "cable car",  # Chair Lift Service
-    1305: "cable car",  # Drag Lift Service
-    1306: "cable car",  # Small Telecabin Service
-    1307: "cable car",  # All Telecabin Services
+    1300: "cable car",
+    1301: "cable car",
+    1302: "cable car",
+    1303: "cable car",
+    1304: "cable car",
+    1305: "cable car",
+    1306: "cable car",
+    1307: "cable car",
+    1308: "cable car",
+    1309: "cable car",
+    1310: "cable car",
     # Funicular
-    1400: "funicular",  # Funicular Service
+    1400: "funicular",
+    1401: "funicular",
+    1402: "funicular",
+    1403: "funicular",
+    1404: "funicular",
+    1405: "funicular",
+    1406: "funicular",
+    1407: "funicular",
     # Taxi services
-    1500: "taxi",  # Taxi Service
-    1501: "taxi",  # Communal Taxi Service
-    1502: "taxi",  # Water Taxi Service
-    1503: "taxi",  # Rail Taxi Service
-    1504: "taxi",  # Bike Taxi Service
-    1505: "taxi",  # Licensed Taxi Service
-    1506: "taxi",  # Private Hire Service Vehicle
-    1507: "taxi",  # All Taxi Services
+    1500: "taxi",
+    1501: "taxi",
+    1502: "taxi",
+    1503: "taxi",
+    1504: "taxi",
+    1505: "taxi",
+    1506: "taxi",
+    1507: "taxi",
+    # Other
+    1600: "misc",
+    1601: "misc",
+    1602: "misc",
+    1603: "misc",
+    1604: "misc",
+    1605: "misc",
     # Miscellaneous
-    1700: "misc",  # Miscellaneous Service
-    1702: "horse-drawn carriage",  # Horse-drawn Carriage
+    1700: "misc",
+    1702: "horse-drawn carriage",
 }
 
 

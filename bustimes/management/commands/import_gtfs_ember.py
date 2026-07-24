@@ -95,7 +95,7 @@ class Command(BaseCommand):
             service.description = route.description = row.route_long_name
             service.current = True
             service.colour_id = operator.colour_id
-            service.mode = MODES[row.route_type]
+            service.mode = MODES.get(row.route_type, "bus")
             if row.geometry:
                 service.geometry = row.geometry.wkt
 

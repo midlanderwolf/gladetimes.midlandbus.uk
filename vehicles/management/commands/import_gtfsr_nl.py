@@ -1,142 +1,21 @@
-from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from google.protobuf import json_format
-from google.transit import gtfs_realtime_pb2
-
-from busstops.models import DataSource
-from bustimes.models import Trip
-
-from ...models import Vehicle, VehicleJourney, Operator
-from .import_gtfsr_ie import Command as GTFSRCommand
+from .import_gtfsr_generic import Command as GenericCommand
 
 
-class Command(GTFSRCommand):
+class Command(GenericCommand):
     source_name = "OVAPI"
     vehicle_code_scheme = "OVAPI"
-    headers = None
-    _tzinfo = None
+    url = "https://gtfs.openov.nl/gtfs-rt/vehiclePositions.pb"
 
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
-        self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-        self.url = "https://gtfs.openov.nl/gtfs-rt/vehiclePositions.pb"
+        super().do_source()
+        self.url = self.url
         return self
 
-    def handle(self, *args, **options):
-        self.options = options
-        super().handle(*args, **options)
-
-    @property
-    def tzinfo(self):
-        if self._tzinfo is None:
-            self._tzinfo = self.get_timezone()
-        return self._tzinfo
-
-    @tzinfo.setter
-    def tzinfo(self, value):
-        self._tzinfo = value
-
     def get_timezone(self):
-        operator = Operator.objects.filter(
-            service__route__source=self.source, timezone__isnull=False
-        ).first()
-        if operator:
-            return ZoneInfo(str(operator.timezone))
-        return ZoneInfo("Europe/Amsterdam")
-
-    def get_items(self):
-        headers = {}
-        if self.headers:
-            if self.headers.get("last-modified"):
-                headers["if-modified-since"] = self.headers["last-modified"]
-            if self.headers.get("etag"):
-                headers["if-none-match"] = self.headers["etag"]
-
-        response = self.session.get(self.url, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        self.headers = response.headers
-
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
-
-        return feed.entity
-
-    def get_vehicle(self, item):
-        vehicle_id = item.vehicle.vehicle.id.strip()
-        return Vehicle.objects.get_or_create(
-            {"fleet_code": vehicle_id[:24]},
-            code=vehicle_id,
-            source=self.source,
-        )
-
-    def get_journey(self, item, vehicle):
-        now = self.get_datetime(item).astimezone(self.tzinfo)
-        journey = VehicleJourney(
-            code=item.vehicle.trip.trip_id, datetime=now, date=now.date()
-        )
-
-        start_date = None
-        if item.vehicle.trip.start_date:
-            start_date = datetime.strptime(
-                f"{item.vehicle.trip.start_date} 12:00:00",
-                "%Y%m%d %H:%M:%S",
-            )
-
-            try:
-                journey.datetime = datetime.strptime(
-                    f"{item.vehicle.trip.start_date} {item.vehicle.trip.start_time}",
-                    "%Y%m%d %H:%M:%S",
-                ).replace(tzinfo=self.tzinfo)
-                journey.date = journey.datetime.date()
-            except ValueError:
-                pass
-
-        journey.route_name = item.vehicle.trip.route_id
-
-        trip = None
-        if journey.code:
-            trips = Trip.objects.filter(
-                vehicle_journey_code=journey.code,
-                route__source=self.source,
-            )
-            trip = trips.first()
-
-        if not trip and item.vehicle.trip.route_id:
-            trips = Trip.objects.filter(
-                route__code=item.vehicle.trip.route_id, route__source=self.source
-            )
-            if item.vehicle.trip.start_time:
-                from django.utils.dateparse import parse_duration
-                start_time = parse_duration(item.vehicle.trip.start_time)
-                if start_time:
-                    trips = trips.filter(start=start_time)
-            trip = trips.first()
-
-        if trip:
-            journey.trip = trip
-            journey.service = trip.route.service
-            journey.route_name = journey.service.line_name
-            journey.destination = trip.headsign or ""
-
-            if start_date and journey.trip:
-                journey.datetime = (
-                    start_date.replace(tzinfo=self.tzinfo)
-                    - timedelta(hours=12)
-                    + trip.start
-                )
-                if journey.datetime - now > timedelta(hours=12):
-                    journey.datetime -= timedelta(days=1)
-                    journey.date -= timedelta(days=1)
-
-            if trip.operator_id and not vehicle.operator_id:
-                if not Vehicle.objects.filter(
-                    code__iexact=vehicle.code, operator_id=trip.operator_id
-                ).exists():
-                    vehicle.operator_id = trip.operator_id
-                    vehicle.save(update_fields=["operator"])
-
-        vehicle.latest_journey_data = json_format.MessageToDict(item)
-
-        return journey
+        tz = super().get_timezone()
+        if tz is None:
+            return ZoneInfo("Europe/Amsterdam")
+        return tz

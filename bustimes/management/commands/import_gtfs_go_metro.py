@@ -3,7 +3,7 @@ from .import_gtfs_generic import Command as GenericCommand
 
 class Command(GenericCommand):
     source_name = "Go Metro"
-    region_id = "OH"
+    region_id = "US"
     noc = "GM"
     url = "https://www.go-metro.com/gtfs/gtfs.zip"
 

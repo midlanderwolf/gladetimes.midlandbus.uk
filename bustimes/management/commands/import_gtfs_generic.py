@@ -161,7 +161,7 @@ class Command(BaseCommand):
 
             route_color = getattr(row, "route_color", None)
             route_text_color = getattr(row, "route_text_color", None)
-            if route_color and not pd.isna(route_color) and route_text_color and not pd.isna(route_text_color):
+            if route_color is not None and not pd.isna(route_color) and route_text_color is not None and not pd.isna(route_text_color):
                 bg, fg = (f"#{route_color}", f"#{route_text_color}")
                 if (bg, fg) not in colours:
                     colours[(bg, fg)] = ServiceColour.objects.create(
@@ -169,7 +169,7 @@ class Command(BaseCommand):
                     )
                 service.colour = colours[(bg, fg)]
 
-            service.mode = MODES[row.route_type]
+            service.mode = MODES.get(row.route_type, "bus")
             if row.geometry:
                 service.geometry = row.geometry.wkt
 

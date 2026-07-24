@@ -124,7 +124,7 @@ class Command(BaseCommand):
             service.source = source
             service.geometry = geometries.get(row.route_id)
             service.region_id = "GB"
-            service.mode = MODES[row.route_type]
+            service.mode = MODES.get(row.route_type, "coach")
 
             service.save()
             service.operator.add(operator)

@@ -7,6 +7,9 @@ class Command(GenericCommand):
     noc = "PT"
     url = "https://mkuran.pl/gtfs/polish_trains.zip"
 
+    def add_arguments(self, parser):
+        pass
+
     def handle(self, *args, **options):
         options["source_name"] = self.source_name
         options["region"] = self.region_id
