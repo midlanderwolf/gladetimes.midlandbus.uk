@@ -420,10 +420,10 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 vehicle, created = self.get_vehicle(item)
                 # print(vehicle_identity, vehicle, created)
                 if vehicle:
-                    VehicleCode.objects.create(
+                    VehicleCode.objects.get_or_create(
                         code=vehicle_identity,
                         scheme=self.vehicle_code_scheme,
-                        vehicle=vehicle,
+                        defaults={"vehicle": vehicle},
                     )
 
             keep_journey = False

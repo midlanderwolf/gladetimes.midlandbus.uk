@@ -2,7 +2,7 @@ services:
 
   web:
     build: .
-    entrypoint: sh -c "uv sync --group dev --group test; DEBUG=1 exec ./manage.py runserver 0.0.0.0:8000"
+    entrypoint: sh -c "DEBUG=1 exec ./manage.py runserver 0.0.0.0:8000"
     container_name: django_web
     environment:
       - SECRET_KEY=${SECRET_KEY-}
@@ -25,6 +25,7 @@ services:
       - EMAIL_USE_SSL
     volumes:
       - .:/app
+      - venv:/app/.venv
     ports:
       - "8000:8000"
       - "35729:35729"
@@ -49,3 +50,6 @@ services:
 
   redis:
     image: redis
+
+volumes:
+  venv:

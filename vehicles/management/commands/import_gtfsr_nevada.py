@@ -27,10 +27,12 @@ class Command(GTFSRCommand):
     def get_items(self):
         headers = {}
         if self.headers:
-            headers["if-modified-since"] = self.headers["last-modified"]
-            headers["if-none-match"] = self.headers["etag"]
+            if self.headers.get("last-modified"):
+                headers["if-modified-since"] = self.headers["last-modified"]
+            if self.headers.get("etag"):
+                headers["if-none-match"] = self.headers["etag"]
 
-        response = self.session.get(self.url, timeout=10)
+        response = self.session.get(self.url, headers=headers, timeout=10)
         response.raise_for_status()
 
         self.headers = response.headers
@@ -41,10 +43,11 @@ class Command(GTFSRCommand):
         return feed.entity
 
     def get_vehicle(self, item):
+        vehicle_id = item.vehicle.vehicle.id.strip()
         return Vehicle.objects.get_or_create(
-            {"fleet_code": item.vehicle.vehicle.id.strip()},
+            {"fleet_code": vehicle_id[:24]},
             operator=self.operator,
-            code=item.vehicle.vehicle.id.strip(),
+            code=vehicle_id,
         )
 
     def get_journey(self, item, vehicle):

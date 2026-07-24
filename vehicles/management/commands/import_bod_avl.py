@@ -597,8 +597,12 @@ class Command(ImportLiveVehiclesCommand):
                             and trip.operator_id == "PLYC"
                         )
                     ):
+                        old_operator = vehicle.operator_id
                         vehicle.operator_id = trip.operator_id
-                        vehicle.save(update_fields=["operator"])
+                        try:
+                            vehicle.save(update_fields=["operator"])
+                        except IntegrityError:
+                            vehicle.operator_id = old_operator
 
         return journey
 

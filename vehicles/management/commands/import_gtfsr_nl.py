@@ -12,30 +12,15 @@ from .import_gtfsr_ie import Command as GTFSRCommand
 
 
 class Command(GTFSRCommand):
+    source_name = "OVAPI"
+    vehicle_code_scheme = "OVAPI"
     headers = None
     _tzinfo = None
 
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        parser.add_argument("--source-name", required=True, help="DataSource name")
-        parser.add_argument("--url", required=True, help="GTFS-RT feed URL")
-        parser.add_argument(
-            "--vehicle-code-scheme",
-            help="Vehicle code scheme (default: source_name)",
-        )
-
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
-        self.source_name = self.options["source_name"]
-        self.url = self.options["url"]
-
-        if self.options.get("vehicle_code_scheme"):
-            self.vehicle_code_scheme = self.options["vehicle_code_scheme"]
-        else:
-            self.vehicle_code_scheme = self.source_name
-
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-
+        self.url = "https://gtfs.openov.nl/gtfs-rt/vehiclePositions.pb"
         return self
 
     def handle(self, *args, **options):
@@ -58,7 +43,7 @@ class Command(GTFSRCommand):
         ).first()
         if operator:
             return ZoneInfo(str(operator.timezone))
-        return None
+        return ZoneInfo("Europe/Amsterdam")
 
     def get_items(self):
         headers = {}

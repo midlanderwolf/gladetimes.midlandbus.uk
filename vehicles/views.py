@@ -217,7 +217,7 @@ def operator_vehicles(request, slug=None, group_slug=None):
             vehicles = vehicles.annotate(
                 pending_edits=Exists("vehiclerevision", filter=Q(pending=True))
             )
-        vehicles = vehicles.select_related("latest_journey")
+        vehicles = vehicles.select_related("latest_journey", "latest_journey__trip")
 
         context = {
             "object": operator,
@@ -299,15 +299,21 @@ def operator_vehicles(request, slug=None, group_slug=None):
 
         context["today"] = today
 
+        has_block = False
         for vehicle in vehicles:
             if vehicle.latest_journey:
                 when = vehicle.latest_journey.datetime
+                block = vehicle.latest_journey.trip_id and vehicle.latest_journey.trip.block or ""
+                if block:
+                    has_block = True
                 vehicle.last_seen = {
                     "service": vehicle.latest_journey.route_name,
+                    "block": block,
                     "when": when,
                     "today": when >= today,
                 }
 
+        context["block_column"] = has_block
         context["map"] = any(
             hasattr(vehicle, "last_seen") and vehicle.last_seen["today"]
             for vehicle in vehicles
@@ -1403,7 +1409,12 @@ def siri_post(request, uuid):
 
 @csrf_exempt
 @require_POST
-def overland(request, uuid):
+def overland(request, uuid=None):
+    # https://github.com/aaronpk/Overland-iOS#api
+
+    if uuid is None:
+        uuid = request.headers["Authorization"].removeprefix("Bearer ")
+
     subscription = get_object_or_404(SiriSubscription, uuid=uuid)
 
     data = json.loads(request.body)
@@ -1411,8 +1422,13 @@ def overland(request, uuid):
     for item in data["locations"][-1:]:
         when = item["properties"]["timestamp"]
         device_id = item["properties"]["device_id"]
-        operator, vehicle, line_name, journey_ref = device_id.split(":")
+        course = item["properties"].get("course")
+
+        parts = device_id.split(":")
+        operator, vehicle, line_name, journey_ref, destination = parts[:5]
+        vehicle_unique_id = parts[5] if len(parts) > 5 else None
         lon, lat = item["geometry"]["coordinates"]
+
         activity = {
             "RecordedAtTime": when,
             "MonitoredVehicleJourney": {
@@ -1420,12 +1436,20 @@ def overland(request, uuid):
                 "VehicleRef": vehicle,
                 "PublishedLineName": line_name,
                 "VehicleJourneyRef": journey_ref,
+                "DestinationName": destination,
+                "DestinationRef": destination,
                 "VehicleLocation": {
                     "Longitude": lon,
                     "Latitude": lat,
                 },
+                "Bearing": course,
             },
         }
+
+        if vehicle_unique_id:
+            activity["Extensions"] = {
+                "VehicleJourney": {"VehicleUniqueId": vehicle_unique_id}
+            }
 
         handle_siri_post(
             uuid,

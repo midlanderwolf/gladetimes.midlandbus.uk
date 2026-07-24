@@ -5,7 +5,7 @@ from pathlib import Path
 import gtfs_kit
 
 from django.conf import settings
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Min, Subquery, OuterRef
 
@@ -19,47 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    noc = None
+    def handle(self, *args, **options):
+        path = settings.DATA_DIR / Path("ovapi_gtfs.zip")
 
-    def add_arguments(self, parser):
-        parser.add_argument("source_name", help="Name of the DataSource (must already exist)")
-        parser.add_argument(
-            "--url",
-            help="Override the DataSource URL (optional, updates the source if provided)",
-        )
-        parser.add_argument(
-            "--filename",
-            help="Local filename to save the feed (default: source_name.zip)",
-        )
-        parser.add_argument(
-            "--stop-prefix",
-            help="Prefix for stop ATCO codes (default: source_name.lower())",
-        )
-        parser.add_argument(
-            "--region",
-            help="Region ID to assign to operators (e.g., 'ATL', 'FI', 'NSW', 'OH', 'PL')",
-        )
-
-    def handle(self, source_name, url=None, filename=None, stop_prefix=None, region=None, *args, **options):
-        if not filename:
-            filename = f"{source_name.lower()}_gtfs.zip"
-        if not stop_prefix:
-            stop_prefix = source_name.lower()
-
-        path = settings.DATA_DIR / Path(filename)
-
-        try:
-            source = DataSource.objects.get(name=source_name)
-        except DataSource.DoesNotExist:
-            raise CommandError(f"DataSource '{source_name}' does not exist. Create it first with a URL.")
-
-        if url:
-            source.url = url
-            source.save(update_fields=["url"])
-
-        region_obj = None
-        if region:
-            region_obj, _ = Region.objects.get_or_create(id=region, defaults={"name": region})
+        source, _ = DataSource.objects.get_or_create(name="OVAPI")
+        source.url = "https://gtfs.openov.nl/gtfs/gtfs-public.zip"
 
         modified, last_modified = download_if_modified(path, source)
 
@@ -73,35 +37,36 @@ class Command(BaseCommand):
 
         agency_timezone = self.get_agency_timezone(feed)
         logger.info(f"Using timezone: {agency_timezone}")
-        logger.info(f"Feed contains: {len(feed.stops)} stops, {len(feed.get_routes())} routes, {len(feed.trips)} trips, {len(feed.stop_times)} stop_times")
+        logger.info(
+            f"Feed contains: {len(feed.stops)} stops, {len(feed.get_routes())} routes, "
+            f"{len(feed.trips)} trips, {len(feed.stop_times)} stop_times"
+        )
+
+        region, _ = Region.objects.get_or_create(id="NL", defaults={"name": "Netherlands"})
 
         operators = {}
         for agency in feed.agency.itertuples():
             agency_id = agency.agency_id
             agency_name = agency.agency_name if hasattr(agency, "agency_name") else ""
-            
-            operator_noc = self.noc if self.noc else agency_id
-            
+
             operator = Operator.objects.filter(name__iexact=agency_name).first()
             if not operator:
-                defaults = {"name": agency_name, "timezone": agency_timezone}
-                if region_obj:
-                    defaults["region"] = region_obj
+                noc = agency_id[:10]
                 operator, _ = Operator.objects.update_or_create(
-                    noc=operator_noc,
-                    defaults=defaults
+                    noc=noc,
+                    defaults={"name": agency_name, "timezone": agency_timezone, "region": region},
                 )
-            
-            if region_obj and operator.region_id != region_obj.id:
-                operator.region = region_obj
+
+            if operator.region_id != region.id:
+                operator.region = region
                 operator.save(update_fields=["region"])
-            
+
             OperatorCode.objects.get_or_create(
                 operator=operator,
                 source=source,
                 code=agency_id,
             )
-            
+
             operators[agency_id] = operator
 
         existing_routes = {route.code: route for route in source.route_set.all()}
@@ -116,7 +81,7 @@ class Command(BaseCommand):
             stop_tz = agency_timezone if stop_tz_raw is None or pd.isna(stop_tz_raw) else stop_tz_raw
             new_stops.append(
                 StopPoint(
-                    atco_code=f"{stop_prefix}-{stop.stop_id}",
+                    atco_code=f"ovapi-{stop.stop_id}",
                     common_name=stop.stop_name[:48],
                     active=True,
                     source=source,
@@ -134,7 +99,7 @@ class Command(BaseCommand):
         )
         logger.info(f"Created/updated {len(new_stops)} stops")
         for stop in new_stops:
-            stops[stop.atco_code.removeprefix(f"{stop_prefix}-")] = stop
+            stops[stop.atco_code.removeprefix("ovapi-")] = stop
 
         calendars = get_calendars(feed, source)
 
@@ -305,9 +270,9 @@ class Command(BaseCommand):
 
     def get_agency_timezone(self, feed):
         if not hasattr(feed, "agency") or feed.agency.empty:
-            raise CommandError("Feed has no agency.txt file")
+            raise Exception("Feed has no agency.txt file")
         if "agency_timezone" not in feed.agency.columns:
-            raise CommandError("agency.txt missing agency_timezone column")
+            raise Exception("agency.txt missing agency_timezone column")
         return feed.agency.iloc[0].agency_timezone
 
     def get_bearing(self, stop):

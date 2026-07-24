@@ -44,6 +44,11 @@ class Command(BaseCommand):
         parser.add_argument("--force", action="store_true")
         parser.add_argument("--max-tier", type=int, default=3, choices=[1, 2, 3, 4])
         parser.add_argument("--max-history-entries", type=int, default=500)
+        parser.add_argument(
+            "--max-idle-days",
+            type=int,
+            help="Remove keys idle for more than this many days",
+        )
 
     def handle(self, *args, **options):
         self.options = options
@@ -51,6 +56,10 @@ class Command(BaseCommand):
         r = get_redis()
         if r is None:
             self.stderr.write("Redis not available")
+            return
+
+        if options["max_idle_days"] is not None:
+            self.clean_idle_keys(r, options["max_idle_days"])
             return
 
         used, maxmemory, _ = get_memory_info(r)
@@ -226,3 +235,63 @@ class Command(BaseCommand):
     def tier_4(self, r):
         p = get_cache_prefix()
         self.scan_and_delete(r, [f"{p}session:*"], "session ")
+
+    # --- Idle time cleanup ---
+
+    def clean_idle_keys(self, r, max_idle_days):
+        max_idle_seconds = max_idle_days * 86400
+        cursor = 0
+        deleted = 0
+        skipped = 0
+
+        persistent_patterns = {
+            "liveries_css_version",
+        }
+
+        self.stdout.write(
+            f"Scanning for keys idle for more than {max_idle_days} days..."
+        )
+
+        while True:
+            cursor, keys = r.scan(cursor=cursor, count=5000)
+            keys_to_delete = []
+
+            for key in keys:
+                key_str = decode(key)
+
+                if any(key_str.endswith(p) for p in persistent_patterns):
+                    skipped += 1
+                    continue
+
+                try:
+                    idle_time = r.object("idletime", key)
+                    if idle_time is not None and idle_time > max_idle_seconds:
+                        ttl = r.ttl(key)
+                        if ttl == -1:
+                            keys_to_delete.append(key)
+                except Exception:
+                    continue
+
+            if keys_to_delete:
+                if self.options["dry_run"]:
+                    self.stdout.write(
+                        f"  Would delete {len(keys_to_delete)} idle keys"
+                    )
+                else:
+                    for i in range(0, len(keys_to_delete), 500):
+                        r.delete(*keys_to_delete[i : i + 500])
+                    deleted += len(keys_to_delete)
+
+            if cursor == 0:
+                break
+
+        if self.options["dry_run"]:
+            self.stdout.write(
+                f"Would delete {deleted} keys idle >{max_idle_days} days "
+                f"(skipped {skipped} persistent keys)"
+            )
+        else:
+            self.stdout.write(
+                f"Deleted {deleted} keys idle >{max_idle_days} days "
+                f"(skipped {skipped} persistent keys)"
+            )
