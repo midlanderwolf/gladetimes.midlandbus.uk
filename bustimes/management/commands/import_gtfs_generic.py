@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    noc = None
-
     def add_arguments(self, parser):
         parser.add_argument("source_name", help="Name of the DataSource (must already exist)")
         parser.add_argument(
@@ -39,8 +37,13 @@ class Command(BaseCommand):
             "--region",
             help="Region ID to assign to operators (e.g., 'ATL', 'FI', 'NSW', 'OH', 'PL')",
         )
+        parser.add_argument(
+            "--local",
+            action="store_true",
+            help="Skip download and use the existing local file",
+        )
 
-    def handle(self, source_name, url=None, filename=None, stop_prefix=None, region=None, *args, **options):
+    def handle(self, source_name, url=None, filename=None, stop_prefix=None, region=None, local=False, *args, **options):
         if not filename:
             filename = f"{source_name.lower()}_gtfs.zip"
         if not stop_prefix:
@@ -61,7 +64,14 @@ class Command(BaseCommand):
         if region:
             region_obj, _ = Region.objects.get_or_create(id=region, defaults={"name": region})
 
-        modified, last_modified = download_if_modified(path, source)
+        if local:
+            if not path.exists():
+                raise CommandError(f"Local file not found: {path}")
+            from datetime import datetime, timezone
+            last_modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            modified = True
+        else:
+            modified, last_modified = download_if_modified(path, source)
 
         if not modified:
             return
@@ -77,32 +87,48 @@ class Command(BaseCommand):
 
         operators = {}
         for agency in feed.agency.itertuples():
-            agency_id = agency.agency_id
+            agency_id_str = str(agency.agency_id)
+            agency_ids = [a.strip() for a in agency_id_str.split(",")]
             agency_name = agency.agency_name if hasattr(agency, "agency_name") else ""
-            
-            operator_noc = self.noc if self.noc else agency_id
-            
-            operator = Operator.objects.filter(name__iexact=agency_name).first()
-            if not operator:
-                defaults = {"name": agency_name, "timezone": agency_timezone}
-                if region_obj:
-                    defaults["region"] = region_obj
-                operator, _ = Operator.objects.update_or_create(
-                    noc=operator_noc,
-                    defaults=defaults
+
+            # If multiple agency_ids, create separate operators for each
+            if len(agency_ids) > 1:
+                for agency_id in agency_ids:
+                    noc = agency_id[:10]
+                    operator, _ = Operator.objects.update_or_create(
+                        noc=noc,
+                        defaults={"name": agency_name, "timezone": agency_timezone, "region": region_obj} if region_obj else {"name": agency_name, "timezone": agency_timezone}
+                    )
+                    OperatorCode.objects.get_or_create(
+                        operator=operator,
+                        source=source,
+                        code=agency_id,
+                    )
+                    operators[agency_id] = operator
+            else:
+                # Single agency_id - use name-matching to merge if same name exists
+                agency_id = agency_ids[0]
+                operator = Operator.objects.filter(name__iexact=agency_name).first()
+                if not operator:
+                    noc = agency_id[:10]
+                    defaults = {"name": agency_name, "timezone": agency_timezone}
+                    if region_obj:
+                        defaults["region"] = region_obj
+                    operator, _ = Operator.objects.update_or_create(
+                        noc=noc,
+                        defaults=defaults
+                    )
+
+                if region_obj and operator.region_id != region_obj.id:
+                    operator.region = region_obj
+                    operator.save(update_fields=["region"])
+
+                OperatorCode.objects.get_or_create(
+                    operator=operator,
+                    source=source,
+                    code=agency_id,
                 )
-            
-            if region_obj and operator.region_id != region_obj.id:
-                operator.region = region_obj
-                operator.save(update_fields=["region"])
-            
-            OperatorCode.objects.get_or_create(
-                operator=operator,
-                source=source,
-                code=agency_id,
-            )
-            
-            operators[agency_id] = operator
+                operators[agency_id] = operator
 
         existing_routes = {route.code: route for route in source.route_set.all()}
         routes = []

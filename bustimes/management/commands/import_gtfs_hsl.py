@@ -4,7 +4,6 @@ from .import_gtfs_generic import Command as GenericCommand
 class Command(GenericCommand):
     source_name = "HSL"
     region_id = "FI"
-    noc = "HSL"
     url = "https://infopalvelut.storage.hsldev.com/gtfs/hsl.zip"
 
     def add_arguments(self, parser):

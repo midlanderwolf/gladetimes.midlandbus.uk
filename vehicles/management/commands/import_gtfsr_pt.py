@@ -6,6 +6,9 @@ class Command(GenericCommand):
     vehicle_code_scheme = "PT"
     url = "https://mkuran.pl/gtfs/polish_trains/updates.pb"
 
+    def add_arguments(self, parser):
+        pass
+
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
         super().do_source()

@@ -26,12 +26,12 @@ class Command(GTFSRCommand):
 
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
-        self.source_name = self.options["source_name"]
-        self.url = self.options["url"]
+        self.source_name = self.options.get("source_name") or getattr(self, "source_name", None)
+        self.url = self.options.get("url") or getattr(self, "url", None)
 
         if self.options.get("vehicle_code_scheme"):
             self.vehicle_code_scheme = self.options["vehicle_code_scheme"]
-        else:
+        elif not hasattr(self, "vehicle_code_scheme"):
             self.vehicle_code_scheme = self.source_name
 
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)

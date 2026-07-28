@@ -3,8 +3,7 @@ from .import_gtfs_generic import Command as GenericCommand
 
 class Command(GenericCommand):
     source_name = "MARTA"
-    region_id = "US"
-    noc = "MARTA"
+    region_id = "ATL"
     url = "https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/GTFS/GTFS.zip"
 
     def handle(self, *args, **options):

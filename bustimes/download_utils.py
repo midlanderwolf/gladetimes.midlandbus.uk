@@ -39,6 +39,7 @@ def download_if_modified(path, source, session=None):
     if not response.ok:
         logger = logging.getLogger(__name__)
         logger.error(f"{response} {response.url}")
+        return False, None
     elif modified:
         write_file(path, response)
 

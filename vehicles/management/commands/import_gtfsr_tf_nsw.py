@@ -6,6 +6,9 @@ class Command(GenericCommand):
     vehicle_code_scheme = "TFNSW"
     url = "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepositions"
 
+    def add_arguments(self, parser):
+        pass
+
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
         super().do_source()

@@ -6,6 +6,9 @@ class Command(GenericCommand):
     vehicle_code_scheme = "HSL"
     url = "https://realtime.hsl.fi/realtime/vehicle-positions/v2/hsl"
 
+    def add_arguments(self, parser):
+        pass
+
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
         super().do_source()

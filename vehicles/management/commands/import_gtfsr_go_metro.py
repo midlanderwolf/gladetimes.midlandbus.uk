@@ -6,6 +6,9 @@ class Command(GenericCommand):
     vehicle_code_scheme = "GM"
     url = "https://tmgtfsprd.sorttrpcloud.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb"
 
+    def add_arguments(self, parser):
+        pass
+
     def do_source(self):
         self.session.headers.update({"User-Agent": "bustimes.org"})
         super().do_source()

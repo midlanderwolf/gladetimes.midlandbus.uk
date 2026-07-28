@@ -4,7 +4,6 @@ from .import_gtfs_generic import Command as GenericCommand
 class Command(GenericCommand):
     source_name = "TFNSW"
     region_id = "AU"
-    noc = "TFNSW"
     url = "https://transportnsw.info/opendata/gtfs/gtfs-routes/nsw-trains.zip"
 
     def add_arguments(self, parser):

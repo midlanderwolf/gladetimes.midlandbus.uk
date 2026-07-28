@@ -4,7 +4,6 @@ from .import_gtfs_generic import Command as GenericCommand
 class Command(GenericCommand):
     source_name = "PT"
     region_id = "PL"
-    noc = "PT"
     url = "https://mkuran.pl/gtfs/polish_trains.zip"
 
     def add_arguments(self, parser):
