@@ -1,4 +1,5 @@
 import datetime
+import json
 from pathlib import Path
 from unittest.mock import patch
 from tempfile import TemporaryDirectory
@@ -6,6 +7,7 @@ from tempfile import TemporaryDirectory
 import fakeredis
 import time_machine
 import vcr
+from google.transit import gtfs_realtime_pb2
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
@@ -175,6 +177,22 @@ class FlixbusTest(TestCase):
             self.assertEqual(items[2]["vehicle"], {"name": "BV23NRE"})
             self.assertEqual(items[0]["service"]["line_name"], "004")
             self.assertIn("url", items[0]["service"])
+            self.assertIsNone(items[0]["heading"])  # not moved yet
+
+            # a newer location - the heading is calculated from the previous one:
+            entity = gtfs_realtime_pb2.FeedEntity()
+            entity.vehicle.trip.trip_id = "UK004-3-1045042024-NOT#LVC-00"
+            entity.vehicle.trip.start_time = "10:45:00"
+            entity.vehicle.trip.start_date = "20240401"
+            entity.vehicle.position.latitude = 51.5
+            entity.vehicle.position.longitude = -0.14
+            entity.vehicle.timestamp = 1711980350
+            with self.assertNumQueries(0):
+                command.handle_item(entity, command.source.datetime)
+
+            item = json.loads(redis.get(f"vehicle{journeys[0].id}"))
+            self.assertEqual(round(item["heading"]), 40)
+            self.assertEqual(redis.llen(journeys[0].get_redis_key()), 2)
 
     @time_machine.travel("2024-09-16")
     def test_import_gtfs_ember(self):

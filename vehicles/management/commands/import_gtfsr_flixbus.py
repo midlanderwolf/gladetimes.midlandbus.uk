@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from django.contrib.gis.geos import Point
 from django.utils.dateparse import parse_duration
 from google.transit import gtfs_realtime_pb2
 
@@ -10,6 +11,7 @@ from busstops.models import DataSource
 from bustimes.models import Trip
 
 from ...models import Livery, VehicleJourney
+from ...utils import calculate_bearing
 from .. import import_live_vehicles
 from .import_gtfsr_ie import Command as GTFSRCommand
 
@@ -118,6 +120,13 @@ class Command(GTFSRCommand):
         location.datetime = updated_at
         location.journey = journey
         location.id = journey.id  # (in lieu of a vehicle id)
+
+        if latest and location.heading is None:
+            latest_latlong = Point(*latest["coordinates"])
+            if latest_latlong.equals_exact(location.latlong, 0.001):
+                location.heading = latest["heading"]
+            else:
+                location.heading = calculate_bearing(latest_latlong, location.latlong)
 
         redis_json = location.get_redis_json(tz=self.tzinfo)
         redis_json["vehicle"] = {"name": item.vehicle.vehicle.license_plate}
