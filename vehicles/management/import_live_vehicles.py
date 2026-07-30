@@ -425,6 +425,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
                         scheme=self.vehicle_code_scheme,
                         defaults={"vehicle": vehicle},
                     )
+                    vehicles_by_identity[vehicle_identity] = vehicle
 
             keep_journey = False
             if vehicle_identity in self.journeys_ids_ids:
