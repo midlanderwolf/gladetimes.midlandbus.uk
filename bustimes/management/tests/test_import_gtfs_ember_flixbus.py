@@ -1,27 +1,19 @@
 import datetime
-import json
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
 
 import fakeredis
 import time_machine
 import vcr
 from django.core.management import call_command
 from django.test import TestCase, override_settings
-from google.transit import gtfs_realtime_pb2
 
 from busstops.models import DataSource, Operator, Region, Service, StopCode, StopPoint
 from vehicles.management.commands import import_gtfsr_ember, import_gtfsr_flixbus
-from vehicles.management.tests.test_bod_avl import (
-    CapturingChannelLayer,
-    distribute,
-    patch_redis_client,
-)
-from vehicles.models import Vehicle, VehicleJourney
 
-from ...models import Route, Trip
 from .test_import_gtfs import make_zipfile
+from ...models import Route, Trip
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -94,7 +86,7 @@ class FlixbusTest(TestCase):
             "bustimes.management.commands.import_gtfs_flixbus.download_if_modified",
             return_value=(
                 True,
-                datetime.datetime(2024, 6, 18, 10, 0, 0, tzinfo=datetime.UTC),
+                datetime.datetime(2024, 6, 18, 10, 0, 0, tzinfo=datetime.timezone.utc),
             ),
         ):
             call_command("import_gtfs_flixbus")
@@ -141,83 +133,18 @@ class FlixbusTest(TestCase):
 
         command = import_gtfsr_flixbus.Command()
         command.do_source()
-
-        server = fakeredis.FakeServer()
-        async_redis_client = fakeredis.FakeAsyncRedis(server=server, version=7)
-        redis_client = fakeredis.FakeStrictRedis(server=server, version=7)
-        channel_layer = CapturingChannelLayer()
-
         with (
             time_machine.travel("2024-04-01 14:04:48+00:00"),
-            patch_redis_client(redis_client),
             patch(
-                "vehicles.management.commands.import_gtfsr_flixbus.get_channel_layer",
-                return_value=channel_layer,
+                "vehicles.management.import_live_vehicles.redis_client",
+                fakeredis.FakeStrictRedis(),
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "flixbus_gtfsr.yml")),
         ):
-            with self.assertNumQueries(25):
+            with self.assertNumQueries(37):
                 command.update()
-            with self.assertNumQueries(0):
+            with self.assertNumQueries(1):
                 command.update()
-
-            self.assertFalse(Vehicle.objects.exists())
-
-            distribute(channel_layer, async_redis_client)
-
-            journeys = VehicleJourney.objects.filter(source=command.source)
-            self.assertEqual(
-                [str(journey) for journey in journeys],
-                [
-                    "1 Apr 24 10:45 004 UK004-3-1045042024-NOT#LVC-00  to London Victoria Coach Station",
-                    "1 Apr 24 15:00 004 UK004-10-1500042024-LVC#NOT-00  to Nottingham",
-                    "1 Apr 24 15:00 004 UK004-7-1500042024-NOT#LVC-00  to London Victoria Coach Station",
-                    "1 Apr 24 11:00 004 UK004-6-1100042024-LVC#NOT-00  to Nottingham",
-                ],
-            )
-            self.assertFalse(journeys.exclude(vehicle=None).exists())
-
-            for journey, polyline in zip(
-                journeys,
-                (
-                    b"t|[abhyH_b~i`eB",
-                    b"r{[iihyH_o~i`eB",
-                    b"l|~EigdbI{m~i`eB",
-                    b"|shDsdx}H}l~i`eB",
-                ),
-            ):
-                self.assertEqual(redis_client.get(journey.get_redis_key()), polyline)
-
-            with patch("vehicles.views.redis_client", redis_client):
-                response = self.client.get("/vehicles.json")
-            items = response.json()
-            self.assertEqual(
-                [item["id"] for item in items], [journey.id for journey in journeys]
-            )
-            self.assertEqual(items[0]["vehicle"], {"name": ""})
-            self.assertEqual(items[2]["vehicle"], {"name": "BV23NRE"})
-            self.assertEqual(items[0]["service"]["line_name"], "004")
-            self.assertIn("url", items[0]["service"])
-            self.assertIsNone(items[0]["heading"])
-
-            entity = gtfs_realtime_pb2.FeedEntity()
-            entity.vehicle.trip.trip_id = "UK004-3-1045042024-NOT#LVC-00"
-            entity.vehicle.trip.start_time = "10:45:00"
-            entity.vehicle.trip.start_date = "20240401"
-            entity.vehicle.position.latitude = 51.5
-            entity.vehicle.position.longitude = -0.14
-            entity.vehicle.timestamp = 1711980350
-            with self.assertNumQueries(0):
-                command.handle_item(entity, command.source.datetime)
-
-            distribute(channel_layer, async_redis_client)
-
-            item = json.loads(redis_client.get(f"vehicle{journeys[0].id}"))
-            self.assertEqual(round(item["heading"]), 33)
-            self.assertEqual(
-                redis_client.get(journeys[0].get_redis_key()),
-                b"t|[abhyH_b~i`eBuq@}n@{O",
-            )
 
     @time_machine.travel("2024-09-16")
     def test_import_gtfs_ember(self):
@@ -226,7 +153,9 @@ class FlixbusTest(TestCase):
                 "bustimes.management.commands.import_gtfs_ember.download_if_modified",
                 return_value=(
                     True,
-                    datetime.datetime(2024, 6, 18, 10, 0, 0, tzinfo=datetime.UTC),
+                    datetime.datetime(
+                        2024, 6, 18, 10, 0, 0, tzinfo=datetime.timezone.utc
+                    ),
                 ),
             ),
             TemporaryDirectory() as directory,

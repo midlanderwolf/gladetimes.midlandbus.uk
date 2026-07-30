@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from google.protobuf import json_format
@@ -33,6 +33,7 @@ class Command(GTFSRCommand):
         feed.ParseFromString(response.content)
 
         print(feed.header.timestamp)
+        print(datetime.fromtimestamp(feed.header.timestamp, timezone.utc))
 
         for item in feed.entity:
             if item.HasField("vehicle") and item.vehicle.trip.trip_id.startswith("UK"):
