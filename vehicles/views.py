@@ -466,7 +466,9 @@ def get_vehicle_locations(
             [
                 vehicle_id
                 for vehicle_id, item in zip(vehicle_ids, vehicle_locations)
-                if item and f"journey{item['journey_id']}" not in journeys
+                if item
+                and "vehicle" not in item
+                and f"journey{item['journey_id']}" not in journeys
             ]
         )
     except OperationalError:
@@ -479,7 +481,11 @@ def get_vehicle_locations(
         if item:
             journey_cache_key = f"journey{item['journey_id']}"
 
-            if journey_cache_key in journeys:
+            if "vehicle" in item:
+                # journey-based tracking with no Vehicle record (e.g. FlixBus) -
+                # the 'vehicle' is already in the item
+                pass
+            elif journey_cache_key in journeys:
                 item.update(journeys[journey_cache_key])
             elif vehicles:
                 try:

@@ -1,5 +1,6 @@
 import logging
 from django_filters.rest_framework import DjangoFilterBackend
+from datetime import datetime, timedelta
 from rest_framework import pagination, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException
@@ -221,8 +222,39 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             if distances[idx] < 100:
                 stops[idx].actual_departure_time = location["datetime"]
 
+    def trip_from_siri(self, instance, locations):
+        try:
+            mvj = instance.vehicle.latest_journey_data["MonitoredVehicleJourney"]
+            origin_ref = mvj["OriginRef"].upper()
+            dest_ref = mvj["DestinationRef"].upper()
+            stops = {
+                stop.atco_code.upper(): stop
+                for stop in StopPoint.objects.filter(
+                    Q(atco_code__iexact=origin_ref) | Q(atco_code__iexact=dest_ref)
+                )
+            }
+        except (KeyError, ValueError, TypeError):
+            return
+
+        origin = stops.get(origin_ref) or StopPoint(common_name=mvj.get("OriginName"))
+        dest = stops.get(dest_ref) or StopPoint(common_name=mvj.get("DestinationName"))
+
+        if start := mvj.get("OriginAimedDepartureTime"):
+            start = timezone.localtime(datetime.fromisoformat(start))
+            start = timedelta(hours=start.hour, minutes=start.minute)
+        if end := mvj.get("DestinationAimedArrivalTime"):
+            end = timezone.localtime(datetime.fromisoformat(end))
+            end = timedelta(hours=end.hour, minutes=end.minute)
+
+        trip = Trip(start=start, end=end, operator=instance.vehicle.operator)
+        trip.stops = [
+            StopTime(stop=origin, departure=start, timing_point=True),
+            StopTime(stop=dest, arrival=end, timing_point=True),
+        ]
+        return trip
+
     @action(detail=True)
-    def details(self, request, pk=None):
+    def details(self, request, pk=None, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
 
@@ -274,9 +306,23 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             )
             extra_data["time_aware_polyline"] = polyline
 
+        if instance.service_id:
+            extra_data["service"] = {
+                "id": instance.service_id,
+                "slug": instance.service.slug,
+            }
+
+        current_trip = (
+            instance.vehicle_id and instance.id == instance.vehicle.latest_journey_id
+        )
+        if locations and current_trip:
+            if not instance.trip:
+                instance.trip = self.trip_from_siri(instance, locations)
+
         if instance.trip:
             instance.trip.destination_name = None
-            instance.trip.stops = list(TripViewSet.get_stops(instance.trip))
+            if instance.trip.id:
+                instance.trip.stops = list(TripViewSet.get_stops(instance.trip))
             if locations:
                 self.set_actual_departure_times(instance.trip.stops, locations)
             trip_serializer = serializers.TripSerializer(
@@ -284,22 +330,21 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             )
             extra_data["trip"] = trip_serializer.data
 
-        if instance.service_id:
-            extra_data["service"] = {
-                "id": instance.service_id,
-                "slug": instance.service.slug,
-            }
-        if (
-            locations
-            and instance.vehicle_id
-            and instance.id == instance.vehicle.latest_journey_id
-        ):
-            extra_data["live"] = get_vehicle_locations(
-                vehicle_ids=[instance.vehicle_id],
-                trip_id=instance.trip_id,
-                stop_times=(instance.trip.stops if instance.trip else None),
-                tzinfo=tzinfo,
-            )
+        if locations and (current_trip or not instance.vehicle_id):
+            if instance.service_id:
+                params = {
+                    "service_ids": [instance.service_id],
+                    "trip_id": instance.trip_id,
+                }
+            else:
+                params = {"vehicle_ids": [instance.vehicle_id or instance.id]}
+            if instance.trip:
+                params["trip_id"] = instance.trip_id
+                params["stop_times"] = instance.trip.stops
+            live = get_vehicle_locations(**params, tzinfo=tzinfo)
+            # check that this journey is actually tracking (not an old journey)
+            if live and any(instance.id == item["journey_id"] for item in live):
+                extra_data["live"] = live
 
         if not instance.trip and instance.vehicle.operator:
             extra_data["operator"] = {
@@ -308,27 +353,30 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
                 "name": instance.vehicle.operator.name,
             }
 
-        next_previous_filter = {
-            "date": instance.date,
-            "vehicle_id": instance.vehicle_id,
-        }
-        try:
-            next_journey = instance.get_next_by_datetime(**next_previous_filter)
-        except VehicleJourney.DoesNotExist:
-            pass
-        else:
-            extra_data["next"] = {
-                "id": next_journey.id,
-                "datetime": timezone.localtime(next_journey.datetime, tzinfo),
+        if instance.vehicle_id:
+            next_previous_filter = {
+                "date": instance.date,
+                "vehicle_id": instance.vehicle_id,
             }
-        try:
-            previous_journey = instance.get_previous_by_datetime(**next_previous_filter)
-        except VehicleJourney.DoesNotExist:
-            pass
-        else:
-            extra_data["previous"] = {
-                "id": previous_journey.id,
-                "datetime": timezone.localtime(previous_journey.datetime, tzinfo),
-            }
+            try:
+                next_journey = instance.get_next_by_datetime(**next_previous_filter)
+            except VehicleJourney.DoesNotExist:
+                pass
+            else:
+                extra_data["next"] = {
+                    "id": next_journey.id,
+                    "datetime": timezone.localtime(next_journey.datetime, tzinfo),
+                }
+            try:
+                previous_journey = instance.get_previous_by_datetime(
+                    **next_previous_filter
+                )
+            except VehicleJourney.DoesNotExist:
+                pass
+            else:
+                extra_data["previous"] = {
+                    "id": previous_journey.id,
+                    "datetime": timezone.localtime(previous_journey.datetime, tzinfo),
+                }
 
         return Response(serializer.data | extra_data)

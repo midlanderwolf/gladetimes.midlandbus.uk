@@ -14,7 +14,7 @@ from vehicles.management.commands import import_gtfsr_ember, import_gtfsr_flixbu
 
 from .test_import_gtfs import make_zipfile
 from ...models import Route, Trip
-from vehicles.models import VehicleJourney
+from vehicles.models import Vehicle, VehicleJourney
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -134,34 +134,47 @@ class FlixbusTest(TestCase):
 
         command = import_gtfsr_flixbus.Command()
         command.do_source()
+
+        redis = fakeredis.FakeStrictRedis()
         with (
             time_machine.travel("2024-04-01 14:04:48+00:00"),
-            patch(
-                "vehicles.management.import_live_vehicles.redis_client",
-                fakeredis.FakeStrictRedis(),
-            ),
+            patch("vehicles.management.import_live_vehicles.redis_client", redis),
             vcr.use_cassette(str(FIXTURES_DIR / "flixbus_gtfsr.yml")),
         ):
-            with self.assertNumQueries(43):
+            with self.assertNumQueries(25):
                 command.update()
-            with self.assertNumQueries(1):
+            with self.assertNumQueries(0):
                 command.update()
 
-        # this vehicle was on 'two different journeys at once':
-        journeys = VehicleJourney.objects.filter(
-            vehicle__code="bac589a1-ab65-4996-8838-790f72b3c9e1"
-        )
-        self.assertEqual(
-            [str(journey) for journey in journeys],
-            [
-                "1 Apr 24 10:45 004 UK004-3-1045042024-NOT#LVC-00  to London Victoria Coach Station",
-                "1 Apr 24 15:00 004 UK004-10-1500042024-LVC#NOT-00  to Nottingham",
-            ],
-        )
-        # the later journey should be the latest_journey:
-        self.assertEqual(
-            journeys[0].vehicle.latest_journey.code, "UK004-10-1500042024-LVC#NOT-00"
-        )
+            # journeys are tracked with no Vehicle records - we're not sure if
+            # the vehicle id maps to a bus or a driver's mobile phone or what
+            self.assertFalse(Vehicle.objects.exists())
+
+            journeys = VehicleJourney.objects.filter(source=command.source)
+            self.assertEqual(
+                [str(journey) for journey in journeys],
+                [
+                    "1 Apr 24 10:45 004 UK004-3-1045042024-NOT#LVC-00  to London Victoria Coach Station",
+                    "1 Apr 24 15:00 004 UK004-10-1500042024-LVC#NOT-00  to Nottingham",
+                    "1 Apr 24 15:00 004 UK004-7-1500042024-NOT#LVC-00  to London Victoria Coach Station",
+                    "1 Apr 24 11:00 004 UK004-6-1100042024-LVC#NOT-00  to Nottingham",
+                ],
+            )
+            self.assertFalse(journeys.exclude(vehicle=None).exists())
+
+            # one location in each journey's history:
+            self.assertEqual(redis.llen(journeys[0].get_redis_key()), 1)
+
+            with patch("vehicles.views.redis_client", redis):
+                response = self.client.get("/vehicles.json")
+            items = response.json()
+            self.assertEqual(
+                [item["id"] for item in items], [journey.id for journey in journeys]
+            )
+            self.assertEqual(items[0]["vehicle"], {"name": ""})
+            self.assertEqual(items[2]["vehicle"], {"name": "BV23NRE"})
+            self.assertEqual(items[0]["service"]["line_name"], "004")
+            self.assertIn("url", items[0]["service"])
 
     @time_machine.travel("2024-09-16")
     def test_import_gtfs_ember(self):
