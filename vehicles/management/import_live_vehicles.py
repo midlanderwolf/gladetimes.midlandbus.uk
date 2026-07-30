@@ -80,6 +80,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         self.identifiers = {}
         self.journeys_ids = {}
         self.journeys_ids_ids = {}
+        self.duplicate_vehicles = set()  # vehicles on 'two journeys at once'
 
     @staticmethod
     def get_datetime(self):
@@ -123,6 +124,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         vehicle: Vehicle | None = None,
         latest: dict | None = None,
         keep_journey=False,
+        concurrent=False,
     ):
         if dt := self.get_datetime(item):
             if dt.year == 1970:
@@ -246,6 +248,20 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 if key in self.journeys_to_create:
                     # ! unusually, the same journey is twice in the feed
                     journey = self.journeys_to_create[key]
+                elif (
+                    concurrent
+                    and journey.datetime
+                    and (
+                        existing := vehicle.vehiclejourney_set.filter(
+                            datetime=journey.datetime
+                        ).first()
+                    )
+                ):
+                    # the vehicle is on 'two journeys at once',
+                    # and this journey already exists
+                    journey.id = existing.id
+                    journey.uuid = existing.uuid
+                    self.journeys_to_update.append(journey)
                 else:
                     self.journeys_to_create[key] = journey
 
@@ -265,10 +281,17 @@ class ImportLiveVehiclesCommand(BaseCommand):
                     journey.service.tracking = True
                     journey.service.save(update_fields=["tracking"])
 
-            vehicle.latest_journey = journey
-            if type(item) is dict:
-                vehicle.latest_journey_data = item
-            self.vehicles_to_update.append(vehicle)
+            if not (
+                concurrent
+                and latest_journey
+                and journey.datetime < latest_journey.datetime
+            ):
+                # (a vehicle on 'two journeys at once' -
+                # the older journey shouldn't become the latest_journey)
+                vehicle.latest_journey = journey
+                if type(item) is dict:
+                    vehicle.latest_journey_data = item
+                self.vehicles_to_update.append(vehicle)
 
         location.id = vehicle.id
         location.journey = journey
@@ -412,7 +435,8 @@ class ImportLiveVehiclesCommand(BaseCommand):
 
         i = 1
         for item, vehicle_identity in zip(items, identities):
-            journey_identity = self.journeys_ids[vehicle_identity]
+            journey_identity = self.get_journey_identity(item)
+            concurrent = vehicle_identity in self.duplicate_vehicles
 
             if vehicle_identity in vehicles_by_identity:
                 vehicle = vehicles_by_identity[vehicle_identity]
@@ -428,7 +452,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
                     vehicles_by_identity[vehicle_identity] = vehicle
 
             keep_journey = False
-            if vehicle_identity in self.journeys_ids_ids:
+            if not concurrent and vehicle_identity in self.journeys_ids_ids:
                 journey_identity_id = self.journeys_ids_ids[vehicle_identity]
                 if journey_identity_id == (journey_identity, vehicle.latest_journey_id):
                     keep_journey = True  # can dumbly keep same latest_journey
@@ -440,6 +464,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
                     vehicle=vehicle,
                     latest=vehicle_locations.get(vehicle.id, False),
                     keep_journey=keep_journey,
+                    concurrent=concurrent,
                 )
 
                 if result:
@@ -468,6 +493,9 @@ class ImportLiveVehiclesCommand(BaseCommand):
 
         total_items = 0
 
+        vehicle_identities = set()
+        self.duplicate_vehicles = set()
+
         for i, item in enumerate(items or self.get_items() or ()):
             vehicle_identity = self.get_vehicle_identity(item)
 
@@ -475,10 +503,15 @@ class ImportLiveVehiclesCommand(BaseCommand):
 
             total_items += 1
 
+            if vehicle_identity in vehicle_identities:
+                # vehicle is on 'two journeys at once'
+                self.duplicate_vehicles.add(vehicle_identity)
+            else:
+                vehicle_identities.add(vehicle_identity)
+
             if self.identifiers.get(vehicle_identity) == self.get_item_identity(item):
                 if journey_identity == self.journeys_ids[vehicle_identity]:
                     continue
-                print(self.journeys_ids[vehicle_identity], item)
             if (
                 vehicle_identity not in self.journeys_ids
                 or journey_identity != self.journeys_ids[vehicle_identity]

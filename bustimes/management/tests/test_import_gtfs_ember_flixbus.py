@@ -14,6 +14,7 @@ from vehicles.management.commands import import_gtfsr_ember, import_gtfsr_flixbu
 
 from .test_import_gtfs import make_zipfile
 from ...models import Route, Trip
+from vehicles.models import VehicleJourney
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -141,10 +142,26 @@ class FlixbusTest(TestCase):
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "flixbus_gtfsr.yml")),
         ):
-            with self.assertNumQueries(37):
+            with self.assertNumQueries(43):
                 command.update()
             with self.assertNumQueries(1):
                 command.update()
+
+        # this vehicle was on 'two different journeys at once':
+        journeys = VehicleJourney.objects.filter(
+            vehicle__code="bac589a1-ab65-4996-8838-790f72b3c9e1"
+        )
+        self.assertEqual(
+            [str(journey) for journey in journeys],
+            [
+                "1 Apr 24 10:45 004 UK004-3-1045042024-NOT#LVC-00  to London Victoria Coach Station",
+                "1 Apr 24 15:00 004 UK004-10-1500042024-LVC#NOT-00  to Nottingham",
+            ],
+        )
+        # the later journey should be the latest_journey:
+        self.assertEqual(
+            journeys[0].vehicle.latest_journey.code, "UK004-10-1500042024-LVC#NOT-00"
+        )
 
     @time_machine.travel("2024-09-16")
     def test_import_gtfs_ember(self):
