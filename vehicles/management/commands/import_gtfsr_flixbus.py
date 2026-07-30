@@ -132,6 +132,7 @@ class Command(GTFSRCommand):
         redis_json["vehicle"] = {"name": item.vehicle.vehicle.license_plate}
         if self.livery:
             redis_json["vehicle"]["livery"] = self.livery.id
+            redis_json["vehicle"]["colour"] = self.livery.colour
         if journey.service_id and "service" in redis_json:
             redis_json["service"]["url"] = journey.service.get_absolute_url()
 
