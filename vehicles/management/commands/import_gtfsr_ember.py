@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from google.protobuf import json_format
@@ -38,6 +38,10 @@ class Command(GTFSRCommand):
             if "tripUpdate" in entity and "tripId" in entity["tripUpdate"]["trip"]
         }
         cache.set("ember_trip_updates", trip_updates, 300)
+
+        self.source.datetime = datetime.fromtimestamp(
+            feed.header.timestamp, timezone.utc
+        )
 
         # the feed contains both vehicle positions and alerts (and possibly other entities)
         for item in feed.entity:

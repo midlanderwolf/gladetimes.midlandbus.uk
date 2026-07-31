@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from google.protobuf import json_format
@@ -37,6 +37,10 @@ class Command(GTFSRCommand):
 
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
+
+        self.source.datetime = datetime.fromtimestamp(
+            feed.header.timestamp, timezone.utc
+        )
 
         return feed.entity
 

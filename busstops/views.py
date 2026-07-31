@@ -350,24 +350,24 @@ def status(request):
         "sources": DataSource.objects.filter(
             name__in=["National Operator Codes", "NPTG", "NaPTAN", "Irish NaPTAN"]
         ),
-        "bod_avl_status": {},
     }
 
-    for key in ("bod_avl", "Transport_for_Wales", "Bus_Open_Data", "Todd's_Travel"):
-        key = f"{key}_status"
-        if status := cache.get(key):
-            context["bod_avl_status"][key] = status
-
     context["statuses"] = cache.get_many(
-        [
-            "Realtime_Transport_Operators_status",
-            "Irish_Citylink_status",
-            "Translink_status",
-            "Stagecoach_status",
-            "Ember_status",
-            "TfE_status",
-            "jersey_status",
-        ]
+        f"{key}_status"
+        for key in (
+            "bod_avl",
+            "Transport_for_Wales",
+            "Bus_Open_Data",
+            "Todd's_Travel",
+            "Ember",
+            "Realtime_Transport_Operators",
+            "FlixBus",
+            "Irish_Citylink",
+            "Translink",
+            "Stagecoach",
+            "TfE",
+            "jersey",
+        )
     ).items()
 
     return render(

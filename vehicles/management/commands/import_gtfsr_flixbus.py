@@ -1,6 +1,6 @@
 import functools
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from django.contrib.gis.geos import Point
@@ -33,6 +33,10 @@ class Command(GTFSRCommand):
 
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
+
+        self.source.datetime = datetime.fromtimestamp(
+            feed.header.timestamp, timezone.utc
+        )
 
         for item in feed.entity:
             if item.HasField("vehicle") and item.vehicle.trip.trip_id.startswith("UK"):

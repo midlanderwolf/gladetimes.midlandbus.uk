@@ -67,6 +67,10 @@ class Command(ImportLiveVehiclesCommand):
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
 
+        self.source.datetime = datetime.fromtimestamp(
+            feed.header.timestamp, timezone.utc
+        )
+
         return feed.entity
 
     def get_vehicle(self, item):
