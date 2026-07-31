@@ -125,7 +125,7 @@ def do_route_links(
                 continue
 
             geom = so.substring(trip.geometry, start_dist, end_dist)
-            if type(geom) is so.LineString:
+            if type(geom) is so.LineString and len(geom.coords) > 2:
                 if key in existing_route_links:
                     rl = existing_route_links[key]
                 else:
