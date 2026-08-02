@@ -26,6 +26,7 @@ class Command(GTFSRCommand):
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/London")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
+        self.source.datetime = None
         self.url = "https://rt.flix.baguette.pirnet.si/rt.pb"
         self.livery = Livery.objects.filter(name="FlixBus").first()
         self.interval = None  # observed gap between feed timestamps
@@ -35,6 +36,9 @@ class Command(GTFSRCommand):
         response = self.session.get(self.url, timeout=10)
         self.session.headers.update({"if-none-match": response.headers["etag"]})
         response.raise_for_status()
+
+        if response.status_code == 304:
+            return
 
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
@@ -69,9 +73,6 @@ class Command(GTFSRCommand):
         self.handle_items(changed_items, changed_item_identities)
         self.handle_items(changed_journey_items, changed_journey_identities)
 
-        if not self.interval:
-            return self.wait
-
         age = now - self.source.datetime
 
         self.status.append(
@@ -87,8 +88,11 @@ class Command(GTFSRCommand):
         self.status = self.status[-50:]
         import_live_vehicles.cache.set(self.status_key, self.status, None)
 
-        wait = self.interval - age.total_seconds() + 2
-        return min(max(wait, 5), 300)
+        if not self.interval:
+            return self.wait
+
+        wait = self.interval - age.total_seconds() + 10
+        return min(max(wait, 10), self.wait)
 
     @staticmethod
     def get_vehicle_identity(item):
