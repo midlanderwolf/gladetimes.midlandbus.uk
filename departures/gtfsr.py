@@ -130,6 +130,13 @@ def update_departure(departure: dict, trip_update: dict) -> None:
                 delay = timedelta(seconds=stop_time_update["departure"]["delay"])
                 departure["live"] = departure["time"] + delay
 
+    if (
+        "vehicle" not in departure
+        and "vehicle" in trip_update
+        and "licensePlate" in trip_update["vehicle"]
+    ):
+        departure["vehicle"] = trip_update["vehicle"]["licensePlate"]
+
 
 def update_stop_departures(departures: list, feed_name: str) -> None:
     trip_updates = get_trip_updates(feed_name)
