@@ -10,7 +10,7 @@ def get_content(payload):
     embed = None
     if payload.startswith("licence:"):
         slug = payload[8:]
-        content = f"[{slug}](https://gladetimes.midlandbus.uk/licences/{slug})"
+        content = f"[{slug}](https://gladetimes.com/licences/{slug})"
         try:
             licence = Licence.objects.get(licence_number=slug)
             embed = {
@@ -29,7 +29,7 @@ def get_content(payload):
             pass
     elif payload.startswith("registration:"):
         slug = payload[13:]
-        content = f"[{slug}](https://gladetimes.midlandbus.uk/registrations/{slug})"
+        content = f"[{slug}](https://gladetimes.com/registrations/{slug})"
         try:
             registration = Registration.objects.get(registration_number=slug)
             description = f"{registration.start_point} to {registration.finish_point}"
@@ -52,7 +52,7 @@ def get_content(payload):
     elif payload.startswith("variation:"):
         parts = payload[9:].split("#")
         slug = parts[0]
-        content = f"[{slug}](https://gladetimes.midlandbus.uk/registrations/{slug})"
+        content = f"[{slug}](https://gladetimes.com/registrations/{slug})"
         try:
             registration = Registration.objects.get(registration_number=slug)
             if len(parts) > 1:

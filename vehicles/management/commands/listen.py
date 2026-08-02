@@ -6,7 +6,7 @@ from django.conf import settings
 
 
 def get_content(slug):
-    content = f"[{slug}](https://gladetimes.midlandbus.uk/vehicles/{slug})"
+    content = f"[{slug}](https://gladetimes.com/vehicles/{slug})"
 
     if slug[:4] in ("tbtn", "nctr", "kbus", "ndtr", "noct"):
         content = f"{content} <@1238439672708075520>"

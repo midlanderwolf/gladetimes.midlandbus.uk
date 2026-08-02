@@ -1,0 +1,108 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, zstd
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.34.2
+    method: GET
+    uri: https://rt.flix.baguette.pirnet.si/rt.pb
+  response:
+    body:
+      string: !!binary |
+        Cg0KAzIuMBAAGIz+qrAGEp8BCipVSzAwNC0zLTEwNDUwNDIwMjQtTk9UI0xWQy0wMC0yMDI0MDQw
+        MS1wb3MicQo1Ch1VSzAwNC0zLTEwNDUwNDIwMjQtTk9UI0xWQy0wMBIIMTA6NDU6MDAaCDIwMjQw
+        NDAxIAASCg0l+E1CFaCpF74osPyqsAZCJgokYmFjNTg5YTEtYWI2NS00OTk2LTg4MzgtNzkwZjcy
+        YjNjOWUxEqEBCitVSzAwNC0xMC0xNTAwMDQyMDI0LUxWQyNOT1QtMDAtMjAyNDA0MDEtcG9zInIK
+        NgoeVUswMDQtMTAtMTUwMDA0MjAyNC1MVkMjTk9ULTAwEggxNTowMDowMBoIMjAyNDA0MDEgABIK
+        DVX5TUIVzHwXviiA/qqwBkImCiRiYWM1ODlhMS1hYjY1LTQ5OTYtODgzOC03OTBmNzJiM2M5ZTES
+        qAEKKlVLMDA0LTctMTUwMDA0MjAyNC1OT1QjTFZDLTAwLTIwMjQwNDAxLXBvcyJ6CjUKHVVLMDA0
+        LTctMTUwMDA0MjAyNC1OT1QjTFZDLTAwEggxNTowMDowMBoIMjAyNDA0MDEgABIKDfvJU0IVf7+S
+        vyju/aqwBkIvCiQwNjBjY2ViZC0wZTljLTRiOTUtOGE2OS00N2YwODM3NjQ3M2YaB0JWMjNOUkUS
+        nwEKKlVLMDA0LTYtMTEwMDA0MjAyNC1MVkMjTk9ULTAwLTIwMjQwNDAxLXBvcyJxCjUKHVVLMDA0
+        LTYtMTEwMDA0MjAyNC1MVkMjTk9ULTAwEggxMTowMDowMBoIMjAyNDA0MDEgABIKDYrrUEIViV5e
+        vyjf/aqwBkImCiQ1MzUwOWQ2Ny03Mzc3LTQ2MWQtYTA4YS05YjUxMzQ1MGZiNmYSmwEKKE40MDEt
+        MS0xOTU1MDQyMDI0LVNUQiNWRS0wMC0yMDI0MDQwMS1wb3MibwozChtONDAxLTEtMTk1NTA0MjAy
+        NC1TVEIjVkUtMDASCDE5OjU1OjAwGggyMDI0MDQwMSAAEgoNSsE1QhWOGUVBKND9qrAGQiYKJGMw
+        MDFiOWI1LTk4YzEtNDNlNy1iOTRiLTI4YTczN2M3ZWZmNRLJAQotVUswMDQtMTAtMTUwMDA0MjAy
+        NC1MVkMjTk9ULTAwLTIwMjQwNDAxLWRlbGF5GpcBCjYKHlVLMDA0LTEwLTE1MDAwNDIwMjQtTFZD
+        I05PVC0wMBIIMTU6MDA6MDAaCDIwMjQwNDAxIAASLwgBGgMIkQEiJGRjYzBmNzY5LTk2MDMtMTFl
+        Ni05MDY2LTU0OWYzNTBmY2IwYygAGiYKJGJhYzU4OWExLWFiNjUtNDk5Ni04ODM4LTc5MGY3MmIz
+        YzllMSCA/qqwBg==
+    headers:
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '1036'
+      Content-Type:
+      - application/x-protobuf
+      Date:
+      - Mon, 01 Apr 2024 14:05:00 GMT
+      ETag:
+      - W/"17a8b8-oZkGxitvt37WFZIWv4N2uRPOA1w"
+      Server:
+      - nginx/1.22.1
+      X-Powered-By:
+      - Express
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, zstd
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.34.2
+    method: GET
+    uri: https://rt.flix.baguette.pirnet.si/rt.pb
+  response:
+    body:
+      string: !!binary |
+        Cg0KAzIuMBAAGIz+qrAGEp8BCipVSzAwNC0zLTEwNDUwNDIwMjQtTk9UI0xWQy0wMC0yMDI0MDQw
+        MS1wb3MicQo1Ch1VSzAwNC0zLTEwNDUwNDIwMjQtTk9UI0xWQy0wMBIIMTA6NDU6MDAaCDIwMjQw
+        NDAxIAASCg0l+E1CFaCpF74osPyqsAZCJgokYmFjNTg5YTEtYWI2NS00OTk2LTg4MzgtNzkwZjcy
+        YjNjOWUxEqEBCitVSzAwNC0xMC0xNTAwMDQyMDI0LUxWQyNOT1QtMDAtMjAyNDA0MDEtcG9zInIK
+        NgoeVUswMDQtMTAtMTUwMDA0MjAyNC1MVkMjTk9ULTAwEggxNTowMDowMBoIMjAyNDA0MDEgABIK
+        DVX5TUIVzHwXviiA/qqwBkImCiRiYWM1ODlhMS1hYjY1LTQ5OTYtODgzOC03OTBmNzJiM2M5ZRES
+        qAEKKlVLMDA0LTctMTUwMDA0MjAyNC1OT1QjTFZDLTAwLTIwMjQwNDAxLXBvcyJ6CjUKHVVLMDA0
+        LTctMTUwMDA0MjAyNC1OT1QjTFZDLTAwEggxNTowMDowMBoIMjAyNDA0MDEgABIKDfvJU0IVf7+S
+        vyju/aqwBkIvCiQwNjBjY2ViZC0wZTljLTRiOTUtOGE2OS00N2YwODM3NjQ3M2YaB0JWMjNOUkUS
+        nwEKKlVLMDA0LTYtMTEwMDA0MjAyNC1MVkMjTk9ULTAwLTIwMjQwNDAxLXBvcyJxCjUKHVVLMDA0
+        LTYtMTEwMDA0MjAyNC1MVkMjTk9ULTAwEggxMTowMDowMBoIMjAyNDA0MDEgABIKDYrrUEIViV5e
+        vyjf/aqwBkImCiQ1MzUwOWQ2Ny03Mzc3LTQ2MWQtYTA4YS05YjUxMzQ1MGZiNmYSmwEKKE40MDEt
+        MS0xOTU1MDQyMDI0LVNUQiNWRS0wMC0yMDI0MDQwMS1wb3MibwozChtONDAxLTEtMTk1NTA0MjAy
+        NC1TVEIjVkUtMDASCDE5OjU1OjAwGggyMDI0MDQwMSAAEgoNSsE1QhWOGUVBKND9qrAGQiYKJGMw
+        MDFiOWI1LTk4YzEtNDNlNy1iOTRiLTI4YTczN2M3ZWZmNRLJAQotVUswMDQtMTAtMTUwMDA0MjAy
+        NC1MVkMjTk9ULTAwLTIwMjQwNDAxLWRlbGF5GpcBCjYKHlVLMDA0LTEwLTE1MDAwNDIwMjQtTFZD
+        I05PVC0wMBIIMTU6MDA6MDAaCDIwMjQwNDAxIAASLwgBGgMIkQEiJGRjYzBmNzY5LTk2MDMtMTFl
+        Ni05MDY2LTU0OWYzNTBmY2IwYygAGiYKJGJhYzU4OWExLWFiNjUtNDk5Ni04ODM4LTc5MGY3MmIz
+        YzllMSCA/qqwBg==
+    headers:
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '1036'
+      Content-Type:
+      - application/x-protobuf
+      Date:
+      - Mon, 01 Apr 2024 14:05:00 GMT
+      ETag:
+      - W/"17a8b8-oZkGxitvt37WFZIWv4N2uRPOA1w"
+      Server:
+      - nginx/1.22.1
+      X-Powered-By:
+      - Express
+    status:
+      code: 200
+      message: OK
+version: 1

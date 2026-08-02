@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest import mock
 
@@ -20,7 +21,7 @@ from busstops.models import (
 from bustimes.models import Calendar, Garage, Route, StopTime, Trip
 
 from ...models import Livery, Vehicle, VehicleJourney
-from ..commands import import_bod_avl
+from ..commands import distribute_vehicle_locations, import_bod_avl
 
 
 def patch_redis_client(redis_client=None):
@@ -29,6 +30,25 @@ def patch_redis_client(redis_client=None):
     return mock.patch(
         "vehicles.management.import_live_vehicles.redis_client", redis_client
     )
+
+
+class CapturingChannelLayer:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, channel, message):
+        self.sent.append(message)
+
+
+def distribute(channel_layer, async_redis_client):
+    command = distribute_vehicle_locations.Command()
+    with mock.patch(
+        "vehicles.management.commands.distribute_vehicle_locations.async_redis_client",
+        async_redis_client,
+    ):
+        for message in channel_layer.sent:
+            asyncio.run(command.handle_items(message["items"]))
+    channel_layer.sent = []
 
 
 class BusOpenDataVehicleLocationsTest(TestCase):

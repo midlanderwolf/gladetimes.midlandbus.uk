@@ -1,7 +1,8 @@
 import math
 
-from django.core.cache import caches
+import redis.asyncio
 from django.conf import settings
+from django.core.cache import caches
 from django.core.cache.backends.base import InvalidCacheBackendError
 
 from .models import VehicleRevision, VehicleRevisionFeature
@@ -10,6 +11,17 @@ try:
     redis_client = caches["redis"]._cache.get_client()
 except InvalidCacheBackendError:
     redis_client = None
+
+if redis_client:
+    async_redis_client = redis.asyncio.Redis.from_url(
+        settings.REDIS_URL, max_connections=8
+    )
+else:
+    async_redis_client = None
+
+VEHICLE_POSITIONS_CHANNEL = "vehicle_positions"
+
+VEHICLE_WATCHERS_KEY = "vehicle_watchers"
 
 
 def filename_from_content_disposition(response) -> str:

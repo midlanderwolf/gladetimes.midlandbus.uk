@@ -259,7 +259,7 @@ function loadVehicles(onMoveEnd) {
     params += "&trip=" + clickedTrip;
   }
   lastVehiclesReq = reqwest({
-    url: "https://gladetimes.midlandbus.uk/vehicles.json" + params,
+    url: "https://gladetimes.com/vehicles.json" + params,
     crossOrigin: true,
     success: function (data) {
       if (data) {
