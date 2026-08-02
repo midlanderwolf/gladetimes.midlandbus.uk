@@ -1,8 +1,10 @@
 import functools
 import json
-from datetime import datetime, timedelta, timezone
+import logging
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import requests
 from django.contrib.gis.geos import Point
 from django.utils.dateparse import parse_duration
 from google.transit import gtfs_realtime_pb2
@@ -15,6 +17,8 @@ from ...utils import calculate_bearing
 from .. import import_live_vehicles
 from .import_gtfsr_ie import Command as GTFSRCommand
 
+logger = logging.getLogger(__name__)
+
 
 class Command(GTFSRCommand):
     source_name = "FlixBus"
@@ -24,6 +28,7 @@ class Command(GTFSRCommand):
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
         self.url = "https://rt.flix.baguette.pirnet.si/rt.pb"
         self.livery = Livery.objects.filter(name="FlixBus").first()
+        self.interval = None  # observed gap between feed timestamps
         return self
 
     def get_items(self):
@@ -34,13 +39,56 @@ class Command(GTFSRCommand):
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
 
-        self.source.datetime = datetime.fromtimestamp(
-            feed.header.timestamp, timezone.utc
-        )
+        previous_timestamp = self.source.datetime
+        new_timestamp = datetime.fromtimestamp(feed.header.timestamp, UTC)
+
+        if previous_timestamp and new_timestamp > previous_timestamp:
+            self.interval = (new_timestamp - previous_timestamp).total_seconds()
+
+        self.source.datetime = new_timestamp
 
         for item in feed.entity:
             if item.HasField("vehicle") and item.vehicle.trip.trip_id.startswith("UK"):
                 yield item
+
+    def update(self):
+        now = datetime.now(UTC)
+
+        try:
+            (
+                changed_items,
+                changed_journey_items,
+                changed_item_identities,
+                changed_journey_identities,
+                total_items,
+            ) = self.get_changed_items()
+        except requests.exceptions.RequestException:
+            logger.exception("error getting changed items")
+            return self.wait
+
+        self.handle_items(changed_items, changed_item_identities)
+        self.handle_items(changed_journey_items, changed_journey_identities)
+
+        if not self.interval:
+            return self.wait
+
+        age = now - self.source.datetime
+
+        self.status.append(
+            import_live_vehicles.Status(
+                now,
+                self.source.datetime,
+                age,
+                total_items,
+                len(changed_items) + len(changed_journey_items),
+                (datetime.now(UTC) - now).total_seconds,
+            )
+        )
+        self.status = self.status[-50:]
+        import_live_vehicles.cache.set(self.status_key, self.status, None)
+
+        wait = self.interval - age.total_seconds() + 2
+        return min(max(wait, 5), 300)
 
     @staticmethod
     def get_vehicle_identity(item):
@@ -48,9 +96,9 @@ class Command(GTFSRCommand):
         # so we track journeys with no Vehicle records
         return f"{item.vehicle.trip.trip_id} {item.vehicle.trip.start_date}"
 
-    @functools.lru_cache(maxsize=256)
+    @functools.lru_cache(maxsize=256)  # noqa: B019 - one instance per process
     def get_journey(self, trip_id, start_date, start_time):
-        date = datetime.strptime(start_date, "%Y%m%d").date()
+        date = datetime.strptime(start_date, "%Y%m%d").date()  # noqa: DTZ007
 
         journey = (
             VehicleJourney.objects.filter(
