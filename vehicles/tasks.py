@@ -187,8 +187,14 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
 
     date = timezone.localdate(time)
     journeys = vehicle.vehiclejourney_set.filter(date=date)
+
+    existing = VehicleJourney.objects.filter(
+        Q(vehicle=vehicle) | Q(vehicle=None, service=service), date=date, datetime=time
+    ).first()
+
     if (
-        journeys.filter(datetime=time).exists()
+        existing
+        and existing.vehicle_id
         or journey_ref
         and journeys.filter(route_name=route_name, code=journey_ref).exists()
     ):
@@ -204,6 +210,11 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
         destination=destination,
         trip_id=trip_id,
     )
+
+    if existing:  # FlixBus journey with no vehicle id yet
+        journey.id = existing.id
+        journey.uuid = existing.uuid
+
     if not trip_id:
         journey.trip = journey.get_trip(
             departure_time=time, destination_ref=data.get("DestinationRef")

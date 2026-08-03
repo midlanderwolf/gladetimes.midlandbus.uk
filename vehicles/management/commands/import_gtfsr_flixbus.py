@@ -142,9 +142,19 @@ class Command(GTFSRCommand):
             journey.datetime -= timedelta(days=1)
             journey.date -= timedelta(days=1)
 
-        if journey.service and not journey.service.tracking:
-            journey.service.tracking = True
-            journey.service.save(update_fields=["tracking"])
+        if journey.service:
+            if not journey.service.tracking:
+                journey.service.tracking = True
+                journey.service.save(update_fields=["tracking"])
+
+            # existing journey with a vehicle id (Scotland)
+            if existing_journey := (
+                journey.service.vehiclejourney_set.filter(
+                    code=trip_id, date=journey.date, datetime=journey.datetime
+                ).first()
+            ):
+                existing_journey.service = journey.service
+                return existing_journey
 
         journey.save()
 
