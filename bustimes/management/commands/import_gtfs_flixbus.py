@@ -14,13 +14,13 @@ from django.utils.dateparse import parse_duration
 from busstops.models import DataSource, Operator, Service, StopPoint
 
 from ...download_utils import download_if_modified
-from ...gtfs_utils import MODES, do_route_links, get_calendars
+from ...gtfs_utils import MODES, RouteType, do_route_links, get_calendars
 from ...models import Route, StopTime, Trip
 
 logger = logging.getLogger(__name__)
 
 
-MODES = {**MODES, 3: "coach"}
+MODES = {**MODES, RouteType.bus: "coach"}
 
 
 def get_stoppoint(stop, source):

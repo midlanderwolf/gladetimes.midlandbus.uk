@@ -1,19 +1,17 @@
 import logging
-
 from pathlib import Path
 
 import gtfs_kit
-
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Min, Subquery, OuterRef
+from django.db.models import Min, OuterRef, Subquery
 
-from busstops.models import DataSource, Operator, Service, StopPoint, ServiceColour
+from busstops.models import DataSource, Operator, Service, ServiceColour, StopPoint
 
 from ...download_utils import download_if_modified
+from ...gtfs_utils import MODES, do_route_links, get_calendars
 from ...models import Route, StopTime, Trip
-from ...gtfs_utils import get_calendars, MODES, do_route_links
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +98,7 @@ class Command(BaseCommand):
                 )
             service.colour = colours[(bg, fg)]
 
-            service.mode = MODES.get(row.route_type, "bus")
+            service.mode = MODES[row.route_type]
             if row.geometry:
                 service.geometry = row.geometry.wkt
 
@@ -155,7 +153,7 @@ class Command(BaseCommand):
                 departure=departure_time,
                 sequence=row.stop_sequence,
                 trip=trip,
-                timing_status="PTP" if row.timepoint else "OTH",
+                timing_point=bool(row.timepoint),
                 pick_up=(row.pickup_type != 1),
                 set_down=(row.drop_off_type != 1),
             )

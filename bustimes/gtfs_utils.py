@@ -1,3 +1,4 @@
+from enum import IntEnum
 from itertools import pairwise
 
 import gtfs_kit
@@ -6,14 +7,24 @@ import shapely.ops as so
 from .models import Calendar, CalendarDate, RouteLink
 
 
+class RouteType(IntEnum):
+    tram = 0
+    rail = 2
+    bus = 3
+    ferry = 4
+    cable_car = 6
+    coach = 200
+    air = 1100
+
+
 MODES = {
-    0: "tram",
-    2: "rail",
-    3: "bus",
-    4: "ferry",
-    6: "cable car",
-    200: "coach",
-    1100: "air",
+    RouteType.tram: "tram",
+    RouteType.rail: "rail",
+    RouteType.bus: "bus",
+    RouteType.ferry: "ferry",
+    RouteType.cable_car: "cable car",
+    RouteType.coach: "coach",
+    RouteType.air: "air",
 }
 
 
@@ -66,7 +77,11 @@ def get_calendars(feed, source) -> dict:
 
 
 def do_route_links(
-    feed: gtfs_kit.feed.Feed, source, routes: dict, stops: dict, stop_codes: dict = None
+    feed: gtfs_kit.feed.Feed,
+    source,
+    routes: dict,
+    stops: dict,
+    stop_codes: dict | None = None,
 ):
     try:
         trips = feed.get_trips(as_gdf=True).drop_duplicates("shape_id")
