@@ -9,9 +9,11 @@ from django.test import TestCase, override_settings
 from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
 
-from busstops.models import Operator, Service
+from busstops.models import Service
 from vehicles.management.commands import import_gtfsr_nevada
 from vehicles.models import Vehicle, VehicleJourney
+
+from ...models import Trip
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -59,14 +61,30 @@ class NevadaTest(TestCase):
             response, """<input type="time" name="time" value="16:00">"""
         )
 
-    def test_vehicle_position(self):
-        Operator.objects.create(noc="RTCSNV", name="RTC")
-
+        # test GTFS-RT
         feed = gtfs_realtime_pb2.FeedMessage()
         json_format.ParseDict(
             {
-                "header": {"gtfsRealtimeVersion": "2.0", "timestamp": "1785835126"},
+                "header": {"gtfsRealtimeVersion": "2.0", "timestamp": "1785751500"},
                 "entity": [
+                    {
+                        "id": "20450",
+                        "vehicle": {
+                            "trip": {
+                                "tripId": "358024702",
+                                "routeId": "4740",
+                                "startDate": "20260803",
+                                "startTime": "03:00:00",
+                                "scheduleRelationship": "SCHEDULED",
+                            },
+                            "vehicle": {"id": "20450", "label": "20450"},
+                            "position": {
+                                "latitude": 36.10913,
+                                "longitude": -115.17262,
+                            },
+                            "timestamp": "1785751500",  # 03:05 Pacific Time
+                        },
+                    },
                     {
                         "id": "26627",
                         "vehicle": {
@@ -90,7 +108,7 @@ class NevadaTest(TestCase):
                             "currentStopSequence": 1,
                             "occupancyPercentage": 2,
                         },
-                    }
+                    },
                 ],
             },
             feed,
@@ -109,10 +127,19 @@ class NevadaTest(TestCase):
         ):
             command.update()
 
-        vehicle = Vehicle.objects.get()
+        trip = Trip.objects.get(vehicle_journey_code="358024702")
+        journey = VehicleJourney.objects.get(code="358024702")
+        self.assertEqual(journey.trip, trip)
+        self.assertEqual(journey.service, trip.route.service)
+        self.assertEqual(journey.route_name, "DEUCE")
+        self.assertEqual(journey.destination, "Deuce on The Strip Northbound")
+        self.assertEqual(str(journey.datetime), "2026-08-03 10:00:00+00:00")
+        self.assertEqual(str(journey.date), "2026-08-03")
+
+        vehicle = Vehicle.objects.get(code="26627")
         self.assertEqual(vehicle.fleet_code, "26627")
 
-        journey = VehicleJourney.objects.get()
+        journey = VehicleJourney.objects.get(code="358022630")
         # start_time "26:25:00" and date 2026-08-03
         # means 02:25 Pacific Time the next day
         self.assertEqual(str(journey.date), "2026-08-03")
