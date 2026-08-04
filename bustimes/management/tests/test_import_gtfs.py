@@ -1,8 +1,6 @@
 import datetime
-import zipfile
 from pathlib import Path
 from shutil import ReadError
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import time_machine
@@ -18,14 +16,7 @@ from ...download_utils import download_if_modified
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
-def make_zipfile(directory, name):
-    dir_path = FIXTURES_DIR / name
-    feed_path = Path(directory) / f"{name}.zip"
-    with zipfile.ZipFile(feed_path, "a") as open_zipfile:
-        for item in dir_path.iterdir():
-            open_zipfile.write(item, item.name)
-
-
+# test data in `GTFS_Mortons.zip`, `GTFS_Seamus_Doherty.zip` dirs (not zipfiles) in fixtures dir
 @override_settings(DATA_DIR=FIXTURES_DIR)
 class GTFSTest(TestCase):
     @classmethod
@@ -70,31 +61,21 @@ class GTFSTest(TestCase):
         )
 
     def test_import_gtfs(self):
-        with TemporaryDirectory() as directory:
-            make_zipfile(directory, "GTFS_Seamus_Doherty")
-            make_zipfile(directory, "GTFS_Mortons")
-            make_zipfile(directory, "GTFS_Wexford_Bus")
+        with (
+            vcr.use_cassette(
+                str(FIXTURES_DIR / "google_transit_ie.yaml"),
+            ) as cassette,
+            self.assertLogs("bustimes.download_utils", "ERROR") as errors,
+            self.assertLogs(
+                "bustimes.management.commands.import_gtfs", "WARNING"
+            ) as warnings,
+        ):
+            call_command("import_gtfs", ["Mortons", "Wexford Bus", "Seamus Doherty"])
 
-            with (
-                vcr.use_cassette(
-                    str(FIXTURES_DIR / "google_transit_ie.yaml"),
-                ) as cassette,
-                override_settings(DATA_DIR=Path(directory)),
-                self.assertLogs("bustimes.download_utils", "ERROR") as errors,
-                self.assertLogs(
-                    "bustimes.management.commands.import_gtfs", "WARNING"
-                ) as warnings,
-            ):
-                call_command(
-                    "import_gtfs", ["Mortons", "Wexford Bus", "Seamus Doherty"]
-                )
+            cassette.rewind()
 
-                cassette.rewind()
-
-                # import a second time - test that it's OK if stuff already exists
-                call_command(
-                    "import_gtfs", ["Mortons", "Wexford Bus", "Seamus Doherty"]
-                )
+            # import a second time - test that it's OK if stuff already exists
+            call_command("import_gtfs", ["Mortons", "Wexford Bus", "Seamus Doherty"])
 
         self.assertEqual(
             sorted(errors.output),

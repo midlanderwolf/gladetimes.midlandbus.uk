@@ -11,6 +11,7 @@ from busstops.models import Service
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
+# test data in `rtcsnv.zip` dir (not a real zipfile) in fixtures dir
 @override_settings(DATA_DIR=FIXTURES_DIR)
 class NevadaTest(TestCase):
     def test_not_modified(self):
