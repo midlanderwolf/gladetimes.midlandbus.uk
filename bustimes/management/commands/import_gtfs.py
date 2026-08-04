@@ -24,11 +24,6 @@ logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
     def add_arguments(self, parser):
-        parser.add_argument(
-            "--force",
-            action="store_true",
-            help="Import data even if the GTFS feeds haven't changed",
-        )
         parser.add_argument("collections", nargs="*", type=str)
 
     def handle_operator(self, line):

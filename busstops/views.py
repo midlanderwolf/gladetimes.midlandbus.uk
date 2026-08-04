@@ -828,6 +828,13 @@ class StopPointDetailView(DetailView):
         if not (self.object.active or context["services"]):
             return context
 
+        if services and not any(context["breadcrumb"]):
+            operators = Operator.objects.filter(service__in=services).distinct()
+            if len(operators) == 1:
+                context["breadcrumb"] = [operators[0]]
+                if len(services) == 1:
+                    context["breadcrumb"].append(services[0])
+
         context.update(get_departures_context(self.object, services, self.request.GET))
 
         text = ", ".join(

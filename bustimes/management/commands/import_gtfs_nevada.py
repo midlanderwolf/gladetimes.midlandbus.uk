@@ -17,7 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    def handle(self, *args, **options):
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Import data even if the GTFS feeds haven't changed",
+        )
+
+    def handle(self, force, *args, **options):
         path = settings.DATA_DIR / Path("rtcsnv_gtfs.zip")
 
         source, _ = DataSource.objects.get_or_create(name="RTCSNV")
@@ -25,7 +32,7 @@ class Command(BaseCommand):
 
         modified, last_modified = download_if_modified(path, source)
 
-        if not modified:
+        if not modified and not force:
             return  # no new data to import
         source.datetime = last_modified
 
