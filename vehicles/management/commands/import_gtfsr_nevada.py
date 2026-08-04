@@ -1,21 +1,18 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from google.protobuf import json_format
-from google.transit import gtfs_realtime_pb2
-
 
 from busstops.models import DataSource
 from bustimes.models import Trip
 
-from ...models import Vehicle, VehicleJourney, Operator, Service
+from ...models import Operator, Service, Vehicle, VehicleJourney
 from .import_gtfsr_ie import Command as GTFSRCommand
 
 
 class Command(GTFSRCommand):
     source_name = "RTCSNV"
     vehicle_code_scheme = "RTCSNV"
-    headers = None
 
     def do_source(self):
         self.tzinfo = ZoneInfo("America/Los_Angeles")
@@ -23,26 +20,6 @@ class Command(GTFSRCommand):
         self.url = "https://developer.rtcsnv.com/transitData/vehiclePositions.pb"
         self.operator = Operator.objects.get(noc="RTCSNV")
         return self
-
-    def get_items(self):
-        headers = {}
-        if self.headers:
-            headers["if-modified-since"] = self.headers.get("last-modified")
-            headers["if-none-match"] = self.headers.get("etag")
-
-        response = self.session.get(self.url, timeout=10)
-        response.raise_for_status()
-
-        self.headers = response.headers
-
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
-
-        self.source.datetime = datetime.fromtimestamp(
-            feed.header.timestamp, timezone.utc
-        )
-
-        return feed.entity
 
     def get_vehicle(self, item):
         return Vehicle.objects.get_or_create(
@@ -59,7 +36,7 @@ class Command(GTFSRCommand):
 
         start_date = None
         if item.vehicle.trip.start_date:
-            start_date = datetime.strptime(
+            start_date = datetime.strptime(  # noqa: DTZ007 - tzinfo applied below
                 f"{item.vehicle.trip.start_date} 12:00:00",
                 "%Y%m%d %H:%M:%S",
             )

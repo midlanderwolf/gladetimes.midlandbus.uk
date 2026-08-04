@@ -6,8 +6,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 from django.contrib.gis.geos import Point
+from django.core.cache import cache
 from django.utils.dateparse import parse_duration
-from google.transit import gtfs_realtime_pb2
+from google.protobuf import json_format
 
 from busstops.models import DataSource
 from bustimes.models import Trip
@@ -33,27 +34,22 @@ class Command(GTFSRCommand):
         return self
 
     def get_items(self):
-        response = self.session.get(self.url, timeout=10)
-        self.session.headers.update({"if-none-match": response.headers["etag"]})
-        response.raise_for_status()
+        previous_timestamp = self.source.datetime
 
-        if response.status_code == 304:
+        feed = self.get_feed()
+        if feed is None:  # not modified
             return
 
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
-
-        previous_timestamp = self.source.datetime
-        new_timestamp = datetime.fromtimestamp(feed.header.timestamp, UTC)
+        new_timestamp = self.source.datetime
 
         if previous_timestamp and new_timestamp > previous_timestamp:
             self.interval = (new_timestamp - previous_timestamp).total_seconds()
 
-        self.source.datetime = new_timestamp
-
         for item in feed.entity:
             if item.HasField("vehicle") and item.vehicle.trip.trip_id.startswith("UK"):
                 yield item
+
+        cache.set("flixbus_feed", json_format.MessageToDict(feed))
 
     def update(self):
         now = datetime.now(UTC)

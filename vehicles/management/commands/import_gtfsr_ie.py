@@ -35,6 +35,8 @@ class Command(ImportLiveVehiclesCommand):
         self.tzinfo = ZoneInfo("Europe/Dublin")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
         self.url = "https://api.nationaltransport.ie/gtfsr/v2/Vehicles"
+        assert settings.NTA_API_KEY
+        self.session.headers.update({"x-api-key": settings.NTA_API_KEY})
         return self
 
     @staticmethod
@@ -57,12 +59,20 @@ class Command(ImportLiveVehiclesCommand):
     def get_item_identity(item):
         return item.vehicle.timestamp
 
-    def get_items(self):
-        assert settings.NTA_API_KEY
-        response = self.session.get(
-            self.url, headers={"x-api-key": settings.NTA_API_KEY}, timeout=10
-        )
+    def get_response(self):
+        response = self.session.get(self.url, timeout=10)
         response.raise_for_status()
+
+        if etag := response.headers.get("etag"):
+            self.session.headers.update({"if-none-match": etag})
+
+        return response
+
+    def get_feed(self):
+        response = self.get_response()
+
+        if response.status_code == 304:  # not modified
+            return None
 
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(response.content)
@@ -71,7 +81,11 @@ class Command(ImportLiveVehiclesCommand):
             feed.header.timestamp, timezone.utc
         )
 
-        return feed.entity
+        return feed
+
+    def get_items(self):
+        if feed := self.get_feed():
+            return feed.entity
 
     def get_vehicle(self, item):
         vehicle_code = item.vehicle.vehicle.id
