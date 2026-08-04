@@ -1,0 +1,8 @@
+block_id,bikes_allowed,route_id,wheelchair_accessible,direction_id,trip_headsign,shape_id,service_id,trip_id,trip_short_name
+a_356098859,0,4740,0,0,Deuce on The Strip Northbound,14957,2402_merged_358057052,358024702,
+a_356099748,0,4740,0,1,Deuce on The Strip Southbound (F1 Race Week Route & Schedule in Effect),14960,2103_merged_358057055,358030242,
+a_356098530,0,4722,0,0,207 Alta / Stewart Eastbound,14808,1_merged_358057051,358016909,
+a_356098531,0,4722,0,1,207 Stewart / Alta Westbound,14810,1_merged_358057051,358016924,
+a_356098529,0,4722,0,0,207 Alta / Stewart Eastbound,14809,1_merged_358057051,358016908,
+a_356098530,0,4722,0,1,207 Stewart / Alta Westbound,14810,1_merged_358057051,358016923,
+a_356098524,0,4722,0,0,207 Alta / Stewart Eastbound,14809,3_merged_358057050,358016881,
