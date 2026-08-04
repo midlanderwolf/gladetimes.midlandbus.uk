@@ -1,7 +1,6 @@
 import datetime
 import json
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import fakeredis
@@ -230,7 +229,6 @@ class FlixbusTest(TestCase):
                     datetime.datetime(2024, 6, 18, 10, 0, 0, tzinfo=datetime.UTC),
                 ),
             ),
-            TemporaryDirectory(),
             vcr.use_cassette(str(FIXTURES_DIR / "ember_gtfsr.yml")),
         ):
             call_command("import_gtfs_ember")

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from django.utils.dateparse import parse_duration
 from google.protobuf import json_format
 
 from busstops.models import DataSource
@@ -40,15 +41,18 @@ class Command(GTFSRCommand):
                 f"{item.vehicle.trip.start_date} 12:00:00",
                 "%Y%m%d %H:%M:%S",
             )
+            journey.date = start_date.date()
 
-            try:
-                journey.datetime = datetime.strptime(
-                    f"{item.vehicle.trip.start_date} {item.vehicle.trip.start_time}",
-                    "%Y%m%d %H:%M:%S",
-                ).replace(tzinfo=self.tzinfo)
-                journey.date = journey.datetime.date()
-            except ValueError:
-                pass
+            # start_time may be after midnight (e.g. "26:25:00")
+            # at the end of the operational day
+            # (the noon minus 12 hours trick copes with daylight saving time)
+            start_time = parse_duration(item.vehicle.trip.start_time)
+            if start_time is not None:
+                journey.datetime = (
+                    start_date.replace(tzinfo=self.tzinfo)
+                    - timedelta(hours=12)
+                    + start_time
+                )
 
         journey.route_name = item.vehicle.trip.route_id
 
