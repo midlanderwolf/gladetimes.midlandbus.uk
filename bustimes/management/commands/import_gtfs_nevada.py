@@ -33,6 +33,10 @@ class Command(BaseCommand):
 
         feed = gtfs_kit.read_feed(path, dist_units="km")
 
+        feed.stop_times = feed.stop_times.fillna(
+            {"timepoint": 1, "pickup_type": 0, "drop_off_type": 0}
+        )
+
         operator = Operator.objects.get_or_create(noc="RTCSNV")[0]
 
         existing_services = {
