@@ -75,6 +75,7 @@ MIDDLEWARE = [
     "django.middleware.csp.ContentSecurityPolicyMiddleware",
     "django_http_compression.middleware.HttpCompressionMiddleware",
     "busstops.middleware.WhiteNoiseWithFallbackMiddleware",
+    "busstops.middleware.RateLimitMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -140,6 +141,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 100,
 }
+
+RATELIMIT_USE_CACHE = "default"
+RATELIMIT_VIEW = "busstops.views.ratelimited"
 
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 

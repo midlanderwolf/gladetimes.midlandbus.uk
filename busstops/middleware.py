@@ -3,6 +3,8 @@ from http import HTTPStatus
 
 from django.http import HttpResponse
 from django.utils.cache import add_never_cache_headers
+from django_ratelimit import ALL
+from django_ratelimit.core import is_ratelimited
 
 from whitenoise.middleware import WhiteNoiseMiddleware
 
@@ -55,3 +57,37 @@ def pin_db_middleware(get_response):
         return get_response(request)
 
     return middleware
+
+
+class RateLimitMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if self.should_rate_limit(request):
+            return HttpResponse(
+                "Rate limit exceeded. Please slow down.",
+                status=429,
+                headers={"Retry-After": "60"},
+            )
+        return self.get_response(request)
+
+    def should_rate_limit(self, request):
+        if request.path.startswith(("/static/", "/media/", "/up", "/version")):
+            return False
+        if request.path in ("/robots.txt", "/sitemap.xml", "/api"):
+            return False
+        if request.path.startswith("/api/"):
+            return False
+        if request.path.endswith((".css", ".js", ".png", ".jpg", ".gif", ".ico", ".svg")):
+            return False
+
+        rate = "1000/m"
+        return is_ratelimited(
+            request,
+            group="general",
+            key="ip",
+            rate=rate,
+            method=ALL,
+            increment=True,
+        )

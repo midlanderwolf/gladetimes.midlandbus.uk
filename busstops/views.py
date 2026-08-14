@@ -1808,3 +1808,11 @@ def journey(request):
             "journeys": journeys,
         },
     )
+
+
+def ratelimited(request, exception=None):
+    return HttpResponse(
+        "Rate limit exceeded. Please slow down.",
+        status=429,
+        headers={"Retry-After": "60"},
+    )

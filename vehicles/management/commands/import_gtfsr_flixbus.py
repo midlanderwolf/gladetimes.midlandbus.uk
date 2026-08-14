@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import requests
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
+from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.dateparse import parse_duration
 from google.protobuf import json_format
 
@@ -207,5 +208,5 @@ class Command(GTFSRCommand):
         if journey.service_id:
             pipeline.sadd(f"service{journey.service_id}vehicles", journey.id)
         pipeline.sadd("operatorFLIXvehicles", journey.id)
-        pipeline.set(f"vehicle{journey.id}", json.dumps(redis_json), ex=900)
+        pipeline.set(f"vehicle{journey.id}", json.dumps(redis_json, cls=DjangoJSONEncoder), ex=900)
         pipeline.execute()

@@ -23,7 +23,7 @@
 {% block fuse %}
 {% if ad %}
 <script src="{% static 'consent.js' %}"></script>
-<script>if(window.top===window.self&&window.location.host==="gladetimes"&&typeof Array.prototype.includes!=="undefined"){s=document.getElementsByTagName('script')[0];var sc=document.createElement('script');sc.async=true;sc.src='https://cdn.adfirst.media/hb/bustimes.js?v'+Math.floor(new Date().getTime()/600000);s.parentNode.insertBefore(sc,s);}</script>
+<script>if(window.top===window.self&&window.location.host==="gladetimes"&&typeof Array.prototype.includes!=undefined){s=document.getElementsByTagName('script')[0];var sc=document.createElement('script');sc.async=true;sc.src='https://cdn.adfirst.media/hb/bustimes.js?v'+Math.floor(new Date().getTime()/600000);s.parentNode.insertBefore(sc,s);}</script>
 {% endif %}
 {% endblock fuse %}
 
@@ -31,6 +31,59 @@
 
 </head>
 <body class="{% block bodyclass %}wide{% endblock %}{% if ad is False %} no-ads{% endif %}">
+
+<div id="kuma-status-banner" style="display: none; box-sizing: border-box; width: 100%; padding: 12px 15px; text-align: center; color: #fff; font-family: inherit; position: relative; z-index: 9999; line-height: 1.4; word-wrap: break-word;">
+    <span id="kuma-status-text"></span>
+</div>
+
+<script>
+(async function() {
+    const banner = document.getElementById('kuma-status-banner');
+    const text = document.getElementById('kuma-status-text');
+    
+    try {
+        const response = await fetch('https://status.midlandbus.uk/api/status-page/gladetimesservices', {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'omit',
+            cache: 'no-store'
+        });
+        
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        
+        const data = await response.json();
+        
+        // If there are incidents, show the banner
+        if (data.incidents && data.incidents.length > 0) {
+            const incident = data.incidents[0]; 
+            
+            if (incident.style === 'info') {
+                banner.style.backgroundColor = '#3b82f6'; // Blue
+                banner.style.color = '#ffffff'; // White text
+            } else if (incident.style === 'warning') {
+                banner.style.backgroundColor = '#f59e0b'; // Orange
+                banner.style.color = '#000000'; // Black text for better contrast
+            } else {
+                banner.style.backgroundColor = '#ef4444'; // Red
+                banner.style.color = '#ffffff'; // White text
+            }
+            
+            text.innerHTML = `<strong>${incident.title}</strong>: ${incident.content}`;
+            
+            // Make the banner visible
+            banner.style.display = 'block';
+        } else {
+            // No incidents: ensure the banner stays completely hidden
+            banner.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Failed to fetch status:', error);
+        // If the fetch fails entirely, keep the banner hidden so it doesn't break your site
+        banner.style.display = 'none';
+    }
+})();
+</script>
+
 <script>
 (() => {
     var a = localStorage && localStorage["map-style"];
@@ -90,7 +143,7 @@
     <ul>
         <li><a href="/contact">Contact</a></li>
         <li><a href="/data">Data sources</a></li>
-        <li><a href="https://status.midlandbus.uk">Status</a></li>
+        <li><a href="https://status.midlandbus.uk/status/gladetimesservices">Status</a></li>
         <li><a href="/privacy">Privacy policy</a></li>
         {% if ad %}<li><a href="javascript:window.__tcfapi('displayConsentUi',2,function(){})">Privacy settings</a></li>{% endif %}
     </ul>

@@ -22,6 +22,67 @@
 
 {% block content %}
 
+<!-- HARDCODED UPTIME KUMA BANNER (Hidden by default) -->
+<div id="kuma-status-banner" style="display: none; box-sizing: border-box; width: 100%; padding: 12px 15px; text-align: center; color: #fff; font-family: inherit; position: relative; z-index: 9999; line-height: 1.4; word-wrap: break-word; margin-bottom: 15px;">
+    <span id="kuma-status-text"></span>
+</div>
+
+<script>
+(async function() {
+    const banner = document.getElementById('kuma-status-banner');
+    const text = document.getElementById('kuma-status-text');
+    
+    try {
+        const response = await fetch('https://status.midlandbus.uk/api/status-page/gladetimesservices', {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'omit',
+            cache: 'no-store'
+        });
+        
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        
+        const data = await response.json();
+        
+        // If there are incidents, show the banner
+        if (data.incidents && data.incidents.length > 0) {
+            const incident = data.incidents[0]; 
+            
+            if (incident.style === 'info') {
+                banner.style.backgroundColor = '#3b82f6'; // Blue
+                banner.style.color = '#ffffff'; 
+            } else if (incident.style === 'warning') {
+                banner.style.backgroundColor = '#f59e0b'; // Orange
+                banner.style.color = '#000000'; // Black text for readability
+            } else {
+                banner.style.backgroundColor = '#ef4444'; // Red
+                banner.style.color = '#ffffff'; 
+            }
+            
+            text.innerHTML = `<strong>${incident.title}</strong>: ${incident.content}`;
+            
+            // MAP PAGE FIX: Move banner to the bottom so it doesn't block map controls
+            if (window.location.pathname.startsWith('/map')) {
+                banner.style.position = 'fixed';
+                banner.style.top = 'auto';
+                banner.style.bottom = '0';
+            }
+            
+            // Make the banner visible
+            banner.style.display = 'block';
+        } else {
+            // No incidents: ensure the banner stays completely hidden
+            banner.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Failed to fetch status:', error);
+        // If the fetch fails entirely, keep the banner hidden so it doesn't break your site
+        banner.style.display = 'none';
+    }
+})();
+</script>
+<!-- END UPTIME KUMA BANNER -->
+
 <h1 class="service-header">
     <span class="names">
     {% for line_name in object.get_line_names() %}
