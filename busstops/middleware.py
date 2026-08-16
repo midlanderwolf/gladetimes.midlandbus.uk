@@ -73,6 +73,7 @@ class RateLimitMiddleware:
         return self.get_response(request)
 
     def should_rate_limit(self, request):
+        return False
         if request.path.startswith(("/static/", "/media/", "/up", "/version")):
             return False
         if request.path in ("/robots.txt", "/sitemap.xml", "/api"):
