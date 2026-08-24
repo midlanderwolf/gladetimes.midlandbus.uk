@@ -146,6 +146,9 @@
         <li><a href="https://status.midlandbus.uk/status/gladetimesservices">Status</a></li>
         <li><a href="/privacy">Privacy policy</a></li>
         {% if ad %}<li><a href="javascript:window.__tcfapi('displayConsentUi',2,function(){})">Privacy settings</a></li>{% endif %}
+        {% if not request.user.is_authenticated %}
+            <li><a href="/accounts/login/?next={{ request.path }}">Log in</a></li>
+        {% endif %}
     </ul>
 </footer>
 {% endblock footer %}

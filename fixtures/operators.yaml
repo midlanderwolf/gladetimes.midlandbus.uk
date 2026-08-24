@@ -35,9 +35,6 @@ DJWA:
   name: Torbay Mini Buses
 ANRW:
   name: Andrew's (Shetland)
-  address: ""
-  email: info@shetlandbusandcoachtours.com
-  url: https://www.shetlandbusandcoachtours.com/
 SBDR:
   address: |
     165a Castle Hill Road
@@ -201,3 +198,25 @@ LCAC:
   url: https://lakelandcommercials.com/coach-and-taxi-services/
 TWET:
   url: https://21transport.co.uk/
+SABE:
+  name: S L Bell Minibuses
+  url: https://minibusesinpembrokeshire.co.uk/
+BHAT:
+  url: https://www.newbharat.co.uk/daily-timetable/
+SSSN:
+  name: Shoreline Travel
+  url: https://www.shorelinetravel.co.uk/
+YELL:
+  url: ""
+FHAL:
+  url: https://www.firstbus.co.uk/west-yorkshire/
+BULI:
+  url: https://www.buslink.uk/
+MNWB:
+  name: Metro Network - Warrington's Own Buses
+MNSC:
+  name: Metro Network - Stagecoach
+MNHT:
+  name: Metro Network - Huyton Travel
+MNGN:
+  name: Metro Network - Go North West

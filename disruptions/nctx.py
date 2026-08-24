@@ -100,7 +100,7 @@ def nctx_disruptions():
     session = requests.Session()
     session.headers.update({"User-Agent": "bustimes.org"})
 
-    source = DataSource.objects.get_or_create(name="Nottingham City Transport")[0]
+    source = DataSource.objects.get_or_create(name="Nottingham City Transport Disruptions")[0]
 
     response = session.get("https://nctx.arcticapi.com/network/disruptions", timeout=30)
     response.raise_for_status()

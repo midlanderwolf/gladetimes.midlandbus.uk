@@ -6,6 +6,34 @@ from bustimes.models import BankHoliday, BankHolidayDate
 
 logger = logging.getLogger(__name__)
 
+BANK_HOLIDAY_NAMES = [
+    "Northern Ireland bank holidays",
+    "AllHolidaysExceptChristmas",
+    "DisplacementHolidays",
+    "StAndrewsDayHoliday",
+    "AugustBankHolidayScotland",
+    "StAndrewsDay",
+    "EarlyRunOffDays",
+    "Christmas",
+    "AllBankHolidays",
+    "HolidayMondays",
+    "Jan2ndScotlandHoliday",
+    "Jan2ndScotland",
+    "NewYearsEve",
+    "ChristmasEve",
+    "NewYearsDayHoliday",
+    "BoxingDayHoliday",
+    "ChristmasDayHoliday",
+    "SpringBank",
+    "EasterMonday",
+    "MayDay",
+    "LateSummerBankHolidayNotScotland",
+    "NewYearsDay",
+    "GoodFriday",
+    "BoxingDay",
+    "ChristmasDay",
+]
+
 
 def get_bank_holiday_name(bank_holiday):
     title = bank_holiday["title"].replace("\u2019", "").replace(" ", "")
@@ -16,6 +44,8 @@ def get_bank_holiday_name(bank_holiday):
 
 class Command(BaseCommand):
     def handle(self, **options):
+        for name in BANK_HOLIDAY_NAMES:
+            BankHoliday.objects.get_or_create(name=name)
         bhs = {bh.name: bh for bh in BankHoliday.objects.all()}
 
         bank_holidays = BankHolidays()

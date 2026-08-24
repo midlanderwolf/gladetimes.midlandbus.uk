@@ -54,11 +54,11 @@ dependencies = [
     "curl-cffi>=0.15.0",
     "pandas>=2.0.0",
     "gtfs-kit>=11.0.0",
+    "govuk-bank-holidays>=0.15",
 ]
 
 [dependency-groups]
 test = [
-    "govuk-bank-holidays>=0.15",
     "asgiref>=3.4.1,<4",
     "requests-toolbelt>=1.0.0,<2",
     "time-machine~=3.2.0",

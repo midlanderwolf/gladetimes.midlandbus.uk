@@ -120,7 +120,7 @@ ASGI_APPLICATION = "buses.asgi.application"
 
 
 DATABASES = {
-    "default": dj_database_url.config(conn_max_age=None, conn_health_checks=True)
+    "default": dj_database_url.config(conn_max_age=60, conn_health_checks=True)
 }
 
 DATABASES["default"]["OPTIONS"] = {
@@ -130,9 +130,7 @@ DATABASES["default"]["OPTIONS"] = {
 
 DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 DATABASES["default"]["TEST"] = {"SERIALIZE": False}
-if "runserver" in sys.argv:
-    # local development server - reset to the default (i.e. no persistent connections)
-    del DATABASES["default"]["CONN_MAX_AGE"]
+
 
 AUTH_USER_MODEL = "accounts.User"
 LOGIN_REDIRECT_URL = "/vehicles"

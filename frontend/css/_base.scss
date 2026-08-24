@@ -69,6 +69,10 @@ pre {
     font-family: ui-monospace, Monaco, Consolas, monospace;
 }
 
+pre {
+    white-space: pre-wrap;
+}
+
 header,
 main,
 footer {
@@ -296,6 +300,7 @@ h1 .reg {
     padding: 8px 6px 2px;
     border-radius: 2px;
     font-size: 24px;
+    white-space: nowrap ;
 }
 
 h2 {
@@ -443,6 +448,7 @@ form p select {
 .loading,
 .htmx-request {
     opacity: .5;
+    transition: opacity .2s;
 
     &,
     & a {
@@ -756,7 +762,6 @@ table {
     white-space: nowrap;
 }
 
-
 .has-smalls .names {
     float: left;
     margin-right: .75em;
@@ -813,16 +818,8 @@ table {
     display: block;
 }
 
-#fares {
-    display: none;
-}
-
-#fares:target {
-    display: block;
-}
-
 .ad-wrapper + #map .service-map {
-    margin-top: 90px;
+    margin-top: 100px;
 }
 
 .sorry {  // "Loading..." or "Sorry no buses tracking"
@@ -937,8 +934,8 @@ th a,
     padding: .25em .5em;
 }
 
-.stop-name[rowspan="2"] a {
-    padding: 1.25em 0;
+.stop-name[rowspan="2"] {
+    white-space: normal;
 }
 
 .stop-name .note {
@@ -1234,6 +1231,7 @@ input:not(:checked) + label {
 
 .map-sidebar .navigation {
     overflow: hidden;
+    margin: 1em 0;
 }
 
 .trip-timetable {
@@ -1332,22 +1330,17 @@ input:not(:checked) + label {
         margin-top: 0;
     }
 
-    table { // departures
-        margin: 0 -.5em;
-    }
-
     th {
         border: 0;
-        padding: 0;
-        padding-left: .5rem;
+        padding: 0 0 .25rem .5rem;
         font-size: .75em;
         vertical-align: bottom;
     }
 
     td {
         border: 0;
-        padding: .125em .5em;
         vertical-align: top;
+        border-top: 1px solid var(--border-color);
 
         &:nth-child(2) {
             width: 100%;
@@ -1359,8 +1352,8 @@ input:not(:checked) + label {
 
         a {
             display: block;
-            margin: -.125em -.5em;
-            padding: .125em .5em;
+            padding: .25em 0;
+            margin: -.25em 0;
         }
     }
 
@@ -1408,6 +1401,11 @@ input:not(:checked) + label {
 .aside td,
 .trip-timetable td {
     font-variant-numeric: tabular-nums;
+}
+
+.stop-popup-times td {
+    border: 0;
+    padding: 0;
 }
 
 .message {
@@ -1521,23 +1519,46 @@ nav {
     }
 }
 
-figure {
-    margin: 1em 0;
+.sticky {
+    position: sticky;
+    top: 0;
+    background: var(--background-color);
+    box-shadow: var(--border-color) 0 1px;
+}
+
+.vehicle-photo {
+    float: right;
+    width: 170px;
     position: relative;
+    margin: 0;
 
     img {
         display: block;
+        width: 170px;
+        height: auto;
+    }
+
+    figcaption {
+        color: #fff;
+        text-shadow: #000 0 0 2px;
+        font-size: 12px;
+        padding: 2px 4px;
+        position: absolute;
+        bottom: 0;
+        left: 0;
+
+        a {
+            color: inherit;
+        }
     }
 }
 
-figcaption {
-    background: #000;
-    color: #fff;
-    font-size: .75em;
-    padding: .25em;
-    position: absolute;
-    bottom: 0;
-    left: 0;
+#journeys {
+    clear: right;
+}
+
+#stickyAdContainer {
+    white-space: nowrap;
 }
 
 .ad-wrapper {
@@ -1564,6 +1585,10 @@ figcaption {
     }
 }
 
+.no-consent .ad-wrapper {
+    position: static;
+}
+
 #content {
     margin-bottom: 1.5em;
 }
@@ -1584,7 +1609,7 @@ body.has-overlay {
         width: 100%;
         z-index: 9999;
         pointer-events: auto;
-        height: 90px;
+        height: 100px;
         overflow: hidden;
         background: var(--background-color);
     }
@@ -1695,4 +1720,3 @@ footer {
         display: none;
     }
 }
- 
