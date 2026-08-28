@@ -573,7 +573,7 @@ class Command(ImportLiveVehiclesCommand):
                 ):
                     journey.trip = trip
 
-                    if block_ref and trip.block != block_ref and (not trip.block or operator_ref in ("SKIL",)):
+                    if block_ref and trip.block != block_ref:
                         trip.block = block_ref
                         trip.save(update_fields=["block"])
 
