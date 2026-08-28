@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
     def add_arguments(self, parser):
-        parser.add_argument("source_name", help="Name of the DataSource (must already exist)")
+        parser.add_argument("source", help="DataSource name, URL, or local file path")
         parser.add_argument(
             "--url",
             help="Override the DataSource URL (optional, updates the source if provided)",
@@ -43,46 +43,80 @@ class Command(BaseCommand):
             help="Skip download and use the existing local file",
         )
 
-    def handle(self, source_name, url=None, filename=None, stop_prefix=None, region=None, local=False, *args, **options):
+    def handle(self, source, url=None, filename=None, stop_prefix=None, region=None, local=False, *args, **options):
+        from datetime import datetime, timezone
+
+        source_path = Path(source)
+        is_local_file = source_path.exists() or source.endswith(".zip")
+        is_url = source.startswith("http://") or source.startswith("https://")
+
+        if is_local_file and not is_url:
+            if source_path.is_absolute():
+                path = source_path
+            else:
+                path = Path.cwd() / source_path
+            if not path.exists():
+                raise CommandError(f"Local file not found: {path}")
+            source_name = source_path.stem.lower()
+            last_modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            modified = True
+            source_obj, _ = DataSource.objects.get_or_create(name=source_name)
+        else:
+            if is_url:
+                source_name = source.split("/")[-1].replace(".zip", "").lower()
+                url = source
+            else:
+                source_name = source
+
+            if not filename:
+                filename = f"{source_name.lower()}_gtfs.zip"
+            path = settings.DATA_DIR / Path(filename)
+
+            try:
+                source_obj = DataSource.objects.get(name=source_name)
+            except DataSource.DoesNotExist:
+                if url:
+                    source_obj, _ = DataSource.objects.get_or_create(name=source_name, defaults={"url": url})
+                else:
+                    raise CommandError(f"DataSource '{source_name}' does not exist. Create it first with a URL or provide a local file path.")
+
+            if url:
+                source_obj.url = url
+                source_obj.save(update_fields=["url"])
+
+            if local:
+                if not path.exists():
+                    raise CommandError(f"Local file not found: {path}")
+                last_modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                modified = True
+            else:
+                modified, last_modified = download_if_modified(path, source_obj)
+
         if not filename:
             filename = f"{source_name.lower()}_gtfs.zip"
         if not stop_prefix:
             stop_prefix = source_name.lower()
 
-        path = settings.DATA_DIR / Path(filename)
-
-        try:
-            source = DataSource.objects.get(name=source_name)
-        except DataSource.DoesNotExist:
-            raise CommandError(f"DataSource '{source_name}' does not exist. Create it first with a URL.")
-
-        if url:
-            source.url = url
-            source.save(update_fields=["url"])
-
         region_obj = None
         if region:
             region_obj, _ = Region.objects.get_or_create(id=region, defaults={"name": region})
 
-        if local:
-            if not path.exists():
-                raise CommandError(f"Local file not found: {path}")
-            from datetime import datetime, timezone
-            last_modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-            modified = True
-        else:
-            modified, last_modified = download_if_modified(path, source)
-
         if not modified:
             return
-        source.datetime = last_modified
+        source_obj.datetime = last_modified
 
-        logger.info(f"{source} {last_modified}")
+        logger.info(f"{source_obj} {last_modified}")
 
         feed = gtfs_kit.read_feed(path, dist_units="km")
 
         agency_timezone = self.get_agency_timezone(feed)
         logger.info(f"Using timezone: {agency_timezone}")
+        
+        if feed.trips is None or feed.trips.empty:
+            raise CommandError("Feed is missing trips.txt or it is empty")
+        if feed.stop_times is None or feed.stop_times.empty:
+            raise CommandError("Feed is missing stop_times.txt or it is empty")
+        
         logger.info(f"Feed contains: {len(feed.stops)} stops, {len(feed.get_routes())} routes, {len(feed.trips)} trips, {len(feed.stop_times)} stop_times")
 
         operators = {}
@@ -101,7 +135,7 @@ class Command(BaseCommand):
                     )
                     OperatorCode.objects.get_or_create(
                         operator=operator,
-                        source=source,
+                        source=source_obj,
                         code=agency_id,
                     )
                     operators[agency_id] = operator
@@ -125,19 +159,22 @@ class Command(BaseCommand):
 
                 OperatorCode.objects.get_or_create(
                     operator=operator,
-                    source=source,
+                    source=source_obj,
                     code=agency_id,
                 )
                 operators[agency_id] = operator
 
-        existing_routes = {route.code: route for route in source.route_set.all()}
+        existing_routes = {route.code: route for route in source_obj.route_set.all()}
         routes = []
         route_operators = {}
 
         logger.info("Processing stops...")
-        stops = {}
+        stops = StopPoint.objects.in_bulk(feed.stops.stop_id.to_list())
+        matched = len(stops)
         new_stops = []
         for stop in feed.stops.itertuples():
+            if stop.stop_id in stops:
+                continue
             stop_tz_raw = getattr(stop, "stop_timezone", None)
             stop_tz = agency_timezone if stop_tz_raw is None or pd.isna(stop_tz_raw) else stop_tz_raw
             new_stops.append(
@@ -145,7 +182,7 @@ class Command(BaseCommand):
                     atco_code=f"{stop_prefix}-{stop.stop_id}",
                     common_name=stop.stop_name[:48],
                     active=True,
-                    source=source,
+                    source=source_obj,
                     latlong=f"POINT({stop.stop_lon} {stop.stop_lat})",
                     timezone=stop_tz,
                     bearing=self.get_bearing(stop),
@@ -158,11 +195,11 @@ class Command(BaseCommand):
             unique_fields=["atco_code"],
             update_fields=["common_name", "latlong", "bearing", "timezone"],
         )
-        logger.info(f"Created/updated {len(new_stops)} stops")
+        logger.info(f"Matched {matched} NaPTAN stops, created/updated {len(new_stops)} new stops")
         for stop in new_stops:
             stops[stop.atco_code.removeprefix(f"{stop_prefix}-")] = stop
 
-        calendars = get_calendars(feed, source)
+        calendars = get_calendars(feed, source_obj)
 
         colours = {
             (colour.background, colour.foreground): colour
@@ -170,7 +207,9 @@ class Command(BaseCommand):
         }
 
         logger.info("Processing routes...")
-        for row in feed.get_routes(as_gdf=True).itertuples():
+        has_shapes = feed.shapes is not None and not feed.shapes.empty
+        routes_df = feed.get_routes(as_gdf=has_shapes)
+        for row in routes_df.itertuples():
             service = Service(line_name=row.route_short_name)
 
             if row.route_id in existing_routes:
@@ -178,10 +217,10 @@ class Command(BaseCommand):
             else:
                 route = Route(code=row.route_id)
             route.timezone = agency_timezone
-            route.source = source
+            route.source = source_obj
             route.service = service
             route.line_name = row.route_short_name
-            service.source = source
+            service.source = source_obj
             service.description = route.description = row.route_long_name
             service.current = True
 
@@ -196,8 +235,9 @@ class Command(BaseCommand):
                 service.colour = colours[(bg, fg)]
 
             service.mode = MODES.get(row.route_type, "bus")
-            if row.geometry:
-                service.geometry = row.geometry.wkt
+            geometry = getattr(row, "geometry", None)
+            if geometry:
+                service.geometry = geometry.wkt
 
             service.save()
             operator = operators.get(row.agency_id)
@@ -273,7 +313,7 @@ class Command(BaseCommand):
 
         feed_stops = {row.stop_id: row for row in feed.stops.itertuples()}
         stop_codes = {stop_id: stop.atco_code for stop_id, stop in stops.items()}
-        do_route_links(feed, source, existing_routes, feed_stops, stop_codes)
+        do_route_links(feed, source_obj, existing_routes, feed_stops, stop_codes)
 
         logger.info("Saving to database...")
         with transaction.atomic():
@@ -298,12 +338,12 @@ class Command(BaseCommand):
             StopTime.objects.filter(trip__in=existing_trips).delete()
             StopTime.objects.bulk_create(stop_times)
 
-            for service in source.service_set.filter(current=True):
+            for service in source_obj.service_set.filter(current=True):
                 service.do_stop_usages()
                 service.update_search_vector()
 
             logger.info(
-                source.route_set.exclude(id__in=[route.id for route in routes]).delete()
+                source_obj.route_set.exclude(id__in=[route.id for route in routes]).delete()
             )
             for operator in operators.values():
                 logger.info(
@@ -317,7 +357,7 @@ class Command(BaseCommand):
                     )
                 )
 
-            source.route_set.update(
+            source_obj.route_set.update(
                 start_date=Subquery(
                     Route.objects.filter(pk=OuterRef("pk"))
                     .annotate(min_date=Min("trip__calendar__start_date"))
@@ -325,7 +365,7 @@ class Command(BaseCommand):
                 )
             )
 
-            source.save(update_fields=["datetime"])
+            source_obj.save(update_fields=["datetime"])
 
         logger.info("Import complete")
 
