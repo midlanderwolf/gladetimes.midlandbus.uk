@@ -9,6 +9,7 @@ from busstops.models import Service, SIRISource, StopPoint
 from bustimes.models import Route, StopTime
 from bustimes.utils import get_stop_times
 from vehicles import rtpi
+from vehicles.models import VehicleJourney
 from vehicles.tasks import log_vehicle_journey
 
 from . import avl, gtfsr
@@ -127,6 +128,9 @@ def get_departures(stop, services, when) -> dict:
             by_trip = {
                 item["trip_id"]: item for item in vehicle_locations if "trip_id" in item
             }
+            by_block = {
+                item["block"]: item for item in vehicle_locations if item.get("block")
+            }
 
             if by_trip:
                 departures = TimetableDepartures(
@@ -192,6 +196,25 @@ def get_departures(stop, services, when) -> dict:
                             departure["live"] = departure["time"] + datetime.timedelta(
                                 seconds=delay
                             )
+
+                    else:
+                        block = departure["stop_time"].trip.block
+                        if block in by_block:
+                            item = by_block[departure["stop_time"].trip.block]
+                            departure["journey_id"] = item["journey_id"]
+
+                if journey_ids := [
+                    departure["journey_id"]
+                    for departure in departures
+                    if "journey_id" in departure
+                ]:
+                    journeys = VehicleJourney.objects.select_related("vehicle").in_bulk(
+                        journey_ids
+                    )
+                    for departure in departures:
+                        if "journey_id" in departure:
+                            journey = journeys.get(departure["journey_id"])
+                            departure["vehicle"] = journey.vehicle
 
                 # filter out departures that have already happened
                 departures = [

@@ -947,6 +947,15 @@ class Command(BaseCommand):
             ):
                 trip.block = journey.journey_pattern.block.code
 
+            if (
+                trip.block
+                and trip.operator
+                and "B" < trip.block < "B99"
+                and trip.operator.noc in ("SNDR", "OBUS", "LYNX")
+            ):
+                # they (GRM Mapping?) fake their blocks, worse than nothing
+                trip.block = None
+
             if journey.vehicle_type and journey.vehicle_type.code:
                 if journey.vehicle_type.code not in self.vehicle_types:
                     (
