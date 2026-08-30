@@ -210,7 +210,9 @@ class Command(BaseCommand):
         has_shapes = feed.shapes is not None and not feed.shapes.empty
         routes_df = feed.get_routes(as_gdf=has_shapes)
         for row in routes_df.itertuples():
-            service = Service(line_name=row.route_short_name)
+            line_name = "" if pd.isna(row.route_short_name) else str(row.route_short_name)
+            long_name = "" if pd.isna(row.route_long_name) else str(row.route_long_name)
+            service = Service(line_name=line_name)
 
             if row.route_id in existing_routes:
                 route = existing_routes[row.route_id]
@@ -219,9 +221,9 @@ class Command(BaseCommand):
             route.timezone = agency_timezone
             route.source = source_obj
             route.service = service
-            route.line_name = row.route_short_name
+            route.line_name = line_name
             service.source = source_obj
-            service.description = route.description = row.route_long_name
+            service.description = route.description = long_name
             service.current = True
 
             route_color = getattr(row, "route_color", None)
