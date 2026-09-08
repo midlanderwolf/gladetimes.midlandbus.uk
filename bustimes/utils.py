@@ -438,24 +438,26 @@ def get_trip(
     if origin:
         score += Case(When(origin, then=1), default=0)
 
-    if approximate_datetime and next_stop:
+    if approximate_datetime:
         start_time = timezone.localtime(datetime)
         start_time = timedelta(hours=start_time.hour, minutes=start_time.minute)
         start_range = (
             start_time - timedelta(minutes=10),
-            start_time + timedelta(minutes=5),
+            start_time + timedelta(minutes=30),
         )
-        condition = Q(
-            Exists(
-                "stoptime",
-                filter=Q(
-                    stop__naptan_code=next_stop,
-                    departure__range=start_range,
+        if next_stop:
+            condition = Q(
+                Exists(
+                    "stoptime",
+                    filter=Q(
+                        stop__naptan_code=next_stop,
+                        departure__range=start_range,
+                    ),
                 ),
-            ),
-            start__range=start_range,
-        )
-        # score = F("start")
+                start__range=start_range,
+            )
+        else:
+            condition = Q(start__range=start_range)
         score = ExpressionWrapper(
             -Abs(int(start_time.total_seconds()) - F("start")),
             output_field=IntegerField(),

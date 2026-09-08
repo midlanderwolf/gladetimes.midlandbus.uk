@@ -1,20 +1,35 @@
+import functools
+
+from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.db.models import Q
+from django.utils import timezone
 
-from busstops.models import Service, Operator
+from busstops.models import Service, Operator, StopPoint
+from bustimes.models import Route
 
 from ...models import VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
 from .import_bod_avl import get_line_name_query
 
 
+@functools.cache
+def get_destination_ref(destination_name: str) -> str:
+    if not destination_name:
+        return ""
+    stop = StopPoint.objects.filter(common_name__icontains=destination_name).first()
+    return stop.atco_code if stop else ""
+
+
 class Command(ImportLiveVehiclesCommand):
     def add_arguments(self, parser):
         super().add_arguments(parser)
         parser.add_argument("source_name", type=str)
+        parser.add_argument("--line", type=str)
 
     def handle(self, source_name, **options):
         self.source_name = self.vehicle_code_scheme = source_name
+        self.line_filter = options.get("line")
         super().handle(**options)
 
     @staticmethod
@@ -34,7 +49,14 @@ class Command(ImportLiveVehiclesCommand):
         return item["geometry"]["coordinates"]
 
     def get_items(self):
-        return super().get_items()["features"]
+        items = super().get_items()["features"]
+        if self.line_filter:
+            items = [
+                item
+                for item in items
+                if item["properties"].get("line") == self.line_filter
+            ]
+        return items
 
     def get_operators(self, item):
         q = Q(operatorcode__source=self.source)
@@ -83,9 +105,11 @@ class Command(ImportLiveVehiclesCommand):
         return vehicles.get_or_create(defaults, code=code)
 
     def get_journey(self, item, vehicle):
+        point = Point(item["geometry"]["coordinates"])
+        direction = item["properties"]["direction"]
         journey = VehicleJourney(
             route_name=item["properties"]["line"],
-            direction=item["properties"]["direction"],
+            direction=direction,
             destination=item["properties"].get("destination", ""),
         )
 
@@ -96,11 +120,39 @@ class Command(ImportLiveVehiclesCommand):
         )
 
         try:
-            journey.service = self.get_service(
-                services, Point(item["geometry"]["coordinates"])
-            )
+            journey.service = self.get_service(services, point)
         except Service.DoesNotExist:
             pass
+
+        if journey.service:
+            route = Route.objects.filter(service=journey.service).first()
+            if route:
+                if direction == "outbound":
+                    dest_name = route.destination or route.outbound_description.split(" to ")[-1] if " to " in route.outbound_description else ""
+                else:
+                    dest_name = route.origin or route.inbound_description.split(" to ")[-1] if " to " in route.inbound_description else ""
+                if dest_name:
+                    journey.destination = dest_name
+
+            nearest_stop = (
+                StopPoint.objects.filter(
+                    latlong__isnull=False,
+                    naptan_code__isnull=False,
+                )
+                .annotate(distance=Distance("latlong", point))
+                .order_by("distance")
+                .first()
+            )
+
+            destination_ref = get_destination_ref(journey.destination)
+
+            if nearest_stop:
+                journey.trip = journey.get_trip(
+                    datetime=timezone.localtime(),
+                    approximate_datetime=True,
+                    next_stop=nearest_stop.naptan_code,
+                    destination_ref=destination_ref,
+                )
 
         return journey
 
