@@ -612,19 +612,19 @@ class Command(BaseCommand):
                 return archive_path
 
             flat_path = archive_path.with_name(archive_path.stem + "-flat.zip")
-            seen: dict[str, str] = {}
+            seen: dict[str, bytes] = {}
 
             def add(base: str, origin: str, data: bytes) -> None:
+                digest = hashlib.sha256(data).digest()
                 if base in seen:
-                    logger.warning(
-                        f"duplicate basename {base!r}: {seen[base]} and {origin}"
-                    )
-                    stem, suffix = Path(base).stem, Path(base).suffix
-                    i = 2
-                    while f"{stem}-{i}{suffix}" in seen:
+                    stem, suffix, i = Path(base).stem, Path(base).suffix, 1
+                    while base in seen:
+                        if seen[base] == digest:
+                            return  # same name and content - skip
                         i += 1
-                    base = f"{stem}-{i}{suffix}"
-                seen[base] = origin
+                        base = f"{stem}-{i}{suffix}"
+                    logger.warning(f"duplicate basename: {origin!r} added as {base!r}")
+                seen[base] = digest
                 flat.writestr(base, data)
 
             with zipfile.ZipFile(flat_path, "w", zipfile.ZIP_DEFLATED) as flat:
