@@ -108,7 +108,9 @@ class Command(BaseCommand):
             route.service = service
             route.line_name = row.route_short_name
             service.source = source
-            service.description = route.description = row.route_long_name
+            service.description = route.description = row.route_long_name.removeprefix(
+                f"{route.line_name} "
+            )
             service.current = True
 
             bg, fg = (f"#{row.route_color}", f"#{row.route_text_color}")
