@@ -42,16 +42,16 @@
   "alias": {
     "react-map-gl/maplibre": "@vis.gl/react-maplibre"
   },
+  "engines": {
+    "browsers": "Chrome 90, iOS 15"
+  },
   "targets": {
     "default": {
       "source": [
         "frontend/css/style.scss",
         "frontend/js/app.tsx"
       ],
-      "distDir": "busstops/static/dist",
-      "engines": {
-        "browsers": "Chrome 90"
-      }
+      "distDir": "busstops/static/dist"
     },
     "firehose-map": {
       "source": [
