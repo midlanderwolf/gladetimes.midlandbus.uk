@@ -80,7 +80,8 @@ class UploadGTFSTest(TestCase):
 
     def test_permission_required(self):
         response = self.client.get("/upload")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.url.startswith("/accounts/login/"))
 
     def test_upload(self):
         self.client.force_login(self.user)
@@ -97,11 +98,12 @@ class UploadGTFSTest(TestCase):
         operator = Operator.objects.get(noc="NABO")
         self.assertEqual(operator.name, "Town & District Transport Trust")
 
-        # routes with the same short name share a service
+        # routes with the same short name get a service each
         self.assertEqual(Route.objects.count(), 3)
-        self.assertEqual(Service.objects.count(), 2)
-        service = Service.objects.get(line_name="2")
-        self.assertEqual(service.route_set.count(), 2)
+        self.assertEqual(Service.objects.count(), 3)
+        service = Route.objects.get(code="route_1").service
+        self.assertEqual(service.line_name, "2")
+        self.assertEqual(service.route_set.count(), 1)
         self.assertEqual(list(service.operator.all()), [operator])
 
         # no shapes.txt, so geometry is the bounding box of the stops
@@ -123,7 +125,7 @@ class UploadGTFSTest(TestCase):
             "/upload", {"source_name": "TDTT", "file": make_zip()}
         )
         self.assertRedirects(response, source.get_absolute_url())
-        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(Service.objects.count(), 3)
         self.assertEqual(Route.objects.count(), 3)
         self.assertEqual(set(Trip.objects.values_list("id", flat=True)), trip_ids)
         self.assertEqual(StopTime.objects.count(), 6)
@@ -157,10 +159,9 @@ class UploadGTFSTest(TestCase):
         )
         self.assertEqual(response.status_code, 302)
 
-        # both routes' shapes, combined
-        service = Service.objects.get(line_name="2")
-        self.assertEqual(service.geometry.geom_type, "MultiLineString")
-        self.assertEqual(len(service.geometry), 2)
+        # each route's own shape
+        service = Route.objects.get(code="route_1").service
+        self.assertEqual(service.geometry.geom_type, "LineString")
 
         # no shape for route_3, so its service gets a bounding box
         service = Service.objects.get(line_name="")

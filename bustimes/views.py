@@ -818,7 +818,7 @@ def operator_blocks(request, slug):
     return render(request, "operator_blocks.html", context)
 
 
-@permission_required("busstops.add_datasource", raise_exception=True)
+@permission_required("busstops.add_datasource")
 def upload_gtfs(request):
     if request.method == "POST":
         form = UploadGTFSForm(request.POST, request.FILES)

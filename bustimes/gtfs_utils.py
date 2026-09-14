@@ -425,10 +425,6 @@ def handle_gtfs_upload(source_name, file, note=None):
         operators = get_operators(feed)
         stops = do_stops(feed, source)
 
-        existing_services = {
-            service.line_name: service for service in source.service_set.all()
-        }
-
         existing_routes = {route.code: route for route in source.route_set.all()}
 
         routes = {}
@@ -438,17 +434,15 @@ def handle_gtfs_upload(source_name, file, note=None):
             line_name = get_str(row, "route_short_name")
             description = get_str(row, "route_long_name")
 
-            # routes with the same short name (e.g. one per direction) belong to the same service
-            if line_name in existing_services:
-                service = existing_services[line_name]
-            else:
-                service = Service(line_name=line_name, source=source)
-                existing_services[line_name] = service
-
             if row.route_id in existing_routes:
                 route = existing_routes[row.route_id]
+                service = route.service
             else:
                 route = Route(code=row.route_id, source=source)
+                service = Service()
+
+            service.line_name = line_name
+            service.source = source
             route.service = service
             route.line_name = line_name
             service.description = route.description = description
