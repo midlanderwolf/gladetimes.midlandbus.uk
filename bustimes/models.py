@@ -459,20 +459,18 @@ class Trip(models.Model):
     def get_absolute_url(self):
         return reverse("trip_detail", args=(self.id,))
 
-    def get_trips(self):
-        if self.ticket_machine_code and self.route and self.route.service_id:
-            # get other parts of this trip (if the service has been split into parts)
-            # see also: merge_split_trips
+    def get_trips(self, date=None) -> list:
+        """Get other parts of this trip (if the service has been split into parts)
 
+        counterpart to merge_split_trips
+        """
+
+        if self.ticket_machine_code and self.route and self.route.service_id:
             code_filter = Q(ticket_machine_code=self.ticket_machine_code)
             if self.vehicle_journey_code:
                 code_filter |= Q(vehicle_journey_code=self.vehicle_journey_code)
 
             calendar_filter = Q(calendar=self.calendar)
-            if self.calendar:
-                for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
-                    if getattr(self.calendar, day):
-                        calendar_filter |= Q(**{f"calendar__{day}": True})
 
             trips = (
                 Trip.objects.filter(
