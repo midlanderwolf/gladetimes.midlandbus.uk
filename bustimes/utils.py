@@ -505,3 +505,102 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
 
     # trips were contiguous, return all stops
     return stoptimes_list
+
+
+def get_trips(trip, date=None) -> list:
+    """Get other parts of this trip (if the service has been split into parts)
+
+    counterpart to merge_split_trips
+    """
+
+    if trip.ticket_machine_code and trip.route and trip.route.service_id:
+        code_filter = Q(ticket_machine_code=trip.ticket_machine_code)
+        if trip.vehicle_journey_code:
+            code_filter |= Q(vehicle_journey_code=trip.vehicle_journey_code)
+
+        calendar_filter = Q(calendar=trip.calendar_id)
+        # annoyingly, sometimes different parts have different calendar ids
+        # (cos school day variations etc)
+        if date:
+            # we know the date, so we know exactly which calendars apply
+            calendar_filter |= Q(
+                calendar__in=get_calendars(
+                    date,
+                    Trip.objects.filter(route__service=trip.route.service_id).values(
+                        "calendar_id"
+                    ),
+                )
+            )
+        elif trip.calendar:
+            # no date - settle for overlapping dates and days of the week
+            overlap = Q(calendar__end_date__gte=trip.calendar.start_date) | Q(
+                calendar__end_date=None
+            )
+            if trip.calendar.end_date:
+                overlap &= Q(calendar__start_date__lte=trip.calendar.end_date)
+            days = Q()
+            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+                if getattr(trip.calendar, day):
+                    days |= Q(**{f"calendar__{day}": True})
+            calendar_filter |= overlap & days
+
+        # don't match a superseded version of the timetable
+        route_filter = Q(
+            route__service=trip.route.service_id, route__source=trip.route.source_id
+        )
+        if trip.route.version_id:
+            route_filter &= Q(route__version=trip.route.version_id)
+        if date:
+            route_filter &= Q(
+                route__in=get_routes(
+                    Route.objects.filter(service=trip.route.service_id), date
+                )
+            )
+        else:
+            # no date, so just exclude routes with a higher revision number
+            route_filter &= ~Q(
+                Exists(
+                    Route.objects.filter(
+                        service__isnull=False,
+                        source=OuterRef("route__source"),
+                        service_code=OuterRef("route__service_code"),
+                        revision_number_context=OuterRef(
+                            "route__revision_number_context"
+                        ),
+                        revision_number__gt=OuterRef("route__revision_number"),
+                    )
+                )
+            )
+
+        trips = (
+            Trip.objects.filter(
+                Q(id=trip.id)
+                | Q(
+                    code_filter,
+                    calendar_filter,
+                    route_filter,
+                    Q(start__gte=trip.end) | Q(end__lte=trip.start),
+                    ~Q(destination_id=trip.destination_id),
+                    block=trip.block,
+                    inbound=trip.inbound,
+                    operator_id=trip.operator_id,
+                )
+            )
+            .order_by("start")
+            .distinct("start")
+        )
+        no_minutes = timedelta()
+        fifteen_minutes = timedelta(minutes=15)
+        trips_list = []
+        for trip_a, trip_b in pairwise(trips):
+            if no_minutes <= trip_b.start - trip_a.end < fifteen_minutes:
+                if not trips_list:
+                    trips_list.append(trip_a)
+                trips_list.append(trip_b)
+            elif trip in trips_list:
+                return trips_list
+            else:
+                trips_list = []
+        if trip in trips_list:
+            return trips_list
+    return [trip]

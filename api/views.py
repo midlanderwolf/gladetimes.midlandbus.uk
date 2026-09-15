@@ -18,7 +18,7 @@ from sql_util.utils import Exists
 
 from busstops.models import Locality, Operator, Service, StopPoint
 from bustimes.models import StopTime, Trip
-from bustimes.utils import contiguous_stoptimes_only
+from bustimes.utils import contiguous_stoptimes_only, get_trips
 from tfl.models import Journey, JourneyDriveTime, JourneyWaitTime, Stop, StopInPattern
 from vehicles.models import (
     Livery,
@@ -136,7 +136,7 @@ class StopViewSet(viewsets.ReadOnlyModelViewSet):
 
 class TripViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
-        Trip.objects.select_related("route__service", "operator")
+        Trip.objects.select_related("route__service", "operator", "calendar")
         .prefetch_related("notes")
         .annotate(
             destination_name=Coalesce(
@@ -150,8 +150,8 @@ class TripViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_class = filters.TripFilter
 
     @staticmethod
-    def get_stops(obj):
-        trips = obj.get_trips()
+    def get_stops(obj, date=None):
+        trips = get_trips(obj, date)
         multiple_trips = len(trips) > 1
         if multiple_trips:
             stops = StopTime.objects.filter(trip__in=trips).order_by(
@@ -474,7 +474,9 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
         if instance.trip:
             instance.trip.destination_name = None
             if instance.trip.id:
-                instance.trip.stops = list(TripViewSet.get_stops(instance.trip))
+                instance.trip.stops = list(
+                    TripViewSet.get_stops(instance.trip, instance.date)
+                )
             if locations:
                 self.set_actual_times(instance.trip.stops, locations)
             trip_serializer = serializers.TripSerializer(

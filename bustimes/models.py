@@ -1,5 +1,4 @@
 from datetime import timedelta
-from itertools import pairwise
 
 from django.contrib.gis.db import models
 from django.db.models import Q
@@ -458,52 +457,6 @@ class Trip(models.Model):
 
     def get_absolute_url(self):
         return reverse("trip_detail", args=(self.id,))
-
-    def get_trips(self, date=None) -> list:
-        """Get other parts of this trip (if the service has been split into parts)
-
-        counterpart to merge_split_trips
-        """
-
-        if self.ticket_machine_code and self.route and self.route.service_id:
-            code_filter = Q(ticket_machine_code=self.ticket_machine_code)
-            if self.vehicle_journey_code:
-                code_filter |= Q(vehicle_journey_code=self.vehicle_journey_code)
-
-            calendar_filter = Q(calendar=self.calendar)
-
-            trips = (
-                Trip.objects.filter(
-                    Q(id=self.id)
-                    | Q(
-                        code_filter,
-                        calendar_filter,
-                        Q(start__gte=self.end) | Q(end__lte=self.start),
-                        ~Q(destination_id=self.destination_id),
-                        block=self.block,
-                        inbound=self.inbound,
-                        operator_id=self.operator_id,
-                        route__service=self.route.service_id,
-                    )
-                )
-                .order_by("start")
-                .distinct("start")
-            )
-            no_minutes = timedelta()
-            fifteen_minutes = timedelta(minutes=15)
-            trips_list = []
-            for trip_a, trip_b in pairwise(trips):
-                if no_minutes <= trip_b.start - trip_a.end < fifteen_minutes:
-                    if not trips_list:
-                        trips_list.append(trip_a)
-                    trips_list.append(trip_b)
-                elif self in trips_list:
-                    return trips_list
-                else:
-                    trips_list = []
-            if self in trips_list:
-                return trips_list
-        return [self]
 
 
 class TripNote(models.Model):
