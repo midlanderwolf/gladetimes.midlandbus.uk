@@ -47,6 +47,8 @@
                         search = newSearch;
 
                         setUp();
+
+                        document.getElementById('departures').scrollIntoView();
                     }
 
                     if (document.startViewTransition) {
