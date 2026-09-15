@@ -613,3 +613,41 @@ class VehicleType(models.Model):
 
     def __str__(self):
         return self.code
+
+
+class ImportTask(models.Model):
+    source = models.ForeignKey("busstops.DataSource", models.DB_CASCADE)
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+
+class DataQualityObservation(models.Model):
+    task = models.ForeignKey(ImportTask, models.DB_CASCADE)
+    file_name = models.CharField()
+    category = models.CharField()
+    comment = models.CharField()
+
+
+class DodgyRunTime(DataQualityObservation):
+    dataqualityobservation_ptr = models.OneToOneField(
+        DataQualityObservation, models.DB_CASCADE, parent_link=True, primary_key=True
+    )
+    from_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_time_from"
+    )
+    to_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_time_to"
+    )
+
+
+class DodgyRouteLink(DataQualityObservation):
+    dataqualityobservation_ptr = models.OneToOneField(
+        DataQualityObservation, models.DB_CASCADE, parent_link=True, primary_key=True
+    )
+    from_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_link_from"
+    )
+    to_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_link_to"
+    )
+    geometry = models.LineStringField()

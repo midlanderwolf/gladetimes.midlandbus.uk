@@ -149,6 +149,7 @@ class ImportTransXChangeTest(TestCase):
 
         command.set_region(archive_name)
         command.source.datetime = timezone.now()
+        command.start_task()
         for filename in filenames:
             path = FIXTURES_DIR / filename
             with open(path, "rb") as open_file:

@@ -47,7 +47,9 @@ from ...models import (
     Calendar,
     CalendarBankHoliday,
     CalendarDate,
+    DodgyRouteLink,
     Garage,
+    ImportTask,
     Note,
     Route,
     RouteLink,
@@ -241,7 +243,9 @@ def get_route_links(journeys, transxchange: TransXChange):
                             yield route_link
 
 
-def route_link_is_dodgy(point: Point, stop: StopPoint, context: str) -> bool:
+def route_link_is_dodgy(
+    point: Point, stop: StopPoint, context: str
+) -> DodgyRouteLink | None:
     if point.srid and point.srid != 4326:
         point.transform(get_coord_transform(point.srid))
 
@@ -254,15 +258,15 @@ def route_link_is_dodgy(point: Point, stop: StopPoint, context: str) -> bool:
             metres = haversine(
                 (stop.latlong.y, stop.latlong.x), (point.y, point.x), unit=Unit.METERS
             )
-            logger.warning(
+            text = (
                 f"{context}: {stop.atco_code} {stop.latlong.y},{stop.latlong.x} "
                 f"is {metres:.0f}m from {point.y},{point.x}"
             )
-            return True
-    return False
+            logger.warning(text)
+            return DodgyRouteLink(comment=text)
 
 
-def do_route_links(journeys, transxchange, stops, service):
+def do_route_links(journeys, transxchange, stops, service, task):
     route_links = list(get_route_links(journeys, transxchange))
 
     # we're not interested in straight lines between stops
@@ -290,12 +294,16 @@ def do_route_links(journeys, transxchange, stops, service):
                         point.srid = 27700
                     route_link.srid = 27700
 
-                if route_link_is_dodgy(start_point, from_stop, service.slug):
-                    continue
-
                 end_point = GEOSGeometry(route_link.track[-1].wkt())
 
-                if route_link_is_dodgy(end_point, to_stop, service.slug):
+                if dodgy := route_link_is_dodgy(
+                    start_point, from_stop, service.slug
+                ) or route_link_is_dodgy(end_point, to_stop, service.slug):
+                    dodgy.task = task
+                    dodgy.geometry = route_link.wkt()
+                    dodgy.from_stop_id = from_stop.atco_code
+                    dodgy.to_stop_id = to_stop.atco_code
+                    dodgy.save()
                     continue
 
                 key = (from_stop.atco_code, to_stop.atco_code)
@@ -649,6 +657,15 @@ class Command(BaseCommand):
 
         return flat_path
 
+    def start_task(self):
+        self.task = ImportTask.objects.create(
+            source=self.source, started_at=datetime.datetime.now(tz=datetime.UTC)
+        )
+
+    def finish_task(self):
+        self.task.finished_at = datetime.datetime.now(tz=datetime.UTC)
+        self.task.save(update_fields=["finished_at"])
+
     def handle_archive(self, archive_path: Path, filenames):
         self.service_ids = set()
         self.route_ids = set()
@@ -656,6 +673,8 @@ class Command(BaseCommand):
         basename = archive_path.name
 
         self.set_region(basename)
+
+        self.start_task()
 
         self.source.datetime = datetime.datetime.fromtimestamp(
             os.path.getmtime(archive_path), datetime.UTC
@@ -697,6 +716,8 @@ class Command(BaseCommand):
         self.source.save(update_fields=["datetime"])
 
         self.source.save_to_archive(archive_path)
+
+        self.finish_task()
 
     def finish_services(self):
         """update/create StopUsages, search_vector and geometry fields"""
@@ -1547,7 +1568,7 @@ class Command(BaseCommand):
 
             # route links (geometry between stops):
             if transxchange.route_sections:
-                do_route_links(journeys, transxchange, stops, service)
+                do_route_links(journeys, transxchange, stops, service, self.task)
 
             route_code = filename
             if len(transxchange.services) > 1:

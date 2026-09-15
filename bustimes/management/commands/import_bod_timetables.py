@@ -98,6 +98,8 @@ def handle_file(command, path, qualify_filename=False):
     # the downloaded file might be plain XML, or a zipped archive - we just don't know yet
     full_path = settings.DATA_DIR / path
 
+    command.start_task()
+
     try:
         with zipfile.ZipFile(full_path) as archive:
             for filename in archive.namelist():
@@ -124,6 +126,8 @@ def handle_file(command, path, qualify_filename=False):
                 command.handle_file(open_file, filename)
             except (AttributeError, DataError):
                 logger.exception("error handling file")
+
+    command.finish_task()
 
     if not qualify_filename:
         command.source.save_to_archive(full_path)
