@@ -499,7 +499,7 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
                 return [stop for stop in stoptimes if stop.trip_id == trip_id]
             else:
                 # merge a and b - they describe the same stop
-                a.departure_time = b.departure_time
+                a.departure = b.departure
                 a.pick_up = b.pick_up
                 stoptimes_list.remove(b)
 

@@ -1628,7 +1628,13 @@ class ImportTransXChangeTest(TestCase):
         response = self.client.get(f"/api/vehiclejourneys/{vj_1.id}/details/").json()
 
         self.assertEqual(vj_2.id, response["next"]["id"])
-        self.assertEqual(20, len(response["trip"]["times"]))
+
+        times = response["trip"]["times"]
+        self.assertEqual(20, len(times))
+        # the two trips are joined at this stop - arrival time from the first trip,
+        # departure time from the second
+        self.assertEqual(times[12]["aimed_arrival_time"], "2025-10-12T08:01:00+01:00")
+        self.assertEqual(times[12]["aimed_departure_time"], "2025-10-12T08:05:00+01:00")
 
     @time_machine.travel("2024-01-01")
     def test_frequency(self):
