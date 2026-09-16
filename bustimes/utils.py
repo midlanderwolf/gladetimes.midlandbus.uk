@@ -518,32 +518,6 @@ def get_trips(trip, date=None) -> list:
         if trip.vehicle_journey_code:
             code_filter |= Q(vehicle_journey_code=trip.vehicle_journey_code)
 
-        calendar_filter = Q(calendar=trip.calendar_id)
-        # annoyingly, sometimes different parts have different calendar ids
-        # (cos school day variations etc)
-        if date:
-            # we know the date, so we know exactly which calendars apply
-            calendar_filter |= Q(
-                calendar__in=get_calendars(
-                    date,
-                    Trip.objects.filter(route__service=trip.route.service_id).values(
-                        "calendar_id"
-                    ),
-                )
-            )
-        elif trip.calendar:
-            # no date - settle for overlapping dates and days of the week
-            overlap = Q(calendar__end_date__gte=trip.calendar.start_date) | Q(
-                calendar__end_date=None
-            )
-            if trip.calendar.end_date:
-                overlap &= Q(calendar__start_date__lte=trip.calendar.end_date)
-            days = Q()
-            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
-                if getattr(trip.calendar, day):
-                    days |= Q(**{f"calendar__{day}": True})
-            calendar_filter |= overlap & days
-
         # don't match a superseded version of the timetable
         route_filter = Q(
             route__service=trip.route.service_id, route__source=trip.route.source_id
@@ -551,11 +525,12 @@ def get_trips(trip, date=None) -> list:
         if trip.route.version_id:
             route_filter &= Q(route__version=trip.route.version_id)
         if date:
-            route_filter &= Q(
-                route__in=get_routes(
+            route_ids = list(
+                get_routes(
                     Route.objects.filter(service=trip.route.service_id), date
-                )
+                ).values_list("id", flat=True)
             )
+            route_filter &= Q(route__in=route_ids)
         else:
             # no date, so just exclude routes with a higher revision number
             route_filter &= ~Q(
@@ -571,6 +546,23 @@ def get_trips(trip, date=None) -> list:
                     )
                 )
             )
+
+        calendar_filter = Q(calendar=trip.calendar_id)
+        # annoyingly, sometimes different parts have different calendar ids
+        # (cos school day variations etc)
+        if date:
+            calendar_filter |= Q(calendar__in=get_calendar_ids(date, route_ids))
+        elif trip.calendar:
+            overlap = Q(calendar__end_date__gte=trip.calendar.start_date) | Q(
+                calendar__end_date=None
+            )
+            if trip.calendar.end_date:
+                overlap &= Q(calendar__start_date__lte=trip.calendar.end_date)
+            days = Q()
+            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+                if getattr(trip.calendar, day):
+                    days |= Q(**{f"calendar__{day}": True})
+            calendar_filter |= overlap & days
 
         trips = (
             Trip.objects.filter(
