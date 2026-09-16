@@ -23,11 +23,7 @@ import routeStopMarker from "data-url:../route-stop-marker.png";
 import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
 import osmBright from "url:../osm_bright.json";
-import {
-  type Map as MapLibreMap,
-  type MapStyleImageMissingEvent,
-  setWorkerUrl,
-} from "maplibre-gl";
+import { type Map as MapLibreMap, setWorkerUrl } from "maplibre-gl";
 import { ErrorFallback } from "./LoadingSorry";
 
 setWorkerUrl("/static/dist/js/maplibre-worker.js");
@@ -118,24 +114,21 @@ function MapChild({ onInit }: { onInit?: (map: MapLibreMap) => void }) {
         onInit(_map);
       }
 
-      const onStyleImageMissing = (e: MapStyleImageMissingEvent) => {
-        if (e.id in imagesByName) {
+      _map.setMissingStyleImageResolver(async (id) => {
+        if (id in imagesByName) {
           const image = new Image();
-          image.src = imagesByName[e.id];
-          image.onload = () => {
-            if (!map.hasImage(e.id)) {
-              map.addImage(e.id, image, {
-                pixelRatio: 2,
-              });
-            }
-          };
+          image.src = imagesByName[id];
+          await image.decode();
+          if (!_map.hasImage(id)) {
+            _map.addImage(id, image, {
+              pixelRatio: 2,
+            });
+          }
         }
-      };
-
-      map.on("styleimagemissing", onStyleImageMissing);
+      });
 
       return () => {
-        map.off("styleimagemissing", onStyleImageMissing);
+        _map.setMissingStyleImageResolver(null);
       };
     }
   });
