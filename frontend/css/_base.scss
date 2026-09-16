@@ -1586,6 +1586,11 @@ nav {
             }
         }
     }
+
+    // account for height of sticky .ad-wrapper
+    body:not(.no-ads):not(.no-consent) #departures {
+        scroll-margin-top: 140px;
+    }
 }
 
 .no-consent .ad-wrapper {
