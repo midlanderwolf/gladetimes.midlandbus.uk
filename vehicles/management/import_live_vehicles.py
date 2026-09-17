@@ -597,6 +597,12 @@ class ImportLiveVehiclesCommand(BaseCommand):
         time_taken = (timezone.now() - now).total_seconds()
 
         if self.source_name:
+            sentry_sdk.metrics.count(
+                "vehicle_locations",
+                len(changed_items),
+                attributes={"source": self.source_name},
+            )
+
             self.status.append(
                 Status(
                     now,
