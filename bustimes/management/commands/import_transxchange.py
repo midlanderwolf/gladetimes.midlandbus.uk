@@ -387,6 +387,16 @@ def get_stop_time(trip, cell, stops: dict):
     return stop_time
 
 
+def merge_layover(a, b):
+    """Merge two consecutive stop times at the same stop - a layover expressed as a
+    timing link from a stop to itself, instead of a WaitTime"""
+
+    if a.arrival is None:
+        a.arrival = a.departure
+    a.departure = b.departure
+    a.pick_up = b.pick_up
+
+
 def get_description(txc_service):
     description = txc_service.description
 
@@ -998,12 +1008,24 @@ class Command(BaseCommand):
                 trip.garage = self.garages.get(journey.garage_ref)
 
             blank = False
+            previous_stop_time = None
             for sequence, cell in enumerate(journey.get_times()):
                 stop_time = get_stop_time(trip, cell, stops)
-                if stop_time.sequence is None:
-                    stop_time.sequence = sequence
-                stop_times.append(stop_time)
-                stop_time_blanks.append(not cell.stopusage.timingstatus)
+
+                if (
+                    previous_stop_time is not None
+                    and previous_stop_time.stop_id == stop_time.stop_id
+                ):
+                    merge_layover(previous_stop_time, stop_time)
+                    if sequence == 1:
+                        trip.start = previous_stop_time.departure
+                    stop_time = previous_stop_time
+                else:
+                    if stop_time.sequence is None:
+                        stop_time.sequence = sequence
+                    stop_times.append(stop_time)
+                    stop_time_blanks.append(not cell.stopusage.timingstatus)
+                    previous_stop_time = stop_time
 
                 if not cell.stopusage.timingstatus:
                     blank = True
@@ -1073,9 +1095,18 @@ class Command(BaseCommand):
                             start=trip.start + journey.frequency_interval,
                         )
                         journey.departure_time = trip.start
+                        previous_stop_time = None
                         for cell in journey.get_times():
                             stop_time = get_stop_time(trip, cell, stops)
-                            stop_times.append(stop_time)
+                            if (
+                                previous_stop_time is not None
+                                and previous_stop_time.stop_id == stop_time.stop_id
+                            ):
+                                merge_layover(previous_stop_time, stop_time)
+                                stop_time = previous_stop_time
+                            else:
+                                stop_times.append(stop_time)
+                                previous_stop_time = stop_time
                         trip.end = stop_time.arrival_or_departure()
                         trips.append(trip)
 
