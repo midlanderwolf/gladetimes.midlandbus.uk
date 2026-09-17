@@ -901,7 +901,7 @@ class Command(BaseCommand):
             if not date.start_date:
                 logger.warning(date)
                 continue
-            if date.end_date < date.start_date:
+            if date.end_date and date.end_date < date.start_date:
                 logger.warning(date)
                 continue
             good_calendar_dates.append(date)

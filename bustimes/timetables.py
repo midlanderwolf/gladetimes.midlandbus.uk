@@ -377,7 +377,10 @@ class Timetable:
                 return  # some overlap between calendar days, too complicated
 
             for calendar_date in calendar.calendardate_set.all():
-                if calendar.end_date and calendar_date.end_date >= calendar.end_date:
+                if calendar.end_date and (
+                    not calendar_date.end_date
+                    or calendar_date.end_date >= calendar.end_date
+                ):
                     continue
                 return  # exceptions or extra days, too complicated
 
@@ -406,6 +409,7 @@ class Timetable:
                 if (
                     calendar_date.operation is False
                     and calendar_date.contains(date)
+                    and calendar_date.end_date
                     and calendar.end_date
                 ):
                     # fast-forward to end of current period of non-operation

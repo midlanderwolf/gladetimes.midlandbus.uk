@@ -277,7 +277,9 @@ class Calendar(models.Model):
             for calendar_date in self.calendardate_set.all():
                 if (
                     not calendar_date.operation
-                    and calendar_date.end_date >= end_date
+                    and (
+                        not calendar_date.end_date or calendar_date.end_date >= end_date
+                    )
                     and calendar_date.start_date <= end_date
                 ):
                     # "until 30 may 2020, but not from 20 may to 30 may" - simplify to "until 19 may"
