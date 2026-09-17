@@ -7,6 +7,7 @@
     "@parcel/optimizer-data-url": "^2.10.1",
     "@parcel/transformer-inline-string": "^2.10.1",
     "@parcel/transformer-sass": "^2.10.1",
+    "@parcel/transformer-worklet": "^2.16.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.0",
     "@types/jest": "^30.0.0",
@@ -56,12 +57,6 @@
     "firehose-map": {
       "source": [
         "frontend/js/firehose-map.ts"
-      ],
-      "distDir": "busstops/static/dist"
-    },
-    "maplibre-worker": {
-      "source": [
-        "frontend/js/maplibre-worker.ts"
       ],
       "distDir": "busstops/static/dist"
     }

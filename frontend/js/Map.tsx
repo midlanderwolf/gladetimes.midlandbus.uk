@@ -23,10 +23,11 @@ import routeStopMarker from "data-url:../route-stop-marker.png";
 import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
 import osmBright from "url:../osm_bright.json";
+import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
 import { type Map as MapLibreMap, setWorkerUrl } from "maplibre-gl";
 import { ErrorFallback } from "./LoadingSorry";
 
-setWorkerUrl("/static/dist/js/maplibre-worker.js");
+setWorkerUrl(maplibreWorkerUrl);
 
 const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
