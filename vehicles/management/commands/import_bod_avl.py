@@ -765,6 +765,12 @@ class Command(ImportLiveVehiclesCommand):
             bod_status = bod_status[-50:]
             cache.set("bod_avl_status", bod_status, 800)
 
+            sentry_sdk.metrics.count(
+                "vehicle_locations",
+                bod_status[-1].changed_items,
+                attributes={"source": self.source_name},
+            )
+
             logger.info(f"{time_taken=}")
 
             if time_taken > 11:
