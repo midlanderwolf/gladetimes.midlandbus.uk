@@ -6,6 +6,7 @@ import MapGL, {
   NavigationControl,
   GeolocateControl,
   AttributionControl,
+  type LayerProps,
   type MapProps,
   useControl,
   useMap,
@@ -16,15 +17,17 @@ import MapGL, {
 } from "react-map-gl/maplibre";
 
 import arrow from "data-url:../history-arrow.png";
-import routeStopMarkerCircle from "data-url:../route-stop-marker-circle.png";
-import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle.png";
 import routeStopMarkerDark from "data-url:../route-stop-marker-dark.png";
 import routeStopMarker from "data-url:../route-stop-marker.png";
 import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
 import osmBright from "url:../osm_bright.json";
 import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
-import { type Map as MapLibreMap, setWorkerUrl } from "maplibre-gl";
+import {
+  type FilterSpecification,
+  type Map as MapLibreMap,
+  setWorkerUrl,
+} from "maplibre-gl";
 import { ErrorFallback } from "./LoadingSorry";
 
 setWorkerUrl(maplibreWorkerUrl);
@@ -33,11 +36,29 @@ const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
   "stop-marker-circle": stopMarkerCircle,
   "route-stop-marker": routeStopMarker,
-  "route-stop-marker-circle": routeStopMarkerCircle,
   "route-stop-marker-dark": routeStopMarkerDark,
-  "route-stop-marker-dark-circle": routeStopMarkerDarkCircle,
   "history-arrow": arrow,
 };
+
+export const hasBearing: FilterSpecification = [
+  "!=",
+  ["get", "bearing"],
+  ["literal", null],
+];
+
+// stops with no bearing to point in get a plain circle,
+// instead of a rotated "route-stop-marker" image
+export const routeStopCircleStyle = (darkMode: boolean): LayerProps => ({
+  id: "stops-circle",
+  type: "circle",
+  filter: ["!", hasBearing],
+  paint: {
+    "circle-radius": 3,
+    "circle-color": darkMode ? "#424242" : "#fff",
+    "circle-stroke-width": 2.25,
+    "circle-stroke-color": darkMode ? "#d6d6d6" : "#666",
+  },
+});
 
 const mapStyles: { [key: string]: string } = {
   alidade_smooth: "Smooth",

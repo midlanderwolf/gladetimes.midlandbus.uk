@@ -2,7 +2,7 @@ import React from "react";
 
 import { Layer, type LayerProps, Source } from "react-map-gl/maplibre";
 
-import { ThemeContext } from "./Map";
+import { ThemeContext, hasBearing, routeStopCircleStyle } from "./Map";
 import type { TripTime } from "./TripTimetable";
 
 type RouteProps = {
@@ -16,14 +16,10 @@ export const Route = React.memo(function Route({ times }: RouteProps) {
   const stopsStyle: LayerProps = {
     id: "stops",
     type: "symbol",
+    filter: hasBearing,
     layout: {
       "symbol-sort-key": ["get", "priority"],
-      "icon-image": [
-        "case",
-        ["==", ["get", "bearing"], ["literal", null]],
-        darkMode ? "route-stop-marker-dark-circle" : "route-stop-marker-circle",
-        darkMode ? "route-stop-marker-dark" : "route-stop-marker",
-      ],
+      "icon-image": darkMode ? "route-stop-marker-dark" : "route-stop-marker",
       "icon-rotate": ["+", 45, ["get", "bearing"]],
       "icon-allow-overlap": true,
       "icon-ignore-placement": true,
@@ -99,6 +95,7 @@ export const Route = React.memo(function Route({ times }: RouteProps) {
             }),
         }}
       >
+        <Layer {...routeStopCircleStyle(darkMode)} />
         <Layer {...stopsStyle} />
       </Source>
     </React.Fragment>

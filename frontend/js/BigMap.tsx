@@ -184,7 +184,7 @@ function Stops({
               "text-font": font,
               "text-allow-overlap": true,
               "text-size": 10,
-              "icon-rotate": ["+", 45, ["get", "bearing"]],
+              "icon-rotate": ["+", 45, ["coalesce", ["get", "bearing"], 0]],
               "icon-image": [
                 "case",
                 ["==", ["get", "bearing"], ["literal", null]],
@@ -978,7 +978,7 @@ export default function BigMap(
             setClickedVehicleMarker(feature.id as number);
             return;
           }
-          if (feature.layer.id === "stops") {
+          if (feature.layer.id.startsWith("stops")) {
             const url = feature.properties.url;
             if (url !== clickedStopUrl) {
               setClickedStopURL(url);
@@ -1133,7 +1133,12 @@ export default function BigMap(
           onMouseLeave={onMouseLeave}
           cursor={cursor}
           onMapInit={handleMapInit}
-          interactiveLayerIds={["stops", "vehicles", "locations"]}
+          interactiveLayerIds={[
+            "stops",
+            "stops-circle",
+            "vehicles",
+            "locations",
+          ]}
         >
           {props.mode === MapMode.Trip && trip ? (
             <Route times={trip.times} />
