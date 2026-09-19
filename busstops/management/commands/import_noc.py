@@ -148,10 +148,7 @@ class Command(BaseCommand):
         for e in element.find("NOCTable"):
             noc = e.findtext("NOCCODE").removeprefix("=")
 
-            if noc in noc_lines:
-                noc_line = noc_lines[noc]
-            else:
-                # print(noc)
+            if not (noc_line := noc_lines.get(noc)):
                 continue
 
             # another operator has that code as sort of an alias - bail
@@ -235,10 +232,11 @@ class Command(BaseCommand):
                         operator, noc_line, licences_by_number
                     )
 
+            operator.source = noc_source
             operator.modified_at = generation_date
 
             try:
-                operator.clean_fields(exclude=["noc", "slug", "region"])
+                operator.clean_fields(exclude=["noc", "slug", "region", "source"])
             except ValidationError as e:
                 if "url" in e.message_dict:
                     # print(e, operator.url)
@@ -246,18 +244,7 @@ class Command(BaseCommand):
                 else:
                     print(noc, e)
 
-        Operator.objects.bulk_create(
-            to_create,
-            update_fields=(
-                "url",
-                "name",
-                "vehicle_mode",
-                "slug",
-                "region_id",
-                "vehicle_mode",
-                "modified_at",
-            ),
-        )
+        Operator.objects.bulk_create(to_create)
         Operator.objects.bulk_update(
             to_update, ("url", "name", "vehicle_mode", "modified_at")
         )
