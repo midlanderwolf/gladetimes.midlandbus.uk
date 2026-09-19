@@ -760,7 +760,10 @@ def service_vehicles_history(request, slug=None, noc=None, line_name=None):
     else:
         # ad-hoc service
         service = None
-        operator = get_object_or_404(Operator, noc=noc)
+        if noc == "None":
+            operator = None
+        else:
+            operator = get_object_or_404(Operator, noc=noc)
         journeys = VehicleJourney.objects.filter(
             service=None, route_name=line_name, vehicle__operator=operator
         )
