@@ -71,7 +71,7 @@ class Command(ImportLiveVehiclesCommand):
         defaults = {
             "fleet_number": fleet_number,
             "source": self.source,
-            "operator": operators[0],
+            "operator": operators[0] if operators else None,
             "code": code,
         }
 
