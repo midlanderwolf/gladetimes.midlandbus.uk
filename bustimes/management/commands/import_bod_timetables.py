@@ -184,7 +184,7 @@ def bus_open_data(api_key, specific_operator):
     for params in get_bus_open_data_paramses(timetable_data_sources, api_key):
         url = f"{url_prefix}/api/v1/dataset/"
         while url:
-            response = session.get(url, params=params)
+            response = session.get(url, params=params, timeout=61)
             response.raise_for_status()
             json = response.json()
             results = json["results"]

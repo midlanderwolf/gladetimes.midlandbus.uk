@@ -564,7 +564,7 @@ class Command(BaseCommand):
             except IntegrityError:
                 logger.warning(item["noc"])
 
-            response = self.session.get(download_url, stream=True)
+            response = self.session.get(download_url, stream=True, timeout=61)
 
             self.user_profiles = {}
             self.sales_offer_packages = {}
@@ -600,7 +600,9 @@ class Command(BaseCommand):
         if dataset.datetime:
             headers["if-modified-since"] = http_date(dataset.datetime.timestamp())
 
-        response = self.session.get(download_url, headers=headers, stream=True)
+        response = self.session.get(
+            download_url, headers=headers, stream=True, timeout=61
+        )
         response.raise_for_status()
 
         if response.status_code == 304:
@@ -638,7 +640,7 @@ class Command(BaseCommand):
             "limit": 100,
         }
         while url:
-            response = self.session.get(url, params=params)
+            response = self.session.get(url, params=params, timeout=61)
 
             data = response.json()
 

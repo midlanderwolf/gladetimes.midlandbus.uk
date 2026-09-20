@@ -1696,15 +1696,18 @@ def search(request):
 
         postcode = "".join(query_text.split()).upper()
         if validation.is_valid_postcode(postcode):
-            res = requests.get(
-                "https://api.postcodes.io/postcodes/" + postcode, timeout=1
-            )
+            url = "postcodes/" + postcode
         elif validation.is_valid_partial_postcode(postcode):
-            res = requests.get(
-                "https://api.postcodes.io/outcodes/" + postcode, timeout=1
-            )
+            url = "outcodes/" + postcode
         else:
-            postcode = None
+            url = postcode = None
+
+        if postcode:
+            try:
+                res = requests.get("https://api.postcodes.io/" + url, timeout=1)
+            except requests.RequestException:
+                logger.exception("postcode lookup")
+                postcode = None
 
         if postcode and res.ok:
             result = res.json()["result"]

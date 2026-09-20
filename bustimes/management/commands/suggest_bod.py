@@ -36,7 +36,7 @@ class Command(BaseCommand):
             "endDateStart": datetime.now(UTC).isoformat(),
         }
         while url:
-            response = session.get(url, params=params)
+            response = session.get(url, params=params, timeout=61)
             print(response.url)
             data = response.json()
             for item in data["results"]:

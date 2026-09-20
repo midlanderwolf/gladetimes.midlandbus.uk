@@ -146,7 +146,9 @@ class Command(BaseCommand):
     def handle(self, url, api_key, *args, **options):
         source = DataSource.objects.get_or_create(name="BODS cancellations")[0]
 
-        response = requests.get(url, params={"api_key": api_key}, stream=True)
+        response = requests.get(
+            url, params={"api_key": api_key}, stream=True, timeout=61
+        )
         response.raw.decode_content = True
         response.raise_for_status()
 

@@ -11,7 +11,7 @@ concurrency:
 jobs:
   test-frontend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 3
 
     permissions:
       contents: read
@@ -32,7 +32,7 @@ jobs:
 
   test-backend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 5
     container:
       image: ghcr.io/bustimes/bustimes.org/bustimes-base:3.14
 
@@ -90,6 +90,7 @@ jobs:
     needs: test-backend
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 2
 
     permissions:
       pages: write

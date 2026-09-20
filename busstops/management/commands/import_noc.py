@@ -98,7 +98,7 @@ class Command(BaseCommand):
         noc_source = code_sources[0][1]
 
         url = "https://www.travelinedata.org.uk/noc/api/1.0/nocrecords.xml"
-        response = requests.get(url)
+        response = requests.get(url, timeout=61)
         element = ET.fromstring(response.text)
 
         generation_date = datetime.fromisoformat(element.attrib["generationDate"])
@@ -148,7 +148,7 @@ class Command(BaseCommand):
         for e in element.find("NOCTable"):
             noc = e.findtext("NOCCODE").removeprefix("=")
 
-            if not (noc_line := noc_lines.get(noc)):
+            if (noc_line := noc_lines.get(noc)) is None:
                 continue
 
             # another operator has that code as sort of an alias - bail
