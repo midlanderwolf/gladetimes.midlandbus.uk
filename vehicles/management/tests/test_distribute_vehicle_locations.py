@@ -3,7 +3,7 @@ from unittest import mock
 from uuid import uuid4
 
 import fakeredis
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from vehicles.time_aware_polyline import (
     decode_time_aware_polyline,
@@ -13,7 +13,7 @@ from vehicles.time_aware_polyline import (
 from ..commands.distribute_vehicle_locations import Command
 
 
-class DistributeVehicleLocationsTest(TestCase):
+class DistributeVehicleLocationsTest(SimpleTestCase):
     def setUp(self):
         self.redis = fakeredis.FakeAsyncRedis()
         patcher = mock.patch(

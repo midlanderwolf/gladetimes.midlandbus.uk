@@ -1,9 +1,9 @@
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from .urlise import urlise
 
 
-class UrliseTest(TestCase):
+class UrliseTest(SimpleTestCase):
     def test_national_express(self):
         self.assertEqual(
             urlise("https://www.nationalexpress.com/en/destinations/manchester"),

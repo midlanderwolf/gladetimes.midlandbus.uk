@@ -1,11 +1,11 @@
 """Tests for the buses app"""
 
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, SimpleTestCase
 
 from . import asgi, utils, wsgi
 
 
-class UtilsTests(TestCase):
+class UtilsTests(SimpleTestCase):
     """Tests for the buses.utils module"""
 
     def test_minify(self):
@@ -35,7 +35,7 @@ class UtilsTests(TestCase):
         )
 
 
-class WSGITest(TestCase):
+class WSGITest(SimpleTestCase):
     def test_wsgi_and_asgi(self):
         rf = RequestFactory()
 

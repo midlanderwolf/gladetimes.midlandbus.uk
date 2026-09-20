@@ -4,23 +4,24 @@ from unittest import mock
 
 import fakeredis
 import vcr
-from django.test import TransactionTestCase
+from django.test import TestCase
 
 from busstops.models import DataSource, Operator, Route, Service
 
 from ..commands.import_first import Command
 
 
-class FirstTest(TransactionTestCase):
-    def setUp(self):
-        self.source = DataSource.objects.create(
+class FirstTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = DataSource.objects.create(
             name="First",
             url="https://example.com/socket_information",
             datetime=datetime(2026, 9, 21, 7, 2, 50, tzinfo=UTC),
         )
         o = Operator.objects.create(noc="BDGR", name="Badgerline")
         s = Service.objects.create(current=True, line_name="B")
-        Route.objects.create(service=s, line_name="B", source=self.source)
+        Route.objects.create(service=s, line_name="B", source=cls.source)
         s.operator.add(o)
 
     def test_sock_it(self):

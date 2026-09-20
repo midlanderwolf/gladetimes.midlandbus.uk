@@ -231,6 +231,7 @@ WHITENOISE_ROOT = BASE_DIR / "busstops" / "static" / "root"
 WHITENOISE_MIMETYPES = {
     ".webmanifest": "application/manifest+json",
 }
+WHITENOISE_AUTOREFRESH = DEBUG or TEST
 TEMPLATE_MINIFER_STRIP_FUNCTION = "buses.utils.minify"
 TEMPLATES = [
     {

@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import Permission
 from django.core.files.base import ContentFile
 from django.core.files.storage import InMemoryStorage
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from PIL import ExifTags, Image
 
 EXIF_TAG_IDS = {name: tag_id for tag_id, name in ExifTags.TAGS.items()}
@@ -80,7 +80,7 @@ def blueness(image):
     return sum(b > r for r, g, b in pixels) / len(pixels)
 
 
-class SmartCropTest(TestCase):
+class SmartCropTest(SimpleTestCase):
     def test_grows_box_to_aspect_ratio(self):
         image = Image.new("RGB", (1000, 1000))
 
@@ -110,7 +110,7 @@ class SmartCropTest(TestCase):
         self.assertEqual(cropped.size, (500, 500))
 
 
-class GetSubjectTest(TestCase):
+class GetSubjectTest(SimpleTestCase):
     def test_prefers_the_biggest_bus(self):
         subject = get_subject(
             [
@@ -142,7 +142,7 @@ class GetSubjectTest(TestCase):
         self.assertEqual(subject, [0, 0.1, 1, 0.9])
 
 
-class ExifTest(TestCase):
+class ExifTest(SimpleTestCase):
     def test_no_exif(self):
         image = Image.open(BytesIO(make_jpeg(10, 10)))
         metadata, location, taken_at = get_exif(image)
