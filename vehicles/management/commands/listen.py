@@ -52,6 +52,23 @@ def get_content(slugs):
 
 
 class Command(BaseCommand):
+    def announce(self, session, payloads):
+        logger.info(payloads)
+
+        for chunk in get_chunks(payloads):
+            response = session.post(
+                settings.NEW_VEHICLE_WEBHOOK_URL,
+                json={
+                    "username": "bot",
+                    "content": get_content(chunk),
+                },
+                timeout=10,
+            )
+
+            logger.info("%s %s %s", response, response.headers, response.text)
+
+            time.sleep(5)
+
     def handle(self, *args, **options):
         assert settings.NEW_VEHICLE_WEBHOOK_URL, "NEW_VEHICLE_WEBHOOK_URL is not set"
 
@@ -78,18 +95,4 @@ class Command(BaseCommand):
                 payloads = [notify.payload for notify in conn.notifies(stop_after=1)]
                 payloads += [notify.payload for notify in conn.notifies(timeout=WINDOW)]
 
-                logger.info(payloads)
-
-                for chunk in get_chunks(payloads):
-                    response = session.post(
-                        settings.NEW_VEHICLE_WEBHOOK_URL,
-                        json={
-                            "username": "bot",
-                            "content": get_content(chunk),
-                        },
-                        timeout=10,
-                    )
-
-                    logger.info("%s %s %s", response, response.headers, response.text)
-
-                    time.sleep(5)
+                self.announce(session, payloads)
