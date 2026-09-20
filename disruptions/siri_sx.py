@@ -42,10 +42,10 @@ def handle_item(item: ET.Element, source: DataSource, current_situations: dict):
             return situation.id  # hasn't changed
         created = False
     else:
-        situation = Situation(
-            source=source, situation_number=situation_number, current=True
-        )
+        situation = Situation(source=source, situation_number=situation_number)
         created = True
+
+    situation.current = True
 
     situation.data = xml
     situation.created_at = datetime.fromisoformat(item.find("CreationTime").text)
