@@ -6,7 +6,8 @@ import vcr
 from django.core.management import call_command
 from django.test import TestCase
 
-from busstops.models import DataSource, Operator, Region, Service
+from busstops.models import DataSource, Operator, Region, Service, StopPoint
+from bustimes.models import Route, StopTime, Trip
 
 from ...models import Vehicle
 from ..commands.lothian import Command
@@ -31,6 +32,13 @@ class EdinburghImportTest(TestCase):
         service_2.operator.add(cls.operator_1)
         cls.source = source
         Vehicle.objects.create(operator_id="EDTR", source=source, code="1120")
+
+        stop = StopPoint.objects.create(
+            naptan_code="36237267", atco_code="6200204990", active=True
+        )
+        route = Route.objects.create(service=cls.service, source=source)
+        cls.trip = Trip.objects.create(route=route, start="26:45:00", end="27:00:00")
+        StopTime.objects.create(trip=cls.trip, stop=stop, departure="26:50:00")
 
     def test_lothian_avl(self):
         redis_client = fakeredis.FakeStrictRedis(version=7)
@@ -64,6 +72,9 @@ class EdinburghImportTest(TestCase):
         self.assertEqual("NovWedAL23907804", journey.code)
         self.assertEqual("Surgeons' Hall", journey.destination)
         self.assertEqual(self.service, journey.service)
+
+        self.assertEqual(self.trip, journey.trip)
+        self.assertEqual("2025-12-17", str(journey.date))
 
         self.assertTrue(journey.service.tracking)
         response = self.client.get(journey.service.get_absolute_url())

@@ -106,7 +106,11 @@ class Command(ImportLiveVehiclesCommand):
 
         if journey.service:
             journey.trip = journey.get_trip(
-                date=parse_date(item["DayOfOperation"]), journey_code=journey.code
+                date=parse_date(item["DayOfOperation"]),
+                journey_code=journey.code,
+                next_stop=item.get("CurrentStop"),
+                approximate_datetime=True,
+                datetime=self.get_datetime(item),
             )
 
         return journey

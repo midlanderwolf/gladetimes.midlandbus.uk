@@ -14,7 +14,7 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Abs
+from django.db.models.functions import Abs, Least
 from django.utils import timezone
 from sql_util.utils import Exists
 
@@ -443,32 +443,48 @@ def get_trip(
     if origin:
         score += Case(When(origin, then=1), default=0)
 
-    if approximate_datetime and next_stop:
+    if approximate_datetime:
         start_time = timezone.localtime(datetime)
         start_time = timedelta(hours=start_time.hour, minutes=start_time.minute)
-        start_range = (
-            start_time - timedelta(minutes=10),
-            start_time + timedelta(minutes=5),
-        )
-        if next_stop[3:4] == "0":
-            stop_q = Q(stop=next_stop)  # translink
+
+        if start_time < timedelta(hours=6):
+            # might be timetabled as part of the previous day
+            start_times = (start_time, start_time + timedelta(days=1))
         else:
-            stop_q = Q(stop__naptan_code=next_stop)  # lothian
-        condition = Q(
-            Exists(
-                "stoptime",
-                filter=Q(
-                    stop_q,
-                    departure__range=start_range,
-                ),
-            ),
-            start__range=start_range,
-        )
-        # score = F("start")
-        score = ExpressionWrapper(
-            -Abs(int(start_time.total_seconds()) - F("start")),
-            output_field=IntegerField(),
-        )
+            start_times = (start_time,)
+
+        if next_stop:
+            if next_stop[3:4] == "0":
+                stop_q = Q(stop=next_stop)  # translink
+            else:
+                stop_q = Q(stop__naptan_code=next_stop)  # lothian
+        else:
+            stop_q = None
+
+        condition = Q()
+        score = None
+        for start_time in start_times:
+            start_range = (
+                start_time - timedelta(minutes=10),
+                start_time + timedelta(minutes=5),
+            )
+            start_condition = Q(start__range=start_range)
+            if stop_q:
+                start_condition &= Q(
+                    Exists(
+                        "stoptime",
+                        filter=Q(
+                            stop_q,
+                            departure__range=start_range,
+                        ),
+                    )
+                )
+            condition |= start_condition
+
+            distance = Abs(int(start_time.total_seconds()) - F("start"))
+            score = distance if score is None else Least(score, distance)
+
+        score = ExpressionWrapper(-score, output_field=IntegerField())
     else:
         condition = code | start
 
