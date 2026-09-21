@@ -70,7 +70,9 @@ class VehicleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
         Vehicle.objects.select_related("vehicle_type", "livery", "operator", "garage")
         .annotate(
-            special_features=ArrayAgg("features__name", filter=~Q(features=None)),
+            special_features=ArrayAgg(
+                "features__name", filter=~Q(features=None), order_by="name"
+            ),
         )
         .order_by("id")
     )

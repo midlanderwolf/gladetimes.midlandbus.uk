@@ -357,6 +357,7 @@ class CalendarDate(models.Model):
     contains = Calendar.contains
 
     class Meta:
+        ordering = ("start_date",)
         indexes = (
             models.Index(fields=["calendar", "operation", "special"]),
             models.Index(fields=["calendar", "start_date", "end_date", "operation"]),

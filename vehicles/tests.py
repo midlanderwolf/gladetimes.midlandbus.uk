@@ -699,7 +699,7 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
         revision = response.context["revision"]
         self.assertFalse(revision.pending)
 
-        features = VehicleRevisionFeature.objects.all()
+        features = VehicleRevisionFeature.objects.order_by("id")
         self.assertEqual(str(features[0]), "<del>Wi-Fi</del>")
         self.assertEqual(str(features[1]), "<ins>USB</ins>")
 

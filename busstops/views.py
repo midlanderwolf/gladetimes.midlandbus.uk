@@ -1390,7 +1390,7 @@ class ServiceDetailView(DetailView):
                         accepted=False,
                     )
                 ),
-            ):
+            ).order_by("id"):
                 if "app" in method.name and method.url:
                     context["app"] = method
                 else:

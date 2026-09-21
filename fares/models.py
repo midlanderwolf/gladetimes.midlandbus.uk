@@ -254,6 +254,9 @@ class Column(models.Model):
     name = models.CharField(max_length=255)
     order = models.PositiveSmallIntegerField(null=True, blank=True)
 
+    class Meta:
+        ordering = ("order",)
+
     def __str__(self):
         return self.name
 
@@ -263,6 +266,9 @@ class Row(models.Model):
     code = models.CharField(max_length=255, blank=True)
     name = models.CharField(max_length=255)
     order = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("order",)
 
     def cells(self):
         prev_order = 0

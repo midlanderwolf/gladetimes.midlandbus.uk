@@ -145,8 +145,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         # should ignore operator with id 'UNIB' in favour of one with OperatorCode:
         self.assertEqual(command.get_operator("UNIB").get().noc, "UNOE")
 
-        self.assertEqual(
-            list(command.get_operator("FOO").values("noc")),
+        self.assertCountEqual(
+            command.get_operator("FOO").values("noc"),
             [{"noc": "WHIP"}, {"noc": "TGTC"}],
         )
 
