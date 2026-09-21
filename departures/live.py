@@ -211,8 +211,7 @@ def get_departures(stop, services, when) -> dict:
                         journey_ids
                     )
                     for departure in departures:
-                        if "journey_id" in departure:
-                            journey = journeys.get(departure["journey_id"])
+                        if journey := journeys.get(departure.get("journey_id")):
                             departure["vehicle"] = journey.vehicle
 
                 # filter out departures that have already happened

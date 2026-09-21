@@ -349,8 +349,11 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             tfl_stop = tfl_stops.get(sip.stop_idx)
             atco_code = tfl_stop and tfl_stop.naptan_code
             stop = stops.get(atco_code)
-            if not stop and tfl_stop:
-                stop = StopPoint(common_name=tfl_stop.name, latlong=tfl_stop.latlong)
+            if not stop:
+                stop = StopPoint(
+                    common_name=tfl_stop.name if tfl_stop else "",
+                    latlong=tfl_stop.latlong if tfl_stop else None,
+                )
             trip.stops.append(
                 StopTime(
                     stop=stop,

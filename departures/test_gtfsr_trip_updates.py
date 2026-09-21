@@ -147,6 +147,11 @@ class GTFSRTTest(TestCase):
         with patch("departures.gtfsr.get_trip_updates", return_value=None):
             self.assertIsNone(gtfsr.update_stop_departures((), "ntaie"))
 
+    def test_update_departure_without_stop_time_updates(self):
+        departure = {"stop_time": StopTime(sequence=1)}
+        gtfsr.update_departure(departure, {"trip": {}})
+        self.assertEqual(departure, {"stop_time": departure["stop_time"]})
+
     def test_get_expected_time(self):
         update = {
             "arrival": {"time": "1725349158", "uncertainty": 0},

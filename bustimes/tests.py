@@ -18,6 +18,7 @@ from .models import (
     Version,
 )
 from .utils import get_routes
+from .views import stop_time_json
 
 
 class BusTimesTest(TestCase):
@@ -211,6 +212,17 @@ class BusTimesTest(TestCase):
         time.departure = None
         self.assertEqual(
             time.departure_or_arrival(), timedelta(hours=10, minutes=30, seconds=2)
+        )
+
+    def test_stop_time_json_trip_without_route(self):
+        trip = Trip(start=timedelta(hours=13), end=timedelta(hours=14))
+        stop_time = StopTime(trip=trip, departure=timedelta(hours=13, minutes=30))
+
+        json = stop_time_json(stop_time, date(2026, 9, 18))
+
+        self.assertEqual(json["service"]["line_name"], "")
+        self.assertEqual(
+            json["aimed_departure_time"].isoformat(), "2026-09-18T13:30:00+01:00"
         )
 
     def test_get_routes(self):

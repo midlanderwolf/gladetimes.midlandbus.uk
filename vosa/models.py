@@ -1,5 +1,5 @@
 from django.db import models
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.urls import reverse
 
 
@@ -35,7 +35,9 @@ class Licence(models.Model):
 
     def get_operators(self):
         return (
-            self.operator_set.annotate(services=Count("service", current=True))
+            self.operator_set.annotate(
+                services=Count("service", filter=Q(service__current=True))
+            )
             .filter(services__gt=0)
             .order_by("-services")
         )

@@ -164,7 +164,7 @@ link to a picture to prove it. Be polite.""",
         if vehicle.fleet_code:
             self.fields["fleet_number"].initial = vehicle.fleet_code
         elif vehicle.fleet_number is not None:
-            self.fields["fleet_number"].intial = str(vehicle.fleet_number)
+            self.fields["fleet_number"].initial = str(vehicle.fleet_number)
 
         if vehicle.vehicle_type_id and not vehicle.is_spare_ticket_machine():
             del self.fields["spare_ticket_machine"]

@@ -99,7 +99,7 @@ def apply_trip_update(stops, trip_update: dict) -> None:
 
         if stop_time_update:
             stop_time.update = stop_time_update
-            if stop_time_update["scheduleRelationship"] == "SKIPPED":
+            if stop_time_update.get("scheduleRelationship") == "SKIPPED":
                 continue
             stop_time.expected_arrival = get_expected_time(
                 stop_time.arrival, stop_time_update, "arrival"
@@ -110,16 +110,16 @@ def apply_trip_update(stops, trip_update: dict) -> None:
 
 
 def update_departure(departure: dict, trip_update: dict) -> None:
-    if trip_update["trip"]["scheduleRelationship"] == "CANCELED":
+    if trip_update["trip"].get("scheduleRelationship") == "CANCELED":
         departure["cancelled"] = True
         return
     stop_time_update = None
-    for update in trip_update["stopTimeUpdate"]:
+    for update in trip_update.get("stopTimeUpdate", ()):
         if update["stopSequence"] > departure["stop_time"].sequence:
             break
         stop_time_update = update
     if stop_time_update:
-        if stop_time_update["scheduleRelationship"] == "SKIPPED":
+        if stop_time_update.get("scheduleRelationship") == "SKIPPED":
             departure["cancelled"] = True
         elif "departure" in stop_time_update:
             if (

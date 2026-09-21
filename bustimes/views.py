@@ -218,12 +218,14 @@ def stop_time_json(stop_time, date) -> dict:
     destination = trip.destination
     route = trip.route
 
+    tzinfo = route.timezone if route else None
+
     arrival = stop_time.arrival
     departure = stop_time.departure
     if arrival is not None:
-        arrival = stop_time.arrival_datetime(date, route.timezone)
+        arrival = stop_time.arrival_datetime(date, tzinfo)
     if departure is not None:
-        departure = stop_time.departure_datetime(date, route.timezone)
+        departure = stop_time.departure_datetime(date, tzinfo)
 
     operators = []
     if trip.operator:
@@ -240,7 +242,7 @@ def stop_time_json(stop_time, date) -> dict:
         "id": stop_time.id,
         "trip_id": stop_time.trip_id,
         "service": {
-            "line_name": route.line_name,
+            "line_name": route.line_name if route else "",
             "operators": operators,
         },
         "destination": destination

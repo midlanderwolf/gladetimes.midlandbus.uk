@@ -29,7 +29,7 @@ class Command(GTFSRCommand):
 
         trip_updates = {
             entity["tripUpdate"]["trip"]["tripId"]: entity["tripUpdate"]
-            for entity in json_format.MessageToDict(feed)["entity"]
+            for entity in json_format.MessageToDict(feed).get("entity", ())
             if "tripUpdate" in entity and "tripId" in entity["tripUpdate"]["trip"]
         }
         cache.set("ember_trip_updates", trip_updates, 300)

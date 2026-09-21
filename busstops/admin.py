@@ -352,6 +352,11 @@ class ServiceAdmin(M2MThroughMixin, GISModelAdmin):
     list_select_related = ("colour",)
     actions = ("current_false", "public_use_true", "merge", "unmerge")
 
+    def lookup_allowed(self, lookup, value, request):
+        if lookup == "route__source__source":
+            return True
+        return super().lookup_allowed(lookup, value, request)
+
     @admin.display(ordering="routes")
     def routes(self, obj):
         return obj.routes
