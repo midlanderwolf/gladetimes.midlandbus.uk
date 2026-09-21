@@ -313,7 +313,7 @@ def traces_sampler(context):
             return 1
         url = environ["PATH_INFO"]
     except KeyError:
-        return 0
+        return 0.01
     if url == "/version" or url.startswith(
         ("/vehicles.json", "/stops.json", "/static/", "/journeys/")
     ):

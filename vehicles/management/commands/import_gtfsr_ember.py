@@ -14,12 +14,12 @@ from .import_gtfsr_ie import Command as GTFSRCommand
 class Command(GTFSRCommand):
     source_name = "Ember"
     vehicle_code_scheme = "Ember"
-    wait = 12
+    wait = 17
 
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/London")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-        self.url = "https://api.ember.to/v1/gtfs/realtime/"
+        self.url = "https://api.ember.to/v1/gtfs/realtime/vehicle-positions/"
         return self
 
     def get_items(self):

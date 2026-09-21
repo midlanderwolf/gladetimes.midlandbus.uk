@@ -478,7 +478,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
             keep_journey = False
             if not concurrent and vehicle_identity in self.journeys_ids_ids:
                 journey_identity_id = self.journeys_ids_ids[vehicle_identity]
-                if journey_identity_id == (journey_identity, vehicle.latest_journey_id):
+                if vehicle and journey_identity_id == (journey_identity, vehicle.latest_journey_id):
                     keep_journey = True  # can dumbly keep same latest_journey
 
             if vehicle:
