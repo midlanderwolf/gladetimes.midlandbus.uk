@@ -22,7 +22,9 @@
 {% block fuse %}
 {% if ad %}
 <script src="{{ static('consent.js') }}"></script>
-<script>if(window.top===window.self&&typeof Array.prototype.includes!=="undefined"&&window.__tcfapi){
+<script>(function(){
+    if(window.top!==window.self||!window.__tcfapi){window.noAds=true;return}
+    try{new Function("a=>a?.b??0")}catch(e){window.noAds=true;return}
     var s=document.getElementsByTagName("script")[0];
     var sc=document.createElement("script");
     sc.async=true;
@@ -44,7 +46,7 @@
             document.body.classList.add("no-consent");
         }
     });
-}</script>
+})();</script>
 {% endif %}
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-X2Z0KM7Z5C"></script>
 <script>
@@ -59,6 +61,9 @@ gtag('config', 'G-X2Z0KM7Z5C');
 <body class="{% block bodyclass %}wide{% endblock %}{% if ad is false %} no-ads{% endif %}">
 <script>
 (function () {
+    if (window.noAds) {
+        document.body.classList.add("no-ads");
+    }
     var a = localStorage && localStorage["map-style"];
     var m = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     if (m && (!a || a.endsWith("_satellite")) || a && a.endsWith("_dark")) {
