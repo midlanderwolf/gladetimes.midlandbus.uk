@@ -342,21 +342,23 @@ def status(request):
     }
 
     context["statuses"] = cache.get_many(
-        f"{key}_status"
-        for key in (
-            "bod_avl",
-            "Transport_for_Wales",
-            "Bus_Open_Data",
-            "Todd's_Travel",
-            "Ember",
-            "Realtime_Transport_Operators",
-            "FlixBus",
-            "Irish_Citylink",
-            "Translink",
-            "Stagecoach",
-            "TfE",
-            "jersey",
-        )
+        [
+            f"{key}_status"
+            for key in (
+                "bod_avl",
+                "Transport_for_Wales",
+                "Bus_Open_Data",
+                "Todd's_Travel",
+                "Ember",
+                "Realtime_Transport_Operators",
+                "FlixBus",
+                "Irish_Citylink",
+                "Translink",
+                "Stagecoach",
+                "TfE",
+                "jersey",
+            )
+        ]
     ).items()
 
     return render(

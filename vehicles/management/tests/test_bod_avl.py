@@ -222,7 +222,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 <td>-7300258.0</td>
                 <td>50</td>
                 <td>50</td>
-                <td>0.0</td>
+                <td>0.00</td>
             </tr>
 """
             + "        "
@@ -233,7 +233,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 <td>-7300258.0</td>
                 <td>50</td>
                 <td>0</td>
-                <td>0.0</td>
+                <td>0.00</td>
             </tr>""",
         )
 
