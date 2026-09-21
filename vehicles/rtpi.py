@@ -152,9 +152,8 @@ def get_progress(
         if tzinfo is None and trip.route:
             tzinfo = trip.route.timezone
 
-    start_time = stop_times[0].departure_datetime(date, tzinfo)
-    if start_time is None:
-        start_time = stop_times[0].arrival_datetime(date, tzinfo)
+    if not stop_times:
+        return
 
     route_links = {}
     if "service_id" in item:
