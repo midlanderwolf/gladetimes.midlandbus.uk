@@ -82,6 +82,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         self.journeys_ids = {}
         self.journeys_ids_ids = {}
         self.duplicate_vehicles = set()  # vehicles on 'two journeys at once'
+        self.max_datetime = None  # newest item timestamp in the current update
 
     @staticmethod
     def get_datetime():
@@ -134,6 +135,8 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 logger.warning(
                     "%s: %s: %s is %s from now", timezone.now(), vehicle, dt, dt - now
                 )
+            elif not self.max_datetime or dt > self.max_datetime:
+                self.max_datetime = dt
 
         location = None
         if vehicle is None:
@@ -567,6 +570,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         with sentry_sdk.start_transaction(name=f"{self.source.name} update"):
             now = timezone.localtime()
             self.source.datetime = now
+            self.max_datetime = None
 
             wait = self.wait
 
@@ -597,11 +601,16 @@ class ImportLiveVehiclesCommand(BaseCommand):
         time_taken = (timezone.now() - now).total_seconds()
 
         if self.source_name:
+            timestamp = self.source.datetime
+            if timestamp is now and self.max_datetime:
+                # the feed has no timestamp of its own
+                timestamp = self.max_datetime
+
             self.status.append(
                 Status(
                     now,
-                    self.source.datetime,
-                    now - self.source.datetime,
+                    timestamp,
+                    now - timestamp,
                     total_items,
                     len(changed_items) + len(changed_journey_items),
                     time_taken,

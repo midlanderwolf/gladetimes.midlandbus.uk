@@ -59,6 +59,12 @@ class EdinburghImportTest(TestCase):
                 with self.assertNumQueries(183):
                     command.update()
 
+                # the feed has no timestamp of its own,
+                # so the newest vehicle location timestamp is used
+                self.assertEqual(
+                    str(command.status[-1].timestamp), "2025-12-18 02:47:53+00:00"
+                )
+
                 cassette.rewind()
 
                 # make it think 1 vehicle has moved
