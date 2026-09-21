@@ -27,8 +27,7 @@
 {% if ad %}
 <script src="{% static 'consent.js' %}"></script>
 <script>(function(){
-    if(window.top!==window.self||!window.__tcfapi){window.noAds=true;return}
-    try{new Function("a=>a?.b??0")}catch(e){window.noAds=true;return}
+    if(window.top!==window.self||!window.__tcfapi||!Array.prototype.toSorted){window.noAds=true;return}
     var s=document.getElementsByTagName("script")[0];
     var sc=document.createElement("script");
     sc.async=true;
