@@ -2,7 +2,8 @@ import functools
 import io
 import logging
 import zipfile
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 import requests
 import sentry_sdk
@@ -13,6 +14,7 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_duration
+from django.utils.http import http_date, parse_http_date_safe
 from lxml import etree
 
 from busstops.models import (
@@ -121,7 +123,8 @@ class Command(ImportLiveVehiclesCommand):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.hist = {}
+        self.last_modified = None
+        self.not_modified = False
 
     @staticmethod
     def get_datetime(item):
@@ -612,12 +615,28 @@ class Command(ImportLiveVehiclesCommand):
         return location
 
     def get_items(self):
-        response = self.session.get(self.source.url, timeout=61)
+        headers = {}
+        if self.last_modified:
+            headers["if-modified-since"] = http_date(self.last_modified.timestamp())
+
+        response = self.session.get(self.source.url, headers=headers, timeout=61)
         fetched_at = timezone.now()
+
+        self.not_modified = response.status_code == HTTPStatus.NOT_MODIFIED
+        if self.not_modified:
+            return
 
         if not response.ok:
             logger.warning("%s %s %s", response, response.headers, response.content)
-            return []
+            return
+
+        # when this archive was published - a steadier guide to when to poll
+        # next than the ResponseTimestamp inside it, which lags it by a
+        # variable amount depending on which cycle the archiver caught
+        if last_modified := parse_http_date_safe(
+            response.headers.get("last-modified", "")
+        ):
+            self.last_modified = datetime.fromtimestamp(last_modified, UTC)
 
         if response.headers["content-type"] == "application/zip":
             with (
@@ -649,10 +668,8 @@ class Command(ImportLiveVehiclesCommand):
 
         items = None
         if not self.source.datetime or self.source.datetime > fetched_at:
-            # ResponseTimestamp is missing, or implausibly fresh (e.g. a clock
-            # issue upstream) - fall back to the latest RecordedAtTime among
-            # the vehicle activities, since that's what actually drives the
-            # freshness/polling logic in update() below
+            # ResponseTimestamp is missing, or implausibly fresh -
+            # fall back to the newest RecordedAtTime
             items = [
                 _elem_to_dict(a)
                 for a in service_delivery.find(
@@ -733,10 +750,16 @@ class Command(ImportLiveVehiclesCommand):
                     self.session = requests.Session()
                     return 30
 
+            if self.not_modified:
+                # nothing new published yet, and the 304 cost us nothing,
+                # so try again shortly rather than waiting out the cycle
+                since = (timezone.now() - self.last_modified).total_seconds()
+                if since < 20:
+                    return 0.5
+                return 10 - (since % 10) + 0.5
+
             age = int((now - self.source.datetime).total_seconds())
             if age > 0:
-                self.hist[now.second % 10] = age
-                logger.info(self.hist)
                 logger.info(
                     f"{now.second=} {age=}  {total_items=}  {len(changed_items)=}  {len(changed_journey_items)=}"
                 )
@@ -773,24 +796,12 @@ class Command(ImportLiveVehiclesCommand):
 
             logger.info(f"{time_taken=}")
 
-            if time_taken > 11:
-                return 0
+            # BODS `create_siri_zip` runs every 10 seconds
+            # - aim for just after the next run
+            if self.last_modified:
+                since = (timezone.now() - self.last_modified).total_seconds()
+                wait = 10 - (since % 10) + 0.5
+                logger.info(f"{since=} {wait=}")
+                return wait
 
-            # bods updates "every 10 seconds",
-            # it's usually worth waiting 0-9 seconds
-            # before the next fetch
-            # for maximum freshness:
-
-            if age > 1:
-                witching_hour = min(self.hist, key=self.hist.get)
-                worst_hour = max(self.hist, key=self.hist.get)
-                now = timezone.now().second % 10
-                wait = witching_hour - now
-                if wait <= 0:
-                    wait += 10
-                diff = worst_hour - witching_hour
-                logger.info(f"{witching_hour=} {worst_hour=} {diff=} {now=} {wait=}")
-                if diff % 10 == 9:
-                    return wait
-
-            return max(11 - time_taken, 0)
+            return max(0, 11 - time_taken)

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -149,6 +150,36 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             command.get_operator("FOO").values("noc"),
             [{"noc": "WHIP"}, {"noc": "TGTC"}],
         )
+
+    @time_machine.travel("2020-05-01T00:00:11+00:00", tick=False)
+    def test_not_modified(self):
+        # each cycle is a new object, so a 304 means the redirect still points
+        # at the archive we already have - don't download it again
+        command = import_bod_avl.Command()
+        command.source = self.source
+        command.source.datetime = datetime(2020, 5, 1, tzinfo=UTC)
+        command.last_modified = datetime(2020, 5, 1, tzinfo=UTC)
+
+        response = mock.Mock(status_code=304, content=b"")
+        with mock.patch.object(command.session, "get", return_value=response) as get:
+            self.assertIsNone(command.get_items())
+
+        self.assertTrue(command.not_modified)
+        self.assertEqual(
+            get.call_args.kwargs["headers"]["if-modified-since"],
+            "Fri, 01 May 2020 00:00:00 GMT",
+        )
+        # unchanged, so the next wait is still calculated from it
+        self.assertEqual(command.last_modified, datetime(2020, 5, 1, tzinfo=UTC))
+
+        # 11s since it was published - check again shortly, don't wait it out
+        with mock.patch.object(command.session, "get", return_value=response):
+            self.assertEqual(command.update(), 0.5)
+
+        # but if BODS has stalled, fall back to the 10 second grid
+        command.last_modified = datetime(2020, 4, 30, 23, 59, 36, tzinfo=UTC)
+        with mock.patch.object(command.session, "get", return_value=response):
+            self.assertEqual(command.update(), 5.5)
 
     @time_machine.travel("2020-05-01", tick=False)
     def test_new_bod_avl_a(self):
@@ -1175,7 +1206,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             self.assertLogs("vehicles.management.commands.import_bod_avl", "WARNING"),
         ):
             items = command.get_items()
-        self.assertEqual(items, [])
+        self.assertIsNone(items)
 
     def test_tfw_bods_coexistence(self):
         tfw = DataSource.objects.create(name="Transport for Wales")
