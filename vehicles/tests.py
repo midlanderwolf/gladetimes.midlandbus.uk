@@ -6,7 +6,7 @@ import fakeredis
 import time_machine
 from django.contrib.auth.models import Permission
 from django.contrib.gis.geos import Point
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import User
@@ -22,6 +22,7 @@ from .models import (
     VehicleRevisionFeature,
     VehicleType,
 )
+from .utils import calculate_bearing
 
 
 @patch(
@@ -1170,3 +1171,24 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
             response = self.client.get("/vehicles.json?id=1,2")
         self.assertEqual(response.json(), [])
         self.assertEqual(response.headers["ETag"], '"d751713988987e9331980363e24189ce"')
+
+
+class CalculateBearingTest(SimpleTestCase):
+    def test_cardinal_directions(self):
+        origin = Point(-0.1, 51.5)
+        for expected, point in (
+            (0, Point(-0.1, 52.5)),
+            (90, Point(0.4, 51.5)),
+            (180, Point(-0.1, 50.5)),
+            (270, Point(-0.6, 51.5)),
+        ):
+            with self.subTest(expected=expected):
+                self.assertEqual(calculate_bearing(origin, point), expected)
+
+    def test_great_circle(self):
+        # far enough apart that the longitude difference matters
+        self.assertEqual(calculate_bearing(Point(-0.1, 51.5), Point(29.9, 51.5)), 78)
+        self.assertEqual(calculate_bearing(Point(29.9, 51.5), Point(-0.1, 51.5)), 282)
+
+    def test_same_point(self):
+        self.assertEqual(calculate_bearing(Point(-0.1, 51.5), Point(-0.1, 51.5)), 0)

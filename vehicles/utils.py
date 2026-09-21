@@ -54,7 +54,7 @@ def calculate_bearing(a, b):
     y = math.sin(b_lon - a_lon) * math.cos(b_lat)
     x = math.cos(a_lat) * math.sin(b_lat) - math.sin(a_lat) * math.cos(
         b_lat
-    ) * math.cos(b_lon - b_lon)
+    ) * math.cos(b_lon - a_lon)
 
     bearing_radians = math.atan2(y, x)
     bearing_degrees = math.degrees(bearing_radians)
