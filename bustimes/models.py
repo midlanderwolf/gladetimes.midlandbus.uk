@@ -69,7 +69,7 @@ class Version(models.Model):
         indexes = (models.Index(fields=("source", "start_date", "end_date")),)
 
     def __str__(self):
-        return self.name
+        return self.name or ""
 
 
 class Route(models.Model):
@@ -498,7 +498,7 @@ class StopTime(models.Model):
         )
 
     def __str__(self):
-        return format_timedelta(self.arrival_or_departure())
+        return format_timedelta(self.arrival_or_departure()) or ""
 
     def __repr__(self):
         return f"<StopTime: {self.pk} {self.stop_id} {self}>"

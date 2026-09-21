@@ -1106,7 +1106,7 @@ class Cell:
         return self.stoptime.departure_or_arrival()
 
     def __repr__(self):
-        return format_timedelta(self.arrival, plus_one=True)
+        return format_timedelta(self.arrival, plus_one=True) or ""
 
     def departure_time(self):
         return format_timedelta(self.departure, plus_one=True)

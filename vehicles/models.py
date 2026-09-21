@@ -718,7 +718,8 @@ class VehicleJourney(models.Model):
         return f"/vehicles/{self.vehicle_id}?date={self.date}#journey-{self.id}"
 
     def __str__(self):
-        when = f"{self.datetime:%-d %b %y %H:%M} {self.route_name} {self.code} {self.direction}"
+        date = f"{self.datetime:%-d %b %y %H:%M}" if self.datetime else ""
+        when = f"{date} {self.route_name} {self.code} {self.direction}"
         if self.destination:
             when = f"{when} to {self.destination}"
         return when
@@ -788,9 +789,12 @@ class VehicleLocation:
         self.occupancy_thresholds = None
         self.block = block
         self.tfl_code = None
+        self.datetime = None
 
     def __str__(self):
-        return f"{self.datetime:%-d %b %Y %H:%M:%S}"
+        if self.datetime:
+            return f"{self.datetime:%-d %b %Y %H:%M:%S}"
+        return ""
 
     class Meta:
         ordering = ("id",)
