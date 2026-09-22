@@ -1,24 +1,13 @@
-import functools
-
-from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.db.models import Q
-from django.utils import timezone
 
-from busstops.models import Service, Operator, StopPoint
+from busstops.models import Service, Operator
 from bustimes.models import Route
 
 from ...models import VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
 from .import_bod_avl import get_line_name_query
-
-
-@functools.cache
-def get_destination_ref(destination_name: str) -> str:
-    if not destination_name:
-        return ""
-    stop = StopPoint.objects.filter(common_name__icontains=destination_name).first()
-    return stop.atco_code if stop else ""
+from .guess_trips import Command as GuessTripsCommand
 
 
 class Command(ImportLiveVehiclesCommand):
@@ -128,31 +117,9 @@ class Command(ImportLiveVehiclesCommand):
             route = Route.objects.filter(service=journey.service).first()
             if route:
                 if direction == "outbound":
-                    dest_name = route.destination or route.outbound_description.split(" to ")[-1] if " to " in route.outbound_description else ""
+                    journey.destination = "Starr Gate"
                 else:
-                    dest_name = route.origin or route.inbound_description.split(" to ")[-1] if " to " in route.inbound_description else ""
-                if dest_name:
-                    journey.destination = dest_name
-
-            nearest_stop = (
-                StopPoint.objects.filter(
-                    latlong__isnull=False,
-                    naptan_code__isnull=False,
-                )
-                .annotate(distance=Distance("latlong", point))
-                .order_by("distance")
-                .first()
-            )
-
-            destination_ref = get_destination_ref(journey.destination)
-
-            if nearest_stop:
-                journey.trip = journey.get_trip(
-                    datetime=timezone.localtime(),
-                    approximate_datetime=True,
-                    next_stop=nearest_stop.naptan_code,
-                    destination_ref=destination_ref,
-                )
+                    journey.destination = "Fleetwood Ferry"
 
         return journey
 
@@ -161,3 +128,12 @@ class Command(ImportLiveVehiclesCommand):
             latlong=Point(item["geometry"]["coordinates"]),
             heading=item["properties"].get("bearing"),
         )
+
+    def update(self):
+        wait = super().update()
+        self.guess_trips()
+        return wait
+
+    def guess_trips(self):
+        guess_command = GuessTripsCommand()
+        guess_command.handle(source=self.source_name, limit=500)

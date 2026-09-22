@@ -401,7 +401,9 @@ def stagecoach(specific_operator=None):
 
     timetable_data_sources = TimetableDataSource.objects.filter(
         Q(url__startswith="https://opendata.stagecoachbus.com/")
-        | Q(url__startswith="https://cdn.midlandbus.uk/"),
+        | Q(url__startswith="https://cdn.midlandbus.uk/")
+        | Q(url__endswith="/TfGMtxcnew.zip"),
+        
         active=True,
     )
     if specific_operator:

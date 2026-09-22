@@ -782,18 +782,19 @@ class Command(BaseCommand):
                 date_range=date_range, operation=True, special=True
             )
 
-            difference = date_range.end - date_range.start
-            if operating_profile.regular_days and difference > datetime.timedelta(
-                days=5
-            ):
-                # looks like this SpecialDaysOperation was meant to be treated like a ServicedOrganisation?
-                # (school term dates etc)
-                # calendar_date.special = False
-                logger.warning(
-                    "%s is %s days long",
-                    date_range,
-                    difference.days,
-                )
+            if date_range.end:
+                difference = date_range.end - date_range.start
+                if operating_profile.regular_days and difference > datetime.timedelta(
+                    days=5
+                ):
+                    # looks like this SpecialDaysOperation was meant to be treated like a ServicedOrganisation?
+                    # (school term dates etc)
+                    # calendar_date.special = False
+                    logger.warning(
+                        "%s is %s days long",
+                        date_range,
+                        difference.days,
+                    )
             calendar_dates.append(calendar_date)
 
         bank_holidays = {}  # a dictionary to remove duplicates! (non-operation overrides operation)
@@ -858,7 +859,7 @@ class Command(BaseCommand):
             if not date.start_date:
                 logger.warning(date)
                 continue
-            if date.end_date < date.start_date:
+            if date.end_date and date.end_date < date.start_date:
                 logger.warning(date)
                 continue
             good_calendar_dates.append(date)
