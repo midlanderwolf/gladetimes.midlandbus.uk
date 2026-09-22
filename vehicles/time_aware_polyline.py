@@ -8,7 +8,7 @@ def get_coordinate_for_polyline(coordinate):
     """
     Location coordinate to int representation
     """
-    return int(round(coordinate * 1e5))
+    return round(coordinate * 1e5)
 
 
 def get_coordinate_from_polyline(int_representation):

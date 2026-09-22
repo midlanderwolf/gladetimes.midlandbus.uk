@@ -61,3 +61,11 @@
 .long.wide {
     column-count: 1;
 }
+
+.vehicle-photo {
+    width: 160px;
+}
+
+.vehicle-photo + h1 + .contact-details > div:first-child {
+    max-width: calc(100% - 160px - 1em);
+}

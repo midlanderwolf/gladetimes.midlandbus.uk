@@ -1,16 +1,22 @@
 from pathlib import Path
+from unittest.mock import patch
+
 import fakeredis
 import time_machine
 import vcr
-from unittest.mock import patch
-from django.test import TestCase
 from django.core.management import call_command
-from busstops.models import Region, Operator, StopPoint
+from django.test import TestCase
+
+from busstops.models import Operator, Region, StopPoint
 
 from ...models import VehicleJourney
-
+from .test_bod_avl import CapturingChannelLayer, distribute, patch_redis_client
 
 VCR_DIR = Path(__file__).resolve().parent / "vcr"
+
+
+class StopLoop(Exception):
+    """raised to break out of the command's polling loop in tests"""
 
 
 class JerseyImportTest(TestCase):
@@ -46,34 +52,48 @@ class JerseyImportTest(TestCase):
     )
     @time_machine.travel("2025-10-15T10:20:00Z")
     def test_handle(self):
-        redis_client = fakeredis.FakeStrictRedis(version=7)
+        server = fakeredis.FakeServer()
+        async_redis_client = fakeredis.FakeAsyncRedis(server=server, version=7)
+        redis_client = fakeredis.FakeStrictRedis(server=server, version=7)
+        channel_layer = CapturingChannelLayer()
 
         with (
-            patch(
-                "vehicles.management.import_live_vehicles.redis_client", redis_client
-            ),
+            patch_redis_client(redis_client),
             patch(
                 "vehicles.management.import_live_vehicles.sleep",
-                side_effect=[None, None, Exception],
+                side_effect=[None, None, StopLoop],
             ),
-            self.assertRaises(Exception),
+            self.assertRaises(StopLoop),
+            patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=channel_layer,
+            ),
         ):
             call_command("import_live_jersey")
 
-        with patch("vehicles.views.redis_client", redis_client):
+        with (
+            patch("vehicles.views.redis_client", redis_client),
+            patch("api.views.redis_client", redis_client),
+        ):
             positions = self.client.get("/vehicles.json").json()
             self.assertEqual(positions[0]["datetime"], "2025-10-15T11:16:36+01:00")
             self.assertEqual(positions[1]["datetime"], "2025-10-15T11:16:51+01:00")
             self.assertEqual(positions[2]["datetime"], "2025-10-15T11:13:42+01:00")
 
+            distribute(channel_layer, async_redis_client)
+
             journey = VehicleJourney.objects.get(route_name="12")
-            response = self.client.get(f"/journeys/{journey.id}.json")
-            self.assertEqual(2, len(response.json()["locations"]))
+            response = self.client.get(f"/api/vehiclejourneys/{journey.id}/details/")
+            self.assertEqual(
+                "~mlL}fgkHe|x||gB|m@tXaJ", response.json()["time_aware_polyline"]
+            )
 
             journey = VehicleJourney.objects.get(route_name="12A")
-            response = self.client.get(f"/journeys/{journey.id}.json")
-            self.assertEqual(2, len(response.json()["locations"]))
+            response = self.client.get(f"/api/vehiclejourneys/{journey.id}/details/")
+            self.assertEqual(
+                "r|`LwahkHs|x||gB`mBfKqJ", response.json()["time_aware_polyline"]
+            )
 
             journey = VehicleJourney.objects.get(route_name="15")
-            response = self.client.get(f"/journeys/{journey.id}.json")
-            self.assertEqual(1, len(response.json()["locations"]))
+            response = self.client.get(f"/api/vehiclejourneys/{journey.id}/details/")
+            self.assertEqual("ji}KotfkHk|x||gB", response.json()["time_aware_polyline"])

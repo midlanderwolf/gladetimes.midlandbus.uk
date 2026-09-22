@@ -1,5 +1,5 @@
 from django.db import models
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.urls import reverse
 
 
@@ -23,11 +23,11 @@ class Description(models.TextChoices):
 class Licence(models.Model):
     name = models.CharField(max_length=255)
     trading_name = models.CharField(max_length=255, blank=True)
-    traffic_area = models.CharField(max_length=1, choices=TrafficArea.choices)
+    traffic_area = models.CharField(max_length=1, choices=TrafficArea)
     licence_number = models.CharField(max_length=20, unique=True)
     discs = models.PositiveSmallIntegerField(null=True)
     authorised_discs = models.PositiveSmallIntegerField(null=True)
-    description = models.CharField(max_length=22, choices=Description.choices)
+    description = models.CharField(max_length=22, choices=Description)
     granted_date = models.DateField(null=True, blank=True)
     expiry_date = models.DateField(null=True, blank=True)
     address = models.TextField()
@@ -35,7 +35,9 @@ class Licence(models.Model):
 
     def get_operators(self):
         return (
-            self.operator_set.annotate(services=Count("service", current=True))
+            self.operator_set.annotate(
+                services=Count("service", filter=Q(service__current=True))
+            )
             .filter(services__gt=0)
             .order_by("-services")
         )
@@ -48,7 +50,7 @@ class Licence(models.Model):
 
 
 class Registration(models.Model):
-    licence = models.ForeignKey(Licence, models.CASCADE)
+    licence = models.ForeignKey(Licence, models.DB_CASCADE)
     registration_number = models.CharField(max_length=20, unique=True)
     service_number = models.CharField(max_length=100, blank=True)
     start_point = models.CharField(max_length=255, blank=True)
@@ -62,15 +64,13 @@ class Registration(models.Model):
     authority_description = models.CharField(max_length=255, blank=True)
     registered = models.BooleanField()
     latest_variation = models.ForeignKey(
-        "Variation", models.SET_NULL, null=True, blank=True, related_name="latest"
+        "Variation", models.DB_SET_NULL, null=True, blank=True, related_name="latest"
     )
 
     def __str__(self):
-        string = "{} - {} to {}".format(
-            self.service_number, self.start_point, self.finish_point
-        )
+        string = f"{self.service_number} - {self.start_point} to {self.finish_point}"
         if self.via:
-            string = "{} via {}".format(string, self.via)
+            string = f"{string} via {self.via}"
         return string
 
     def get_absolute_url(self):
@@ -78,7 +78,7 @@ class Registration(models.Model):
 
 
 class Variation(models.Model):
-    registration = models.ForeignKey(Registration, models.CASCADE)
+    registration = models.ForeignKey(Registration, models.DB_CASCADE)
     variation_number = models.PositiveSmallIntegerField()
     effective_date = models.DateField(null=True, blank=True)
     date_received = models.DateField(null=True, blank=True)

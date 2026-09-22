@@ -4,7 +4,9 @@
         {% if not vehicle %}
             <a href="{{ revision.vehicle.get_absolute_url }}">{{ revision.vehicle }}</a> &centerdot;
         {% endif %}
-        {{ revision.created_at|naturaltime }}
+        <time datetime="{{ revision.created_at.isoformat }}" title="{{ revision.created_at|date:'j M Y H:i' }}">
+            {{ revision.created_at|naturaltime }}
+        </time>
         {% if revision.user %}
             &centerdot; <a href="{{ revision.user.get_absolute_url }}">{{ revision.user }}</a>
         {% endif %}
@@ -36,17 +38,17 @@ https://gladetimes{% url 'admin:vehicles_vehiclerevision_change' revision.pk %}
             {% endif %}
     {% endif %}
 
-    <p class="actions" hx-target="#revision-{{ revision.id }}">
+    <p class="actions" data-hx-target="#revision-{{ revision.id }}">
         {% if revision.pending %}
             {% if revision.user_id == user.id %}
-                <button type="button" class="button" hx-post="{% url 'vehicle_revision_action' revision.id 'disapprove' %}">⚠️ Cancel</button>
+                <button type="button" class="button" data-hx-post="{% url 'vehicle_revision_action' revision.id 'disapprove' %}">⚠️ Cancel</button>
             {% elif user.trusted %}
-                <button type="button" class="button" hx-post="{% url 'vehicle_revision_action' revision.id 'apply' %}" hx-prompt="Reason for approving">👍 Apply changes</button>
-                <button type="button" class="button" hx-post="{% url 'vehicle_revision_action' revision.id 'disapprove' %}" hx-prompt="Reason for declining">⚠️ Decline</button>
+                <button type="button" class="button" data-hx-post="{% url 'vehicle_revision_action' revision.id 'apply' %}" data-hx-prompt="Reason for approving">👍 Apply changes</button>
+                <button type="button" class="button" data-hx-post="{% url 'vehicle_revision_action' revision.id 'disapprove' %}" data-hx-prompt="Reason for declining">⚠️ Decline</button>
             {% else %}
                 Pending
             {% endif %}
         {% elif user.trusted and revision.disapproved and revision.approved_by_id == user.id or user.is_superuser %}
-            <button type="button" class="button" hx-post="{% url 'vehicle_revision_action' revision.id 'apply' %}" hx-prompt="Reason for approving">👍 Apply changes</button>
+            <button type="button" class="button" data-hx-post="{% url 'vehicle_revision_action' revision.id 'apply' %}" data-hx-prompt="Reason for approving">👍 Apply changes</button>
         {% endif %}
 </li>

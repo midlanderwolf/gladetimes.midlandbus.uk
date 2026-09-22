@@ -1,4 +1,4 @@
-from datetime import timedelta, datetime
+from datetime import datetime, timedelta
 
 from django.contrib.gis.geos import GEOSGeometry
 from django.db.models import Q
@@ -10,7 +10,7 @@ from ..import_live_vehicles import ImportLiveVehiclesCommand
 
 
 def parse_date(date):
-    return datetime.strptime(date, "%d.%m.%Y").date()
+    return datetime.strptime(date, "%d.%m.%Y").date()  # noqa: DTZ007
 
 
 class Command(ImportLiveVehiclesCommand):
@@ -35,6 +35,7 @@ class Command(ImportLiveVehiclesCommand):
     @staticmethod
     def get_journey_identity(item):
         return (
+            item["DayOfOperation"],
             item["JourneyIdentifier"],
             item["DirectionText"],
             item["LineText"],
@@ -104,8 +105,13 @@ class Command(ImportLiveVehiclesCommand):
             ).first()
 
         if journey.service:
-            journey.trip = journey.get_trip(date=parse_date(item["DayOfOperation"]))
-            print(journey.trip)
+            journey.trip = journey.get_trip(
+                date=parse_date(item["DayOfOperation"]),
+                journey_code=journey.code,
+                next_stop=item.get("CurrentStop"),
+                approximate_datetime=True,
+                datetime=self.get_datetime(item),
+            )
 
         return journey
 

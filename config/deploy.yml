@@ -15,18 +15,18 @@ servers:
     hosts:
       - 10.131.240.93
       - 10.131.240.98
-      - 10.131.240.99
-      - 10.131.240.100
-      - 10.131.240.101
+    options:
+      ulimit: nofile=65536:65536
     env:
       clear:
-        WEB_CONCURRENCY: 8
+        GRANIAN_WORKERS: 8
+        GRANIAN_BLOCKING_THREADS: 8
+        GRANIAN_BACKPRESSURE: 8
         EMAIL_HOST: email-smtp.eu-west-1.amazonaws.com
         ALLOWED_HOSTS: bustimes.org
       secret:
         - SECRET_KEY
         - DATABASE_URL
-        - READ_ONLY_DB_HOST
         - REDIS_URL
         - SENTRY_DSN
         - TURNSTILE_SECRET
@@ -37,10 +37,23 @@ servers:
         - NTA_API_KEY
         - AWS_ACCESS_KEY_ID
         - AWS_SECRET_ACCESS_KEY
-        - STADIA_MAPS_API_KEY
         - FLICKR_API_KEY
 
 accessories:
+  # re-exposes the web containers' granian metrics on port 9394 for prometheus
+  metrics:
+    image: otel/opentelemetry-collector-contrib:0.159.0
+    roles:
+      - web
+    port: 9394:9394
+    files:
+      - config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    options:
+      # the image runs as an unprivileged user, which can't read the docker socket
+      user: "0:0"
+
   tileserver:
     image: maptiler/tileserver-gl-light
     host: 167.99.89.1

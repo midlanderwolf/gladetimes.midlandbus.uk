@@ -1,22 +1,22 @@
-import json
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import defaultdict
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import requests
 import folium
+import requests
 from django.conf import settings
 from django.contrib.admin.views.decorators import staff_member_required
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.core.cache import cache
+from django.core.files.storage import storages
 from django.db.models import (
     Count,
-    Prefetch,
-    prefetch_related_objects,
     F,
-    Q,
     FilteredRelation,
+    Prefetch,
+    Q,
+    prefetch_related_objects,
 )
 from django.db.models.functions import Coalesce
 from django.http import (
@@ -24,7 +24,6 @@ from django.http import (
     Http404,
     HttpResponse,
     HttpResponseBadRequest,
-    JsonResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -32,28 +31,29 @@ from django.utils.safestring import mark_safe
 from django.views.decorators.http import require_GET
 from django.views.generic.detail import DetailView
 from django.views.generic.list import ListView
-from pygments import highlight
-from pygments.formatters import HtmlFormatter
-from pygments.lexers import JsonLexer, XmlLexer
+from django_orjson.http import JsonResponse
 from rest_framework.renderers import JSONRenderer
 
 from api.serializers import TripSerializer
 from api.views import TripViewSet
+from buses.utils import format_json, format_xml
 from busstops.models import (
     DataSource,
+    Locality,
     Operator,
     Service,
     StopArea,
     StopPoint,
 )
 from departures import avl, gtfsr, live
-from vehicles.forms import DateForm
+from vehicles.forms import DateForm, TripUpdatesFeedForm
 from vehicles.models import Vehicle, VehicleJourney
 from vehicles.rtpi import add_progress_and_delay
 
-from .download_utils import download
-from .models import Route, StopTime, Trip, RouteLink
-from .utils import get_other_trips_in_block
+from .forms import UploadGTFSForm
+from .gtfs_utils import handle_gtfs_upload
+from .models import Route, RouteLink, StopTime, Trip
+from .utils import get_calendars, get_other_trips_in_block
 
 
 class ServiceDebugView(DetailView):
@@ -94,7 +94,9 @@ class ServiceDebugView(DetailView):
         context["routes"] = routes
 
         context["stopusages"] = self.object.stopusage_set.select_related(
-            "stop__locality"
+            "stop"
+        ).prefetch_related(
+            Prefetch("stop__locality", queryset=Locality.objects.only("name"))
         )
 
         context["breadcrumb"] = [self.object]
@@ -127,18 +129,6 @@ def route_link_view(request, pk):
     )
 
     return HttpResponse(m.get_root().render())
-
-
-def maybe_download_file(local_path, s3_key):
-    if not local_path.exists():
-        import boto3
-
-        if not local_path.parent.exists():
-            local_path.parent.mkdir(parents=True)
-        client = boto3.client("s3", endpoint_url="https://ams3.digitaloceanspaces.com")
-        client.download_file(
-            Bucket="bustimes-data", Key=s3_key, Filename=str(local_path)
-        )
 
 
 class SourceListView(ListView):
@@ -174,102 +164,53 @@ class SourceDetailView(DetailView):
         return context
 
 
+def open_source_file(source, code):
+    """Return the file that `source` was imported from, and the path within it
+    (if it's an archive) that `code` refers to
+    """
+
+    try:
+        return storages["archive"].open(source.get_archive_path()), code
+    except FileNotFoundError:
+        raise Http404(f"{source} hasn't been archived")
+
+
 @require_GET
 @login_required
 def route_xml(request, source, code=""):
-    """A way of viewing the TransXChange document* behind a route,
+    """A way of viewing the TransXChange document behind a route,
     for debugging purposes
-
-    Ideally should work by downloading the file from bustimes.org's archive on
-    S3 (or an S3-compatible object storage service), rather than repeatedly
-    downloading from the original source.
-
-    * in theory also works for ATCO-CIF. but not GTFS
     """
 
     source = get_object_or_404(DataSource, id=source)
 
-    if not source.datetime:
-        raise Http404
-
-    if source.is_tnds():
-        filename = Path(source.url).name
-        path = settings.DATA_DIR / "TNDS" / filename
-        maybe_download_file(path, source.get_s3_path())
-        with zipfile.ZipFile(path) as archive:
-            if code:
-                if code.endswith(".zip"):
-                    archive = zipfile.ZipFile(archive.open(code))
-                    code = ""
-
-                elif ".zip/" in code:
-                    sub_archive, code = code.split("/", 1)
-                    archive = zipfile.ZipFile(archive.open(sub_archive))
-
-            if code:
-                try:
-                    return FileResponse(archive.open(code), content_type="text/plain")
-                except KeyError as e:
-                    raise Http404(e)
-            return HttpResponse(
-                "\n".join(archive.namelist()), content_type="text/plain"
-            )
-
-    content_type = "application/xml"
-
-    if "stagecoach" in source.url:
-        path = settings.DATA_DIR / source.url.split("/")[-1]
-        if not path.exists():
-            if not path.parent.exists():
-                path.parent.mkdir()
-            download(path, source.url)
-    elif code != source.name:
-        url = source.url
-        if source.url.startswith("https://opendata.ticketer.com/uk/"):
-            path = source.url.split("/")[4]
-            path = settings.DATA_DIR / "ticketer" / f"{path}.zip"
-        elif source.url.startswith(
-            "https://data.bus-data.dft.gov.uk/timetable/dataset/"
-        ):
-            path = settings.DATA_DIR / "bod" / str(source.id)
-        elif "data.discoverpassenger" in source.url and "/" in code:
-            path, code = code.split("/", 1)
-            url = f"https://s3-eu-west-1.amazonaws.com/passenger-sources/{path.split('_')[0]}/txc/{path}"
-            path = settings.DATA_DIR / path
-        elif source.url.startswith("https://www.opendatani.gov.uk/"):
-            path = settings.DATA_DIR / f"{source.id}.zip"
-            url = None
-            content_type = "text/plain"
-        else:
-            raise Http404
-        if not path.exists():
-            if not path.parent.exists():
-                path.parent.mkdir(parents=True)
-            download(path, url)
-    elif "/" in code:
-        path = code.split("/")[0]  # archive name
-        code = code[len(path) + 1 :]
-        path = settings.DATA_DIR / path
-    else:
-        path = None
-
-    if path:
-        if code:
-            with zipfile.ZipFile(path) as archive:
-                return FileResponse(archive.open(code), content_type=content_type)
-    else:
-        path = settings.DATA_DIR / code
+    open_file, code = open_source_file(source, code)
 
     try:
-        with zipfile.ZipFile(path) as archive:
+        archive = zipfile.ZipFile(open_file)
+    except zipfile.BadZipFile:
+        # not an archive, just a plain XML file
+        open_file.seek(0)
+        # FileResponse automatically closes the file
+        return FileResponse(open_file, content_type="application/xml")
+
+    if code.endswith(".zip"):
+        archive = zipfile.ZipFile(archive.open(code))
+        code = ""
+    elif ".zip/" in code:
+        name, code = code.split("/", 1)
+        archive = zipfile.ZipFile(archive.open(name))
+
+    if not code:
+        with archive:
             return HttpResponse(
                 "\n".join(archive.namelist()), content_type="text/plain"
             )
-    except zipfile.BadZipFile:
-        pass
 
-    # FileResponse automatically closes the file
-    return FileResponse(open(path, "rb"), content_type=content_type)
+    try:
+        return FileResponse(archive.open(code), content_type="application/xml")
+    except KeyError as e:
+        raise Http404(e)
 
 
 def stop_time_json(stop_time, date) -> dict:
@@ -277,12 +218,14 @@ def stop_time_json(stop_time, date) -> dict:
     destination = trip.destination
     route = trip.route
 
+    tzinfo = route.timezone if route else None
+
     arrival = stop_time.arrival
     departure = stop_time.departure
     if arrival is not None:
-        arrival = stop_time.arrival_datetime(date, route.timezone)
+        arrival = stop_time.arrival_datetime(date, tzinfo)
     if departure is not None:
-        departure = stop_time.departure_datetime(date, route.timezone)
+        departure = stop_time.departure_datetime(date, tzinfo)
 
     operators = []
     if trip.operator:
@@ -299,7 +242,7 @@ def stop_time_json(stop_time, date) -> dict:
         "id": stop_time.id,
         "trip_id": stop_time.trip_id,
         "service": {
-            "line_name": route.line_name,
+            "line_name": route.line_name if route else "",
             "operators": operators,
         },
         "destination": destination
@@ -459,29 +402,22 @@ def stop_debug(request, atco_code: str):
     )
 
     responses = []
+    css = ""
 
-    formatter = HtmlFormatter()
-    css = formatter.get_style_defs()
-
-    for key, response in cache.get_many(
+    for response in cache.get_many(
         [
             f"TflDepartures:{stop.pk}",
             f"SiriSmDepartures:{stop.pk}",
         ]
-    ).items():
+    ).values():
         response_text = response.text
         # syntax-highlight and pretty-print XML and JSON responses
         try:
             # XML
-            ET.register_namespace("", "http://www.siri.org.uk/siri")
-            xml = ET.XML(response.text)
-            ET.indent(xml)
-            response_text = ET.tostring(xml).decode()
-            response_text = mark_safe(highlight(response_text, XmlLexer(), formatter))
+            response_text, css = format_xml(response.text)
         except ET.ParseError:
             # JSON
-            response_text = json.dumps(response.json(), indent=2)
-            response_text = mark_safe(highlight(response_text, JsonLexer(), formatter))
+            response_text, css = format_json(response.text)
         responses.append(
             {"url": response.url, "text": response_text, "headers": response.headers}
         )
@@ -693,7 +629,7 @@ def tfl_vehicle(request, reg: str):
             atco_code = item["naptanId"]
 
             if stop := (stops.get(atco_code) or stops.get(f"0{atco_code}")):
-                item["sequence"] = (getattr(stop, "sequence") or 0) + prev_trip_sequence
+                item["sequence"] = (stop.sequence or 0) + prev_trip_sequence
             else:
                 item["sequence"] = prev_sequence
 
@@ -708,7 +644,9 @@ def tfl_vehicle(request, reg: str):
 
     route_links = {
         (link.from_stop_id, link.to_stop_id): link
-        for link in (service.routelink_set.all() if service else ())
+        for link in (
+            service.routelink_set.filter(from_stop__in=atco_codes) if service else ()
+        )
     }
 
     times = []
@@ -718,13 +656,15 @@ def tfl_vehicle(request, reg: str):
             datetime.fromisoformat(item["expectedArrival"])
         )
         expected_arrival = round(expected_arrival.timestamp() / 60) * 60
-        expected_arrival = datetime.fromtimestamp(expected_arrival)
+        expected_arrival = datetime.fromtimestamp(
+            expected_arrival, tz=timezone.get_current_timezone()
+        )
         time = {
             "id": i,
             "stop": {
                 "name": item["stationName"],
             },
-            "expected_arrival_time": str(expected_arrival.time())[:5],
+            "expected_arrival_time": expected_arrival,
         }
         atco_code = item["naptanId"]
 
@@ -785,43 +725,113 @@ trip_updates_sources = {
 
 @require_GET
 def trip_updates_json(request, feed_name: str):
-    if feed_name in trip_updates_sources:
-        if feed := cache.get(f"{feed_name}_trip_updates"):
-            return JsonResponse(feed)
+    if feed_name in trip_updates_sources and (
+        feed := cache.get(f"{feed_name}_trip_updates")
+    ):
+        return JsonResponse(feed)
 
     raise Http404
 
 
 @require_GET
 def trip_updates(request):
-    feed_name = request.GET.get("feed_name", "ntaie")
+    default_feed_name = "ntaie"
 
-    if feed_name not in trip_updates_sources:
-        raise Http404
+    get = request.GET.copy()
+    get.setdefault("feed_name", default_feed_name)
+
+    form = TripUpdatesFeedForm(get, trip_updates_sources)
+
+    feed_name = default_feed_name
+    if form.is_valid() and (chosen_feed_name := form.cleaned_data["feed_name"]):
+        feed_name = chosen_feed_name
 
     source = DataSource.objects.get(name=trip_updates_sources[feed_name]["source_name"])
 
-    trip_updates = gtfsr.get_trip_updates(feed_name)
+    if trip_updates := gtfsr.get_trip_updates(feed_name):
+        journey_codes = trip_updates.keys()
+        trips = Trip.objects.filter(
+            route__source=source, ticket_machine_code__in=journey_codes
+        )
+        operators = Operator.objects.filter(
+            service__route__in={trip.route_id for trip in trips}
+        ).distinct()
+        trips = {trip.ticket_machine_code: trip for trip in trips}
 
-    journey_codes = trip_updates.keys()
-    trips = Trip.objects.filter(
-        route__source=source, ticket_machine_code__in=journey_codes
-    )
-    operators = Operator.objects.filter(
-        service__route__in=set(trip.route_id for trip in trips)
-    ).distinct()
-    trips = {trip.ticket_machine_code: trip for trip in trips}
-
-    trip_updates = [
-        (entity, trips.get(trip_id)) for trip_id, entity in trip_updates.items()
-    ]
+        trip_updates = [
+            (entity, trips.get(trip_id)) for trip_id, entity in trip_updates.items()
+        ]
+    else:
+        trips = ()
+        operators = None
 
     return render(
         request,
         "trip_updates.html",
         {
+            "form": form,
             "trips": len(trips),
             "operators": operators,
             "trip_updates": trip_updates,
         },
     )
+
+
+@require_GET
+def operator_blocks(request, slug):
+    """fleet list"""
+
+    operator = get_object_or_404(Operator, slug=slug)
+
+    trips = operator.trip_set.filter(route__service__current=True).select_related(
+        "route"
+    )
+
+    form = DateForm(request.GET)
+    if form.is_valid():
+        date = form.cleaned_data["date"]
+    else:
+        date = timezone.localdate()
+
+    calendars = get_calendars(date)
+    trips = trips.filter(calendar__in=calendars).order_by("block", "start")
+
+    if trips:
+        start = min(trip.start.total_seconds() for trip in trips)
+        end = min(trip.end.total_seconds() for trip in trips)
+        length_of_day = end - start
+
+    blocks = defaultdict(list)
+
+    for trip in trips:
+        trip.left = int((trip.start.total_seconds() - start) / length_of_day * 200)
+        trip.width = int((trip.end - trip.start).total_seconds() / length_of_day * 200)
+
+        if trip.block:
+            blocks[trip.block].append(trip)
+
+    context = {
+        "object": operator,
+        "breadcrumb": [operator],
+        "date": date,
+        "blocks": blocks,
+    }
+
+    return render(request, "operator_blocks.html", context)
+
+
+@permission_required("busstops.add_datasource")
+def upload_gtfs(request):
+    if request.method == "POST":
+        form = UploadGTFSForm(request.POST, request.FILES)
+    else:
+        form = UploadGTFSForm()
+
+    context = {"form": form}
+
+    if request.method == "POST" and form.is_valid():
+        source = handle_gtfs_upload(**form.cleaned_data)
+
+        return redirect(source)
+
+    return render(request, "upload_gtfs.html", context)

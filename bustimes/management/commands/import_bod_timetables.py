@@ -3,11 +3,10 @@
 import logging
 import xml.etree.ElementTree as ET
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from time import sleep
 from urllib.parse import parse_qs
-
-from datetime import datetime
 
 import requests
 from django.conf import settings
@@ -99,6 +98,8 @@ def handle_file(command, path, qualify_filename=False):
     # the downloaded file might be plain XML, or a zipped archive - we just don't know yet
     full_path = settings.DATA_DIR / path
 
+    command.start_task()
+
     try:
         with zipfile.ZipFile(full_path) as archive:
             for filename in archive.namelist():
@@ -110,10 +111,10 @@ def handle_file(command, path, qualify_filename=False):
                         filename = str(Path(path) / filename)
                     try:
                         command.handle_file(open_file, filename)
-                    except (ET.ParseError, ValueError, AttributeError, DataError) as e:
+                    except (ET.ParseError, ValueError, AttributeError, DataError):
                         if filename.endswith(".xml"):
                             logger.info(filename)
-                            logger.exception(e)
+                            logger.exception("error handling file")
     except zipfile.BadZipFile:
         # plain XML
         with full_path.open("rb") as open_file:
@@ -123,11 +124,13 @@ def handle_file(command, path, qualify_filename=False):
                 filename = ""
             try:
                 command.handle_file(open_file, filename)
-            except (AttributeError, DataError) as e:
-                logger.exception(e)
+            except (AttributeError, DataError):
+                logger.exception("error handling file")
 
-    # if not qualify_filename:
-    #     command.source.upload_to_s3_etc(full_path)
+    command.finish_task()
+
+    if not qualify_filename:
+        command.source.save_to_archive(full_path)
 
 
 def get_bus_open_data_paramses(sources, api_key):
@@ -181,7 +184,7 @@ def bus_open_data(api_key, specific_operator):
     for params in get_bus_open_data_paramses(timetable_data_sources, api_key):
         url = f"{url_prefix}/api/v1/dataset/"
         while url:
-            response = session.get(url, params=params)
+            response = session.get(url, params=params, timeout=61)
             response.raise_for_status()
             json = response.json()
             results = json["results"]
@@ -318,7 +321,7 @@ def ticketer(specific_operator=None):
 
         filename = f"{path.parts[3]}.zip"
         path = base_dir / filename
-        command.source, created = DataSource.objects.get_or_create(
+        command.source, _created = DataSource.objects.get_or_create(
             {"name": source.name}, url=source.url
         )
         command.source.source = source
@@ -328,7 +331,7 @@ def ticketer(specific_operator=None):
             sleep(2)
             need_to_sleep = False
 
-        modified, last_modified = download_if_modified(path, command.source, session)
+        _modified, last_modified = download_if_modified(path, command.source, session)
 
         if (
             specific_operator

@@ -1,7 +1,7 @@
 import datetime
-import subprocess
 import re
 import struct
+import subprocess
 import uuid
 from collections import Counter
 from math import ceil
@@ -20,6 +20,7 @@ from webcolors import HTML5SimpleColor, html5_parse_legacy_color
 from busstops.fields import AutoSlugField
 from busstops.models import DataSource, Operator, Service
 from bustimes.utils import get_trip
+
 from .fields import ColourField, ColoursField, CSSField
 
 
@@ -60,9 +61,9 @@ def get_css(colours, direction=None, horizontal=False, angle=None):
     percentage = 100 / len(colours)
     for i, colour in enumerate(colours):
         if i != 0 and colour != colours[i - 1]:
-            background += ",{} {}%".format(colour, ceil(percentage * i))
+            background += f",{colour} {ceil(percentage * i)}%"
         if i != len(colours) - 1 and colour != colours[i + 1]:
-            background += ",{} {}%".format(colour, ceil(percentage * (i + 1)))
+            background += f",{colour} {ceil(percentage * (i + 1))}%"
     background += ")"
 
     return background
@@ -174,7 +175,10 @@ class Livery(models.Model):
         suffix = "}"
         css = prefix + css + suffix
         completed_process = subprocess.run(
-            ["lightningcss", "--minify"], input=css.encode(), capture_output=True
+            ["lightningcss", "--minify"],
+            input=css.encode(),
+            capture_output=True,
+            check=False,
         )
         css = completed_process.stdout.decode().strip()
         assert css.startswith(prefix)
@@ -255,29 +259,31 @@ class Vehicle(models.Model):
     fleet_number = models.PositiveIntegerField(null=True, blank=True)
     fleet_code = models.CharField(max_length=24, blank=True, db_collation="en_numeric")
     reg = models.CharField(max_length=24, blank=True)
-    source = models.ForeignKey(DataSource, models.SET_NULL, null=True, blank=True)
-    operator = models.ForeignKey(Operator, models.SET_NULL, null=True, blank=True)
+    source = models.ForeignKey(DataSource, models.DB_SET_NULL, null=True, blank=True)
+    operator = models.ForeignKey(Operator, models.DB_SET_NULL, null=True, blank=True)
     vehicle_type = models.ForeignKey(
-        VehicleType, models.SET_NULL, null=True, blank=True
+        VehicleType, models.DB_SET_NULL, null=True, blank=True
     )
     colours = ColoursField(max_length=255, blank=True)
-    livery = models.ForeignKey(Livery, models.SET_NULL, null=True, blank=True)
+    livery = models.ForeignKey(Livery, models.DB_SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=255, blank=True)
     branding = models.CharField(max_length=255, blank=True)
     notes = models.CharField(max_length=255, blank=True)
     latest_journey = models.OneToOneField(
         "VehicleJourney",
-        models.SET_NULL,
+        models.DB_SET_NULL,
         null=True,
         blank=True,
         related_name="latest_vehicle",
     )
     latest_journey_data = models.JSONField(null=True, blank=True)
-    features = models.ManyToManyField(VehicleFeature, blank=True)
+    features = models.ManyToManyField(
+        VehicleFeature, blank=True, through="VehicleHasFeature"
+    )
     withdrawn = models.BooleanField(default=False)
     data = models.JSONField(null=True, blank=True)
     garage = models.ForeignKey(
-        "bustimes.Garage", models.SET_NULL, null=True, blank=True
+        "bustimes.Garage", models.DB_SET_NULL, null=True, blank=True
     )
     locked = models.BooleanField(default=False)
 
@@ -288,30 +294,40 @@ class Vehicle(models.Model):
         if self.locked:
             return False
         # withrawn and hasn't tracked recently - "let sleeping dogs lie"
-        if self.withdrawn and (
-            not self.latest_journey
-            or timezone.now() - self.latest_journey.datetime
-            > datetime.timedelta(days=30)
-        ):
-            return False
-        return True
+        return not (
+            self.withdrawn
+            and (
+                not self.latest_journey
+                or timezone.now() - self.latest_journey.datetime
+                > datetime.timedelta(days=30)
+            )
+        )
 
     def save(self, *args, update_fields=None, **kwargs):
         if (
-            update_fields is None or "fleet_number" in update_fields
-        ) and self.fleet_number:
-            if not self.fleet_code or (
-                self.fleet_code.isdigit() and self.fleet_number != int(self.fleet_code)
-            ):
-                self.fleet_code = str(self.fleet_number)
-                if update_fields is not None and "fleet_code" not in update_fields:
-                    update_fields.append("fleet_code")
+            (update_fields is None or "fleet_number" in update_fields)
+            and self.fleet_number
+            and (
+                not self.fleet_code
+                or (
+                    self.fleet_code.isdigit()
+                    and self.fleet_number != int(self.fleet_code)
+                )
+            )
+        ):
+            self.fleet_code = str(self.fleet_number)
+            if update_fields is not None and "fleet_code" not in update_fields:
+                update_fields.append("fleet_code")
 
-        if (update_fields is None or "fleet_code" in update_fields) and self.fleet_code:
-            if not self.fleet_number and self.fleet_code.isdigit():
-                self.fleet_number = int(self.fleet_code)
-                if update_fields is not None and "fleet_number" not in update_fields:
-                    update_fields.append("fleet_number")
+        if (
+            (update_fields is None or "fleet_code" in update_fields)
+            and self.fleet_code
+            and not self.fleet_number
+            and self.fleet_code.isdigit()
+        ):
+            self.fleet_number = int(self.fleet_code)
+            if update_fields is not None and "fleet_number" not in update_fields:
+                update_fields.append("fleet_number")
 
         if update_fields is None and not self.reg:
             reg = re.match(r"^[A-Z]\w_?\d\d?[ _-]?[A-Z]{3}$", self.code)
@@ -323,16 +339,16 @@ class Vehicle(models.Model):
         super().save(*args, update_fields=update_fields, **kwargs)
 
     class Meta:
-        indexes = [
+        indexes = (
             models.Index(Upper("fleet_code"), name="fleet_code"),
             models.Index(Upper("reg"), name="reg"),
             models.Index(fields=["operator", "withdrawn"], name="operator_withdrawn"),
-        ]
-        constraints = [
+        )
+        constraints = (
             models.UniqueConstraint(
                 Upper("code"), "operator", name="vehicle_operator_and_code"
             ),
-        ]
+        )
 
     def __str__(self):
         fleet_code = self.fleet_code or self.fleet_number
@@ -345,25 +361,29 @@ class Vehicle(models.Model):
         return self.code.replace("_", " ")
 
     def get_next(self, order=""):
-        lookup = "lt" if order == "-" else "gt"
         if self.operator:
-            filter = {}
             if self.fleet_number:
-                filter[f"fleet_number__{lookup}"] = self.fleet_number
-                order_by = f"{order}fleet_number"
+                field = "fleet_number"
             elif self.fleet_code:
-                filter[f"fleet_code__{lookup}"] = self.fleet_code
-                order_by = f"{order}fleet_code"
+                field = "fleet_code"
             else:
-                filter[f"code__{lookup}"] = self.code
-                order_by = f"{order}code"
+                field = "code"
+            value = getattr(self, field)
+
+            lookup = "lt" if order == "-" else "gt"
+
+            condition = Q(**{f"{field}__{lookup}": value})
+
+            if field != "code":
+                # cope with possible duplicate fleet numbers
+                condition |= Q(**{field: value, f"id__{lookup}": self.id})
 
             return (
                 self.operator.vehicle_set.filter(
-                    **filter,
+                    condition,
                     withdrawn=False,
                 )
-                .order_by(order_by)
+                .order_by(f"{order}{field}", f"{order}id")
                 .first()
             )
 
@@ -455,27 +475,40 @@ class Vehicle(models.Model):
         return json
 
 
+class VehicleHasFeature(models.Model):
+    vehicle = models.ForeignKey(
+        Vehicle, models.DB_CASCADE, related_name="vehiclehasfeature+"
+    )
+    vehiclefeature = models.ForeignKey(
+        VehicleFeature, models.DB_CASCADE, related_name="vehiclehasfeature+"
+    )
+
+    class Meta:
+        db_table = "vehicles_vehicle_features"
+        unique_together = ("vehicle", "vehiclefeature")
+
+
 class VehicleCode(models.Model):
     code = models.CharField(max_length=100)
     scheme = models.CharField(max_length=24)
-    vehicle = models.ForeignKey(Vehicle, models.CASCADE)
+    vehicle = models.ForeignKey(Vehicle, models.DB_CASCADE)
 
     def __str__(self):
         return f"{self.scheme} {self.code}"
 
     class Meta:
-        constraints = [
+        constraints = (
             UniqueConstraint(
                 fields=["code", "scheme"],
                 name="unique_vehicle_code",
             ),
-        ]
-        indexes = [models.Index(fields=("code", "scheme"))]
+        )
+        indexes = (models.Index(fields=("code", "scheme")),)
 
 
 class VehicleRevisionFeature(models.Model):
-    feature = models.ForeignKey(VehicleFeature, models.CASCADE)
-    revision = models.ForeignKey("VehicleRevision", models.CASCADE)
+    feature = models.ForeignKey(VehicleFeature, models.DB_CASCADE)
+    revision = models.ForeignKey("VehicleRevision", models.DB_CASCADE)
     add = models.BooleanField(default=True)
 
     def __str__(self):
@@ -487,29 +520,37 @@ class VehicleRevisionFeature(models.Model):
 
 
 class VehicleRevision(models.Model):
-    vehicle = models.ForeignKey(Vehicle, models.CASCADE)
+    vehicle = models.ForeignKey(Vehicle, models.DB_CASCADE)
 
     from_operator = models.ForeignKey(
-        Operator, models.SET_NULL, null=True, blank=True, related_name="revision_from"
+        Operator,
+        models.DB_SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revision_from",
     )
     to_operator = models.ForeignKey(
-        Operator, models.SET_NULL, null=True, blank=True, related_name="revision_to"
+        Operator, models.DB_SET_NULL, null=True, blank=True, related_name="revision_to"
     )
     from_type = models.ForeignKey(
         VehicleType,
-        models.SET_NULL,
+        models.DB_SET_NULL,
         null=True,
         blank=True,
         related_name="revision_from",
     )
     to_type = models.ForeignKey(
-        VehicleType, models.SET_NULL, null=True, blank=True, related_name="revision_to"
+        VehicleType,
+        models.DB_SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revision_to",
     )
     from_livery = models.ForeignKey(
-        Livery, models.SET_NULL, null=True, blank=True, related_name="revision_from"
+        Livery, models.DB_SET_NULL, null=True, blank=True, related_name="revision_from"
     )
     to_livery = models.ForeignKey(
-        Livery, models.SET_NULL, null=True, blank=True, related_name="revision_to"
+        Livery, models.DB_SET_NULL, null=True, blank=True, related_name="revision_to"
     )
 
     features = models.ManyToManyField(
@@ -520,11 +561,11 @@ class VehicleRevision(models.Model):
     message = models.TextField(null=True, blank=True)
 
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, models.SET_NULL, null=True, blank=True
+        settings.AUTH_USER_MODEL, models.DB_SET_NULL, null=True, blank=True
     )
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        models.SET_NULL,
+        models.DB_SET_NULL,
         null=True,
         blank=True,
         related_name="approved",
@@ -537,7 +578,7 @@ class VehicleRevision(models.Model):
     disapproved_reason = models.TextField(null=True, blank=True)
 
     class Meta:
-        constraints = [
+        constraints = (
             UniqueConstraint(
                 fields=["vehicle", "to_operator"],
                 condition=Q(pending=True),
@@ -553,7 +594,7 @@ class VehicleRevision(models.Model):
                 condition=Q(pending=True),
                 name="unique_pending_livery",
             ),
-        ]
+        )
 
     def __str__(self):
         return ", ".join(
@@ -620,10 +661,9 @@ class VehicleRevision(models.Model):
         ):
             before = getattr(self, f"from_{key}_id")
             after = getattr(self, f"to_{key}_id")
-            if before or after:
-                if getattr(vehicle, f"{vehicle_key}_id") == after:
-                    setattr(vehicle, f"{vehicle_key}_id", before)
-                    fields.append(vehicle_key)
+            if (before or after) and getattr(vehicle, f"{vehicle_key}_id") == after:
+                setattr(vehicle, f"{vehicle_key}_id", before)
+                fields.append(vehicle_key)
 
         if self.changes:
             for key in self.changes:
@@ -656,21 +696,21 @@ class VehicleJourney(models.Model):
     datetime = models.DateTimeField()
     date = models.DateField()
     service = models.ForeignKey(
-        Service, models.SET_NULL, null=True, blank=True, db_index=False
+        Service, models.DO_NOTHING, null=True, blank=True, db_index=False
     )
     route_name = models.CharField(max_length=64, blank=True)
-    source = models.ForeignKey(DataSource, models.CASCADE, null=True)
+    source = models.ForeignKey(DataSource, models.DB_CASCADE)
     vehicle = models.ForeignKey(
-        Vehicle, models.CASCADE, null=True, blank=True, db_index=False
+        Vehicle, models.DB_CASCADE, null=True, blank=True, db_index=False
     )
     code = models.CharField(max_length=255, blank=True)
     destination = models.CharField(max_length=255, blank=True)
     direction = models.CharField(max_length=13, blank=True)
     trip = models.ForeignKey(
-        "bustimes.Trip", models.SET_NULL, null=True, blank=True, db_index=False
+        "bustimes.Trip", models.DB_SET_NULL, null=True, blank=True, db_index=False
     )
     # trip_matched = models.BooleanField(default=True)
-    # block = models.ForeignKey("bustimes.Block", models.SET_NULL, null=True, blank=True)
+    # block = models.ForeignKey("bustimes.Block", models.DB_SET_NULL, null=True, blank=True)
     uuid = models.UUIDField(default=uuid.uuid4, editable=False)
 
     def get_absolute_url(self):
@@ -678,14 +718,15 @@ class VehicleJourney(models.Model):
         return f"/vehicles/{self.vehicle_id}?date={self.date}#journey-{self.id}"
 
     def __str__(self):
-        when = f"{self.datetime:%-d %b %y %H:%M} {self.route_name} {self.code} {self.direction}"
+        date = f"{self.datetime:%-d %b %y %H:%M}" if self.datetime else ""
+        when = f"{date} {self.route_name} {self.code} {self.direction}"
         if self.destination:
             when = f"{when} to {self.destination}"
         return when
 
     class Meta:
         ordering = ("id",)
-        indexes = [
+        indexes = (
             models.Index("service", "date", name="vehiclejourney_service_date"),
             models.Index(
                 "vehicle",
@@ -709,7 +750,7 @@ class VehicleJourney(models.Model):
             models.Index(
                 fields=["vehicle", "-id"], name="vehiclejourney_vehicle_id_desc"
             ),
-        ]
+        )
 
     def get_redis_key(self):
         return self.uuid.bytes
@@ -748,29 +789,34 @@ class VehicleLocation:
         self.occupancy_thresholds = None
         self.block = block
         self.tfl_code = None
+        self.datetime = None
 
     def __str__(self):
-        return f"{self.datetime:%-d %b %Y %H:%M:%S}"
+        if self.datetime:
+            return f"{self.datetime:%-d %b %Y %H:%M:%S}"
+        return ""
 
     class Meta:
         ordering = ("id",)
+
+    def get_heading(self):
+        """Some sources give a float or a string - always return an int (or None)"""
+        if self.heading is None or type(self.heading) is int:
+            return self.heading
+        if type(self.heading) is str:
+            if self.heading.isdigit():
+                return int(self.heading)
+            if self.heading:
+                return round(float(self.heading))
+            return None
+        return round(self.heading)
 
     def get_appendage(self):
         delay = self.delay
         if delay is not None:
             delay = round(delay.total_seconds() / 60)
 
-        if self.heading is None or type(self.heading) is int:
-            heading = self.heading
-        elif type(self.heading) is str:
-            if self.heading.isdigit():
-                heading = int(self.heading)
-            elif self.heading:
-                heading = round(float(self.heading))
-            else:
-                heading = None
-        else:
-            heading = round(self.heading)
+        heading = self.get_heading()
 
         return self.journey.get_redis_key(), struct.pack(
             "I 2f ?h ?h",
@@ -791,9 +837,8 @@ class VehicleLocation:
             "coordinates": location[1:3],
             "delta": (location[5] or None) and location[6],
             "direction": (location[3] or None) and location[4],
-            "datetime": timezone.localtime(
-                datetime.datetime.fromtimestamp(location[0], datetime.timezone.utc),
-                timezone=tz,
+            "datetime": datetime.datetime.fromtimestamp(
+                location[0], tz or timezone.get_current_timezone()
             ),
         }
 
@@ -804,8 +849,8 @@ class VehicleLocation:
             "id": self.id,  # (same as vehicle id)
             "journey_id": journey.id,
             "coordinates": self.latlong.coords,
-            "heading": self.heading,
-            "datetime": timezone.localtime(self.datetime, timezone=tz),
+            "heading": self.get_heading(),
+            "datetime": timezone.localtime(self.datetime, timezone=tz).isoformat(),
             "destination": journey.destination,
             "block": self.block,
         }
@@ -816,7 +861,7 @@ class VehicleLocation:
         if self.tfl_code:
             json["tfl_code"] = self.tfl_code
         if journey.trip_id:
-            json["date"] = journey.date
+            json["date"] = journey.date.isoformat()
             json["trip_id"] = journey.trip_id
         if journey.service_id:
             json["service_id"] = journey.service_id
@@ -846,6 +891,7 @@ class SiriSubscription(models.Model):
         unique=True,
         help_text="There should be a DataSource with the same name as this",
     )
+    source = models.ForeignKey(DataSource, models.DB_CASCADE)
     uuid = models.UUIDField(default=uuid.uuid4, editable=False)
     sample = models.TextField(null=True, blank=True)
     producer_url = models.URLField(null=True, blank=True, max_length=64)

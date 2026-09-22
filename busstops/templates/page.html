@@ -20,17 +20,12 @@
 
 {% block head %}{% endblock %}
 
-{% block fuse %}
-{% if ad %}
-<script src="{% static 'consent.js' %}"></script>
-<script>if(window.top===window.self&&window.location.host==="gladetimes"&&typeof Array.prototype.includes!=undefined){s=document.getElementsByTagName('script')[0];var sc=document.createElement('script');sc.async=true;sc.src='https://cdn.adfirst.media/hb/bustimes.js?v'+Math.floor(new Date().getTime()/600000);s.parentNode.insertBefore(sc,s);}</script>
-{% endif %}
-{% endblock fuse %}
+{% block fuse %}{% endblock fuse %}
 
 <script async src="https://umami.bustimes.org.uk/script.js" data-website-id="62fea6ac-a287-4ede-962b-5cf0029a8a7b" data-exclude-hash="true"></script>
 
 </head>
-<body class="{% block bodyclass %}wide{% endblock %}{% if ad is False %} no-ads{% endif %}">
+<body class="{% block bodyclass %}wide{% endblock %} no-ads">
 
 <div id="kuma-status-banner" style="display: none; box-sizing: border-box; width: 100%; padding: 12px 15px; text-align: center; color: #fff; font-family: inherit; position: relative; z-index: 9999; line-height: 1.4; word-wrap: break-word;">
     <span id="kuma-status-text"></span>
@@ -88,7 +83,7 @@
 (() => {
     var a = localStorage && localStorage["map-style"];
     var m = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    if ((!a || a === "alidade_satellite") && m || a && a.indexOf("_dark") !== -1) {
+    if (m && (!a || a.endsWith("_satellite")) || a && a.endsWith("_dark")) {
         document.body.classList.add("dark-mode")
     }
 })();
@@ -126,8 +121,7 @@
             <ul class="user">
                 <li><a href="{% url 'user_detail' user.id %}">user {{ user.id }}</a></li>
                 <li>
-                    {% csrf_token %}
-                    <button type="submit" class="button">Log out</button>
+                    <input type="submit" value="Log out">
                 </li>
                 {% if user.trusted %}
                     <li><a href="/vehicles/edits?status=pending">Pending edits</a></li>
@@ -145,8 +139,7 @@
         <li><a href="/data">Data sources</a></li>
         <li><a href="https://status.midlandbus.uk/status/gladetimesservices">Status</a></li>
         <li><a href="/privacy">Privacy policy</a></li>
-        {% if ad %}<li><a href="javascript:window.__tcfapi('displayConsentUi',2,function(){})">Privacy settings</a></li>{% endif %}
-        {% if not request.user.is_authenticated %}
+        {% if object and not user.is_authenticated %}
             <li><a href="/accounts/login/?next={{ request.path }}">Log in</a></li>
         {% endif %}
     </ul>

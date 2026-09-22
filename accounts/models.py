@@ -1,7 +1,8 @@
+from uuid import uuid4
+
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.db import models
 from django.urls import reverse
-from uuid import uuid4
 
 
 class CustomUserManager(UserManager):
@@ -12,7 +13,9 @@ class CustomUserManager(UserManager):
 class Invitation(models.Model):
     uuid = models.UUIDField(default=uuid4)
     expires_at = models.DateTimeField()
-    operators = models.ManyToManyField("busstops.Operator", blank=True)
+    operators = models.ManyToManyField(
+        "busstops.Operator", blank=True, through="InvitationOperator"
+    )
 
     def get_absolute_url(self):
         return reverse("register") + f"?invite_code={self.uuid}"
@@ -21,9 +24,22 @@ class Invitation(models.Model):
         return str(self.uuid)
 
 
+class InvitationOperator(models.Model):
+    invitation = models.ForeignKey(
+        Invitation, models.DB_CASCADE, related_name="invitationoperator+"
+    )
+    operator = models.ForeignKey(
+        "busstops.Operator", models.DB_CASCADE, related_name="invitationoperator+"
+    )
+
+    class Meta:
+        db_table = "accounts_invitation_operators"
+        unique_together = ("invitation", "operator")
+
+
 class OperatorUser(models.Model):
-    operator = models.ForeignKey("busstops.Operator", models.CASCADE)
-    user = models.ForeignKey("User", models.CASCADE)
+    operator = models.ForeignKey("busstops.Operator", models.DB_CASCADE)
+    user = models.ForeignKey("User", models.DB_CASCADE)
     staff = models.BooleanField(default=False)
 
     def __str__(self):
@@ -41,7 +57,7 @@ class User(AbstractUser):
     objects = CustomUserManager()
 
     USERNAME_FIELD = "email"  # this was a bad idea
-    REQUIRED_FIELDS = ["username"]  # so that ./manage.py createsuperuser works
+    REQUIRED_FIELDS = ("username",)  # so that ./manage.py createsuperuser works
 
     def get_absolute_url(self):
         return reverse("user_detail", args=(self.id,))

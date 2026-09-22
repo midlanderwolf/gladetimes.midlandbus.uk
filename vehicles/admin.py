@@ -1,17 +1,19 @@
-from django.forms import ModelForm, Textarea, TextInput
 from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.db.models.functions import Collate
-from django.db import IntegrityError
+from django.forms import ModelForm, Textarea, TextInput
 from django.urls import reverse
 from django.utils.html import format_html
 from simple_history.admin import SimpleHistoryAdmin
 from sql_util.utils import SubqueryCount
 
-from . import models
+from buses.admin_utils import M2MThroughMixin
 from bustimes.admin import log_change
+
+from . import models
 
 UserModel = get_user_model()
 
@@ -22,7 +24,7 @@ class VehicleTypeAdmin(admin.ModelAdmin):
     list_filter = ("style", "fuel")
     list_display = ("id", "name", "vehicles", "style", "fuel")
     list_editable = ("name", "style", "fuel")
-    actions = ["merge"]
+    actions = ("merge",)
 
     @admin.display(ordering="vehicles")
     def vehicles(self, obj):
@@ -103,7 +105,7 @@ class DuplicateVehicleFilter(admin.SimpleListFilter):
 
 
 @admin.register(models.Vehicle)
-class VehicleAdmin(admin.ModelAdmin):
+class VehicleAdmin(M2MThroughMixin, admin.ModelAdmin):
     list_display = (
         "code",
         "fleet_number",
@@ -129,7 +131,12 @@ class VehicleAdmin(admin.ModelAdmin):
         ("source", admin.RelatedOnlyFieldListFilter),
         ("operator", admin.RelatedOnlyFieldListFilter),
     )
-    list_select_related = ["operator", "livery", "vehicle_type", "latest_journey"]
+    list_select_related = (
+        "operator",
+        "livery",
+        "vehicle_type",
+        "latest_journey",
+    )
     list_editable = (
         "fleet_number",
         "fleet_code",
@@ -163,8 +170,8 @@ class VehicleAdmin(admin.ModelAdmin):
         "lock",
         "unlock",
     )
-    inlines = [VehicleCodeInline]
-    readonly_fields = ["latest_journey_data"]
+    inlines = (VehicleCodeInline,)
+    readonly_fields = ("latest_journey_data",)
 
     def copy_livery(self, request, queryset):
         livery = models.Livery.objects.filter(vehicle__in=queryset).first()
@@ -339,6 +346,7 @@ class VehicleJourneyAdmin(admin.ModelAdmin):
     )
     show_full_result_count = False
     ordering = ("-id",)
+    readonly_fields = ("uuid",)
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)
@@ -383,10 +391,10 @@ def preview(obj, css):
 @admin.register(models.Livery)
 class LiveryAdmin(SimpleHistoryAdmin):
     form = LiveryAdminForm
-    search_fields = ["name"]
-    actions = ["merge"]
+    search_fields = ("name",)
+    actions = ("merge",)
     save_as = True
-    list_display = [
+    list_display = (
         "id",
         "name",
         "vehicles",
@@ -395,18 +403,18 @@ class LiveryAdmin(SimpleHistoryAdmin):
         "blob",
         "published",
         "updated_at",
-    ]
-    list_filter = [
+    )
+    list_filter = (
         "published",
         "show_name",
         "updated_at",
         ("vehicle__operator", admin.RelatedOnlyFieldListFilter),
-    ]
-    ordering = ["-id"]
+    )
+    ordering = ("-id",)
 
-    readonly_fields = ["left", "right", "blob", "updated_at"]
+    readonly_fields = ("left", "right", "blob", "updated_at")
     # specify order:
-    fields = [
+    fields = (
         "name",
         "show_name",
         "colour",
@@ -423,10 +431,10 @@ class LiveryAdmin(SimpleHistoryAdmin):
         "right",
         "published",
         "updated_at",
-    ]
+    )
 
     class Media:
-        js = ["js/livery-admin.js"]
+        js = ("js/livery-admin.js",)
 
     def merge(self, request, queryset):
         queryset = queryset.order_by("id")
@@ -493,7 +501,7 @@ class RevisionChangeFilter(admin.SimpleListFilter):
 
 @admin.register(models.VehicleRevision)
 class VehicleRevisionAdmin(admin.ModelAdmin):
-    raw_id_fields = [
+    raw_id_fields = (
         "from_operator",
         "to_operator",
         "from_livery",
@@ -503,7 +511,7 @@ class VehicleRevisionAdmin(admin.ModelAdmin):
         "vehicle",
         "user",
         "approved_by",
-    ]
+    )
 
     def has_module_permission(self, request):
         return request.user.is_superuser
@@ -520,14 +528,14 @@ class VehicleRevisionAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return request.user.is_superuser
 
-    list_display = ["created_at", "vehicle", "__str__", user, "message"]
-    actions = ["revert"]
-    list_filter = [
+    list_display = ("created_at", "vehicle", "__str__", user, "message")
+    actions = ("revert",)
+    list_filter = (
         RevisionChangeFilter,
         UserFilter,
         ("vehicle__operator", admin.RelatedOnlyFieldListFilter),
-    ]
-    list_select_related = ["from_operator", "to_operator", "vehicle", "user"]
+    )
+    list_select_related = ("from_operator", "to_operator", "vehicle", "user")
 
     def revert(self, request, queryset):
         for revision in queryset.prefetch_related("vehicle"):
@@ -537,14 +545,16 @@ class VehicleRevisionAdmin(admin.ModelAdmin):
 
 @admin.register(models.VehicleCode)
 class VehicleCodeAdmin(admin.ModelAdmin):
-    raw_id_fields = ["vehicle"]
-    list_display = ["id", "scheme", "code", "vehicle"]
-    list_filter = ["scheme"]
+    raw_id_fields = ("vehicle",)
+    list_display = ("id", "scheme", "code", "vehicle")
+    list_filter = ("scheme",)
 
 
 @admin.register(models.SiriSubscription)
 class SiriSubscriptionAdmin(admin.ModelAdmin):
-    readonly_fields = ["uuid", "sample", "status"]
+    autocomplete_fields = ("source",)
+    readonly_fields = ("uuid", "sample", "status")
+    list_display = ("__str__", "source")
 
     def status(self, obj):
         return cache.get(obj.get_status_key())

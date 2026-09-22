@@ -31,6 +31,48 @@ services:
       - "35729:35729"
     restart: on-failure
 
+  distribute_vehicle_locations:
+    image: bustimesorg-web
+    depends_on:
+      - web
+    environment:
+      - SECRET_KEY=${SECRET_KEY-}
+      - DATABASE_URL=${DATABASE_URL-postgis://postgres:postgres@postgres/postgres}
+      - REDIS_URL=${REDIS_URL-redis://redis:6379}
+    volumes:
+      - .:/app
+      - venv:/app/.venv
+    command: uv run manage.py distribute_vehicle_locations
+    restart: on-failure
+
+  listen:
+    image: bustimesorg-web
+    depends_on:
+      - web
+    environment:
+      - SECRET_KEY=${SECRET_KEY-}
+      - DATABASE_URL=${DATABASE_URL-postgis://postgres:postgres@postgres/postgres}
+      - REDIS_URL=${REDIS_URL-redis://redis:6379}
+    volumes:
+      - .:/app
+      - venv:/app/.venv
+    command: uv run manage.py listen
+    restart: on-failure
+
+  huey:
+    image: bustimesorg-web
+    depends_on:
+      - web
+    environment:
+      - SECRET_KEY=${SECRET_KEY-}
+      - DATABASE_URL=${DATABASE_URL-postgis://postgres:postgres@postgres/postgres}
+      - REDIS_URL=${REDIS_URL-redis://redis:6379}
+    volumes:
+      - .:/app
+      - venv:/app/.venv
+    command: uv run manage.py run_huey
+    restart: on-failure
+
   postgres:
     image: postgis/postgis
     tmpfs:

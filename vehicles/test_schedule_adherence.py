@@ -271,6 +271,20 @@ class ScheduleAdherenceTest(TestCase):
         self.journey.trip.delete()
         rtpi.add_progress_and_delay(item)
 
+    def test_get_progress_no_stop_times(self):
+        self.assertIsNone(
+            rtpi.get_progress(
+                {
+                    "coordinates": [-0.320573, 51.75536],
+                    "trip_id": self.journey.trip_id,
+                    "heading": 200,
+                    "datetime": "2023-08-31T09:50:07Z",
+                    "date": "2023-08-31",
+                },
+                stop_times=[],
+            )
+        )
+
     @time_machine.travel("2024-02-16T00:00:07Z")
     def test_stop_times(self):
         redis_client = fakeredis.FakeStrictRedis()
@@ -295,16 +309,16 @@ class ScheduleAdherenceTest(TestCase):
             self.assertEqual(response_json["times"][0]["delay"], "P0DT00H16M07S")
             self.assertEqual(
                 response_json["times"][0]["expected_departure_time"],
-                "2024-02-16T10:59:07Z",
+                "2024-02-16T10:59:07+00:00",
             )
 
-            with self.assertNumQueries(11):
+            with self.assertNumQueries(14):
                 response = self.client.get("/stops/210021509680/departures")
                 self.assertContains(response, "10:43")  # scheduled time
                 self.assertContains(response, "10:59")  # expected time
 
             # past the scheduled time - should still show late departure
-            with time_machine.travel("2024-02-16T10:50:00Z"), self.assertNumQueries(9):
+            with time_machine.travel("2024-02-16T10:50:00Z"), self.assertNumQueries(11):
                 response = self.client.get("/stops/210021509680/departures")
                 self.assertContains(response, "10:43")  # scheduled time
                 self.assertContains(response, "10:59")  # expected time
@@ -328,7 +342,7 @@ class ScheduleAdherenceTest(TestCase):
             self.assertEqual(response_json["times"][0]["delay"], "-P0DT00H33M53S")
             self.assertEqual(
                 response_json["times"][0]["expected_departure_time"],
-                "2024-02-16T10:09:07Z",
+                "2024-02-16T10:09:07+00:00",
             )
 
             # delay already calculated (eg TfW)
@@ -351,7 +365,7 @@ class ScheduleAdherenceTest(TestCase):
             self.assertEqual(response_json["times"][0]["delay"], "P0DT00H01M00S")
             self.assertEqual(
                 response_json["times"][0]["expected_departure_time"],
-                "2024-02-16T10:44:00Z",
+                "2024-02-16T10:44:00+00:00",
             )
 
             # a long way off-route - no prediction

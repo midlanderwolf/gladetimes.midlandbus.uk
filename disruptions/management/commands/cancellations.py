@@ -1,8 +1,8 @@
 import difflib
 import xml.etree.ElementTree as ET
-import requests
+from datetime import UTC, datetime, timedelta
 
-from datetime import datetime, timedelta, timezone
+import requests
 from django.core.management.base import BaseCommand
 from django.db.transaction import atomic
 from django.utils.timezone import localtime
@@ -10,8 +10,9 @@ from django.utils.timezone import localtime
 from busstops.models import DataSource
 from bustimes.models import Trip
 from bustimes.utils import get_calendars
+
+from ...models import AffectedJourney, Call, Situation
 from ...siri_sx import get_period
-from ...models import Situation, AffectedJourney, Call
 
 
 def get_trip(avj):
@@ -83,7 +84,7 @@ def handle_situation(element, source, current_situations):
     situation.created_at = datetime.fromisoformat(element.findtext("CreationTime"))
     # if created_at is naive, assume it's in UTC
     if not situation.created_at.tzinfo:
-        situation.created_at = situation.created_at.replace(tzinfo=timezone.utc)
+        situation.created_at = situation.created_at.replace(tzinfo=UTC)
 
     vps = element.findall("ValidityPeriod")
     assert len(vps) == 1
@@ -96,15 +97,20 @@ def handle_situation(element, source, current_situations):
             with atomic():
                 situation.save()
 
-                journey, created = AffectedJourney.objects.update_or_create(
+                trip = trips[0]
+                time = datetime.fromisoformat(avj.findtext("OriginAimedDepartureTime"))
+                date = time.date()
+                if trip.start.days:
+                    date -= timedelta(days=1)
+
+                journey, _created = AffectedJourney.objects.update_or_create(
                     {
                         "condition": element.findtext(
                             "Consequences/Consequence/Condition"
                         ),
-                        "trip": trips[0],
-                        "origin_departure_time": avj.findtext(
-                            "OriginAimedDepartureTime"
-                        ),
+                        "trip": trip,
+                        "date": date,
+                        "origin_departure_time": time,
                     },
                     situation=situation,
                 )
@@ -140,7 +146,9 @@ class Command(BaseCommand):
     def handle(self, url, api_key, *args, **options):
         source = DataSource.objects.get_or_create(name="BODS cancellations")[0]
 
-        response = requests.get(url, params={"api_key": api_key}, stream=True)
+        response = requests.get(
+            url, params={"api_key": api_key}, stream=True, timeout=61
+        )
         response.raw.decode_content = True
         response.raise_for_status()
 

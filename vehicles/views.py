@@ -1,56 +1,63 @@
 import datetime
-import json
 import logging
-from itertools import pairwise, groupby
-from urllib.parse import unquote
-from functools import partial
-from http import HTTPStatus
 import subprocess
+from http import HTTPStatus
+from itertools import groupby, pairwise
+from urllib.parse import unquote
+
 import xmltodict
 from django.conf import settings
-from django.contrib.auth.models import Permission
 from django.contrib.auth.decorators import login_required, permission_required
+from django.contrib.auth.models import Permission
 from django.contrib.gis.geos import GEOSException
 from django.core.cache import cache
-from django.core.exceptions import PermissionDenied, BadRequest
+from django.core.exceptions import BadRequest, PermissionDenied
 from django.core.paginator import Paginator
-from django.db import IntegrityError, OperationalError, connection, transaction
-from django.db.models import Case, F, Max, OuterRef, Q, When, FilteredRelation, Value
+from django.db import (
+    IntegrityError,
+    OperationalError,
+    connection,
+    connections,
+    router,
+    transaction,
+)
+from django.db.models import Case, F, OuterRef, Q, Value, When
 from django.db.models.aggregates import StringAgg
 from django.db.models.functions import Coalesce, Now
-from django.contrib.postgres.aggregates import ArrayAgg
-from django.http import Http404, HttpResponse, JsonResponse, HttpResponseBadRequest
-from django.shortcuts import get_object_or_404, render, redirect
+from django.http import Http404, HttpResponse, HttpResponseBadRequest
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.cache import (
     get_conditional_response,
-    set_response_etag,
     patch_cache_control,
+    set_response_etag,
 )
+from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_control
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_safe
-from django.utils.decorators import method_decorator
 from django.views.generic.detail import DetailView
-import numpy as np
-from haversine import Unit, haversine, haversine_vector
+from django_orjson.http import JsonResponse
+from haversine import haversine
+from orjson import loads
 from redis.exceptions import ConnectionError
+from requests import RequestException
 from sql_util.utils import Exists, SubqueryMax, SubqueryMin
 
 from accounts.models import User
+from buses.utils import format_json
 from busstops.models import (
     SERVICE_ORDER_REGEX,
     Operator,
     OperatorGroup,
     Service,
-    StopUsage,
 )
 from busstops.utils import get_bounding_box
-from bustimes.models import Garage, Route, StopTime
-from bustimes.utils import contiguous_stoptimes_only, get_other_trips_in_block
+from bustimes.models import Garage, Route
+from bustimes.utils import get_other_trips_in_block
 from photos.forms import PhotoForm
-from photos.utils import add_flickr_photo
+from photos.utils import WrongLicense, add_flickr_photo, add_uploaded_photo
 
 from . import filters, forms
 from .management.commands import import_bod_avl
@@ -59,13 +66,14 @@ from .models import (
     SiriSubscription,
     Vehicle,
     VehicleJourney,
-    VehicleLocation,
     VehicleRevision,
     VehicleRevisionFeature,
 )
 from .rtpi import add_progress_and_delay
 from .tasks import handle_siri_post
 from .utils import apply_revision, get_revision, redis_client  # calculate_bearing,
+
+logger = logging.getLogger(__name__)
 
 
 def get_redirect_view(*args, **kwargs):
@@ -135,15 +143,21 @@ def vehicles(request):
 def liveries_css(request, version=0):
     styles = []
     liveries = Livery.objects.filter(published=True).order_by("left_css")
-    for _, liveries in groupby(liveries, lambda livery: livery.right_css):
-        liveries = list(liveries)
-        styles += liveries[0].get_styles([livery.id for livery in liveries])
+    for _, livery_group in groupby(liveries, lambda livery: livery.right_css):
+        livery_group = list(livery_group)
+        styles += livery_group[0].get_styles([livery.id for livery in livery_group])
     styles = "".join(styles)
-    completed_process = subprocess.run(
-        ["lightningcss", "--minify"], input=styles.encode(), capture_output=True
-    )
-    completed_process.check_returncode()
-    styles = completed_process.stdout
+    try:
+        completed_process = subprocess.run(
+            ["lightningcss", "--minify"],
+            input=styles.encode(),
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        styles = completed_process.stdout
     return HttpResponse(styles, content_type="text/css")
 
 
@@ -207,17 +221,14 @@ def operator_vehicles(request, slug=None, group_slug=None):
 
     vehicles = vehicles.order_by("fleet_number", "fleet_code", "reg", "code")
 
-    grid: bool = not group and "grid" in request.GET
-
     if group_slug:
         context = {"object": group}
     else:
-        if not grid:
-            vehicles = vehicles.annotate(feature_names=features_string_agg)
-            vehicles = vehicles.annotate(
-                pending_edits=Exists("vehiclerevision", filter=Q(pending=True))
-            )
-        vehicles = vehicles.select_related("latest_journey", "latest_journey__trip")
+        vehicles = vehicles.annotate(feature_names=features_string_agg)
+        vehicles = vehicles.annotate(
+            pending_edits=Exists("vehiclerevision", filter=Q(pending=True))
+        )
+        vehicles = vehicles.select_related("latest_journey")
 
         context = {
             "object": operator,
@@ -232,28 +243,6 @@ def operator_vehicles(request, slug=None, group_slug=None):
             default="garage__name",
         ),
     )
-
-    # calendar grid view
-    if not group and grid:
-        now = timezone.localtime()
-        today = now.date()
-        month_ago = today - datetime.timedelta(days=14)
-        vehicles = vehicles.annotate(
-            recent_journeys=FilteredRelation(
-                "vehiclejourney",
-                condition=Q(vehiclejourney__date__range=(month_ago, today)),
-            ),
-            dates=ArrayAgg(
-                "recent_journeys__date",
-                distinct=True,
-                default=[],
-            ),
-        )
-        dates = [today - datetime.timedelta(days=i) for i in range(14)]
-        for v in vehicles:
-            v.dates = [date if date in v.dates else None for date in dates]
-
-        context["dates"] = dates
 
     if not vehicles:
         raise Http404
@@ -275,12 +264,9 @@ def operator_vehicles(request, slug=None, group_slug=None):
     else:
         paginator = None
 
-        if not grid:
-            context["features_column"] = any(
-                vehicle.feature_names for vehicle in vehicles
-            )
+        context["features_column"] = any(vehicle.feature_names for vehicle in vehicles)
 
-    columns = set(key for vehicle in vehicles if vehicle.data for key in vehicle.data)
+    columns = {key for vehicle in vehicles if vehicle.data for key in vehicle.data}
     for vehicle in vehicles:
         vehicle.column_values = [
             vehicle.data and vehicle.data_get(key) or "" for key in columns
@@ -319,9 +305,7 @@ def operator_vehicles(request, slug=None, group_slug=None):
             for vehicle in vehicles
         )
 
-    garage_names = set(
-        vehicle.garage_name for vehicle in vehicles if vehicle.garage_name
-    )
+    garage_names = {vehicle.garage_name for vehicle in vehicles if vehicle.garage_name}
 
     context = {
         **context,
@@ -428,14 +412,15 @@ def get_vehicle_locations(
     except ValueError:
         raise BadRequest
 
+    if not vehicle_ids:
+        return []
+
     vehicle_ids.sort()  # for etag stableness
 
     vehicle_locations = redis_client.mget(
         [f"vehicle{vehicle_id}" for vehicle_id in vehicle_ids]
     )
-    vehicle_locations = [
-        json.loads(item) if item else item for item in vehicle_locations
-    ]
+    vehicle_locations = [loads(item) if item else item for item in vehicle_locations]
 
     # remove expired items from 'vehicle_location_locations'
     to_remove = [
@@ -504,7 +489,7 @@ def get_vehicle_locations(
                     if vehicle.latest_journey_id == item["journey_id"]:
                         journeys_to_cache_later[journey_cache_key] = journey
                     else:
-                        logging.warning(
+                        logger.warning(
                             f"{vehicle=} {vehicle.latest_journey_id=} {item['journey_id']=}"
                         )
                     item.update(journey)
@@ -609,26 +594,62 @@ def vehicles_json(request) -> JsonResponse:
     except BadRequest:
         return cachable_400()
 
-    response = JsonResponse(locations, safe=False)
+    response = JsonResponse(locations)
 
     return respond_conditionally(request, response)
 
 
-def get_dates(vehicle=None, service=None):
+def get_dates(vehicle=None, service=None, after=None):
     if not vehicle:
         # the database query for a service is too slow
         return
 
-    journeys = vehicle.vehiclejourney_set
+    # SELECT DISTINCT would have to scan every journey for the vehicle.
+    # this "skip scan" uses the vehiclejourney_vehicle_date index
+    # to jump from each distinct date to the next
+    if after:
+        after_condition = "AND date > %(after)s"
+    else:
+        after_condition = ""
 
-    dates = (
-        journeys.filter(date__isnull=False)
-        .values_list("date", flat=True)
-        .order_by("date")
-        .distinct()
-    )
+    # raw SQL, but still read from a replica like the ORM would
+    with connections[router.db_for_read(VehicleJourney)].cursor() as cursor:
+        cursor.execute(
+            f"""WITH RECURSIVE dates AS (
+                (SELECT date FROM vehicles_vehiclejourney
+                 WHERE vehicle_id = %(vehicle)s {after_condition}
+                 ORDER BY date LIMIT 1)
+                UNION ALL
+                SELECT (SELECT date FROM vehicles_vehiclejourney
+                        WHERE vehicle_id = %(vehicle)s AND date > dates.date
+                        ORDER BY date LIMIT 1)
+                FROM dates WHERE dates.date IS NOT NULL
+            )
+            SELECT date FROM dates WHERE date IS NOT NULL""",
+            {"vehicle": vehicle.id, "after": after},
+        )
+        return [date for (date,) in cursor.fetchall()]
 
-    return list(dates)
+
+def get_cached_dates(vehicle, last_date):
+    """the list of dates a vehicle has journeys on, cached for a day.
+
+    keyed on the vehicle alone, so that a vehicle running again doesn't
+    invalidate the whole list - only the new dates need looking up
+    """
+    key = f"vehicle{vehicle.id}dates"
+    dates = cache.get(key)
+
+    if dates is None:
+        dates = get_dates(vehicle=vehicle)
+    elif dates and last_date and last_date > dates[-1]:
+        dates = dates + get_dates(vehicle=vehicle, after=dates[-1])
+    else:
+        return dates
+
+    cache.set(key, dates, 86400)
+
+    return dates
 
 
 def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
@@ -636,11 +657,7 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
 
     if vehicle and vehicle.latest_journey:
         last_date = vehicle.latest_journey.date
-        dates = cache.get_or_set(
-            f"vehicle{vehicle.id}dates{last_date}",
-            partial(get_dates, vehicle=vehicle),
-            timeout=86400,
-        )
+        dates = get_cached_dates(vehicle, last_date)
     else:
         dates = get_dates(vehicle=vehicle, service=service)
 
@@ -656,7 +673,7 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
         if vehicle and vehicle.latest_journey:
             date = last_date
         else:
-            date = journeys.aggregate(max_date=Max("date"))["max_date"]
+            date = journeys.order_by("-date").values_list("date", flat=True).first()
 
     if dates:
         context["dates"] = dates
@@ -666,12 +683,13 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
     if date:
         context["date"] = date
 
-        journeys = journeys.filter(date=date).select_related("trip").order_by("id")
+        journeys = (
+            journeys.filter(date=date).select_related("trip").order_by("datetime", "id")
+        )
 
-        if dates:
-            if date not in dates:
-                dates.append(date)
-                dates.sort()
+        if dates and date not in dates:
+            dates.append(date)
+            dates.sort()
 
         context["journeys"] = journeys
 
@@ -739,14 +757,19 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
 @require_safe
 def service_vehicles_history(request, slug=None, noc=None, line_name=None):
     if slug:
+        # real service
         service: Service = get_object_or_404(
             Service.objects.with_line_names(), slug=slug
         )
         operator = service.operator.first()
         journeys = service.vehiclejourney_set
     else:
+        # ad-hoc service
         service = None
-        operator = get_object_or_404(Operator, noc=noc)
+        if noc == "None":
+            operator = None
+        else:
+            operator = get_object_or_404(Operator, noc=noc)
         journeys = VehicleJourney.objects.filter(
             service=None, route_name=line_name, vehicle__operator=operator
         )
@@ -781,7 +804,8 @@ class VehicleDetailView(DetailView):
     model = Vehicle
     queryset = model.objects.select_related(
         "operator", "operator__region", "vehicle_type", "livery", "latest_journey"
-    ).prefetch_related("features", "photo_set")
+    ).prefetch_related("features")
+    form = None
 
     def get_object(self, **kwargs):
         try:
@@ -816,11 +840,11 @@ class VehicleDetailView(DetailView):
             context["title"] = str(self.object)
 
         if "journeys" in context:
-            garages = set(
+            garages = {
                 journey.trip.garage_id
                 for journey in context["journeys"]
                 if journey.trip and journey.trip.garage_id
-            )
+            }
             if len(garages) == 1:
                 context["garage"] = Garage.objects.get(id=garages.pop())
 
@@ -839,32 +863,58 @@ class VehicleDetailView(DetailView):
             context["next"] = self.object.get_next()
 
         if self.request.user.has_perm("photos.add_photo"):
-            context["form"] = PhotoForm()
+            context["form"] = self.form or PhotoForm()
+
+        if self.request.user.is_staff:
+            context["css"], context["latest_journey_debug"] = format_json(
+                self.object.latest_journey_data
+            )
+
+        context["photo"] = self.object.photo_set.filter(
+            livery=self.object.livery_id
+        ).last()
 
         return context
 
     def render_to_response(self, context):
         response = super().render_to_response(context)
 
-        if self.object.withdrawn and "potential_duplicates" in context:
-            if not all(
+        if (
+            self.object.withdrawn
+            and "potential_duplicates" in context
+            and not all(
                 vehicle.withdrawn for vehicle in context["potential_duplicates"]
-            ):
-                response.status_code = HTTPStatus.NOT_FOUND
+            )
+        ):
+            response.status_code = HTTPStatus.NOT_FOUND
 
         return response
 
     @method_decorator(permission_required("photos.add_photo", raise_exception=True))
     def post(self, *args, **kwargs):
-        form = PhotoForm(self.request.POST)
-        vehicle = self.get_object()
+        form = PhotoForm(self.request.POST, self.request.FILES)
         if form.is_valid():
-            try:
-                add_flickr_photo(form.cleaned_data["url"], vehicle, self.request)
-            except IndexError:
-                pass
+            self.object = self.get_object()
+            if image := form.cleaned_data["image"]:
+                add_uploaded_photo(image, self.object, self.request)
+            else:
+                try:
+                    add_flickr_photo(
+                        form.cleaned_data["url"], self.object, self.request
+                    )
+                except IndexError:
+                    form.add_error("url", "That doesn't look like a Flickr photo URL")
+                except WrongLicense:
+                    form.add_error("url", "That photo isn't permissively licensed")
+                except RequestException:
+                    form.add_error("url", "Couldn't get photo from Flickr")
+                    logger.exception("Flickr error")
 
-        return self.get(*args, **kwargs)
+        if form.errors:
+            self.form = form
+            return self.get(*args, **kwargs)
+
+        return redirect(self.object)
 
 
 def check_user(request):
@@ -1065,9 +1115,10 @@ def vehicle_edits(request):
         .order_by("-id")
     )
 
-    f = filters.VehicleRevisionFilter(
-        request.GET or {"status": "approved"}, queryset=revisions
-    )
+    data = request.GET.copy()
+    data.setdefault("status", "approved")
+
+    f = filters.VehicleRevisionFilter(data, queryset=revisions)
     if request.user.is_anonymous or not (
         request.user.trusted
         or request.user.is_superuser
@@ -1096,238 +1147,6 @@ class VehicleJourneyDetailView(DetailView):
 
 
 @require_safe
-def journey_json(request, pk, vehicle_id=None, service_id=None):
-    journey = get_object_or_404(
-        VehicleJourney.objects.select_related("trip__route", "vehicle"), pk=pk
-    )
-
-    tzinfo = (
-        journey.trip and journey.trip.route and journey.trip.route.timezone
-    ) or None
-
-    data = {
-        "vehicle_id": journey.vehicle_id,
-        "service_id": journey.service_id,
-        "trip_id": journey.trip_id,
-        "datetime": timezone.localtime(journey.datetime, tzinfo),
-        "route_name": journey.route_name,
-        "code": journey.code,
-        "destination": journey.destination,
-        "direction": journey.direction,
-        "current": journey.vehicle and journey.id == journey.vehicle.latest_journey_id,
-    }
-
-    if redis_client:
-        locations = redis_client and redis_client.lrange(journey.get_redis_key(), 0, -1)
-    else:
-        locations = None
-
-    if locations:
-        locations = [
-            VehicleLocation.decode_appendage(location, tzinfo) for location in locations
-        ]
-        locations.sort(key=lambda location: location["datetime"])
-
-        data["locations"] = []
-
-        stationary = False
-        previous = None
-        previous_coords = None
-        for location in locations:
-            coords = location["coordinates"]
-
-            if previous_coords:
-                dx = coords[0] - previous_coords[0]
-                dy = coords[1] - previous_coords[1]
-                if dx * dx + dy * dy < 2.5e-7:  # 0.0005 degrees squared
-                    stationary = True
-                elif stationary:
-                    # mark end of stationary period
-                    data["locations"].append(previous)
-                    stationary = False
-
-            if not stationary:
-                data["locations"].append(location)
-
-                previous_coords = coords
-
-            previous = location
-
-        if stationary:  # add last location
-            data["locations"].append(location)
-
-        del locations
-
-    # if not trip - calculate using time and first location?
-    # if not trip:
-    #     Trip
-
-    if journey.trip:
-        data["stops"] = []
-        # previous_latlong = None
-
-        trips = journey.trip.get_trips()
-        if trips == [journey.trip]:
-            stoptimes = trips[0].stoptime_set.select_related("stop__locality")
-        else:
-            stoptimes = (
-                StopTime.objects.filter(trip__in=trips)
-                .order_by("trip__start", "id")
-                .select_related("stop__locality")
-            )
-            stoptimes = contiguous_stoptimes_only(stoptimes, journey.trip.id)
-
-        for stoptime in stoptimes:
-            stop = stoptime.stop
-            # if stop := stoptime.stop:
-            #     if stop.latlong:
-            #         if previous_latlong:
-            #             heading = calculate_bearing(previous_latlong, stop.latlong)
-            #         else:
-            #             heading = None
-            #         previous_latlong = stop.latlong
-            data["stops"].append(
-                {
-                    "id": stoptime.id,
-                    "atco_code": stoptime.stop_id,
-                    "name": (
-                        stop.get_name_for_timetable() if stop else stoptime.stop_code
-                    ),
-                    "aimed_arrival_time": stoptime.arrival_time(),
-                    "aimed_departure_time": stoptime.departure_time(),
-                    "minor": stoptime.is_minor(),
-                    "heading": stop and stop.get_heading(),
-                    "coordinates": stop and stop.latlong and stop.latlong.coords,
-                }
-            )
-    elif journey.service_id:
-        stop_usages = StopUsage.objects.filter(
-            service_id=journey.service_id
-        ).select_related("stop__locality")
-        data["stops"] = [
-            {
-                "id": su.id,
-                "atco_code": su.stop_id,
-                "name": su.stop.get_name_for_timetable(),
-                "heading": su.stop.get_heading(),
-                "coordinates": su.stop.latlong and su.stop.latlong.coords,
-                "minor": not su.timing_point,
-                "inbound": su.inbound,
-                "line_name": su.line_name.upper(),
-            }
-            for i, su in enumerate(stop_usages)
-        ]
-        del stop_usages
-
-    if data.get("stops") and data.get("locations"):
-        # filter by line name
-        if "line_name" in data["stops"][0]:
-            line_name = journey.route_name.upper()
-            if any(stop["line_name"] == line_name for stop in data["stops"]):
-                data["stops"] = [
-                    stop for stop in data["stops"] if stop["line_name"] == line_name
-                ]
-
-        # only stops with coordinates
-        stops = [stop for stop in data["stops"] if stop["coordinates"]]
-
-        if stops:
-            stop_coords = [stop["coordinates"][::-1] for stop in stops]
-            vehicle_coords = [
-                location["coordinates"][::-1] for location in data["locations"]
-            ]
-            # pre-build stop headings array for azimuth filtering; NaN = unknown
-            stop_headings = np.array(
-                [s["heading"] if s["heading"] is not None else np.nan for s in stops],
-                dtype=float,
-            )
-            try:
-                haversine_vector_results = haversine_vector(
-                    stop_coords,
-                    vehicle_coords,
-                    Unit.METERS,
-                    comb=True,
-                )
-            except ValueError as e:
-                logging.exception(e)
-            else:
-                for distances, location in zip(
-                    haversine_vector_results, data["locations"]
-                ):
-                    vehicle_heading = location.get("direction")
-                    if vehicle_heading is not None:
-                        # mask stops whose heading differs by ≥ 90° from vehicle
-                        # heading_diff in [0, 180]; NaN headings are always kept
-                        heading_diff = np.abs(
-                            ((stop_headings - vehicle_heading) + 180) % 360 - 180
-                        )
-                        aligned = np.isnan(heading_diff) | (heading_diff < 90)
-                        if aligned.any():
-                            idx = int(np.argmin(np.where(aligned, distances, np.inf)))
-                        else:
-                            idx = int(np.argmin(distances))
-                    else:
-                        idx = int(np.argmin(distances))
-
-                    if distances[idx] < 100:
-                        stops[idx]["actual_departure_time"] = location["datetime"]
-
-            # work out which direction we're going in
-            inbound = datetime.timedelta()
-            outbound = datetime.timedelta()
-            previous = None
-
-            for stop in stops:
-                if "inbound" in stop and "actual_departure_time" in stop:
-                    if previous and previous["inbound"] == stop["inbound"]:
-                        difference = (
-                            stop["actual_departure_time"]
-                            - previous["actual_departure_time"]
-                        )
-                        if stop["inbound"]:
-                            inbound += difference
-                        else:
-                            outbound += difference
-
-                    previous = stop
-
-            # whichever sum-of-differences is bigger is the direction of travel
-            if inbound > outbound:
-                data["stops"] = [stop for stop in data["stops"] if stop["inbound"]]
-            elif inbound < outbound:
-                data["stops"] = [stop for stop in data["stops"] if not stop["inbound"]]
-
-    next_previous_filter = {"date": journey.date}
-    if service_id:
-        next_previous_filter["service_id"] = service_id
-        data["vehicle"] = str(journey.vehicle)
-    else:
-        next_previous_filter["vehicle_id"] = journey.vehicle_id
-
-    try:
-        next_journey = journey.get_next_by_datetime(**next_previous_filter)
-    except VehicleJourney.DoesNotExist:
-        pass
-    else:
-        data["next"] = {
-            "id": next_journey.id,
-            "datetime": timezone.localtime(next_journey.datetime),
-        }
-
-    try:
-        previous_journey = journey.get_previous_by_datetime(**next_previous_filter)
-    except VehicleJourney.DoesNotExist:
-        pass
-    else:
-        data["previous"] = {
-            "id": previous_journey.id,
-            "datetime": timezone.localtime(previous_journey.datetime),
-        }
-
-    return JsonResponse(data)
-
-
-@require_safe
 def latest_journey_debug(request, **kwargs):
     vehicle = get_object_or_404(Vehicle, **kwargs, latest_journey_data__isnull=False)
 
@@ -1337,7 +1156,11 @@ def latest_journey_debug(request, **kwargs):
     except (KeyError, TypeError):
         pass
 
-    return JsonResponse(vehicle.latest_journey_data, safe=False)
+    return JsonResponse(vehicle.latest_journey_data)
+
+
+class _Rollback(Exception):
+    """raised to roll back the atomic block in the debug view below"""
 
 
 def debug(request):
@@ -1346,9 +1169,9 @@ def debug(request):
     if form.is_valid():
         data = form.cleaned_data["data"]
         try:
-            item = json.loads(data)
-        except ValueError as e:
-            form.add_error("data", e)
+            item = loads(data)
+        except ValueError:
+            form.add_error("data", "that isn't valid JSON")
         else:
             vehicle = None
             journey = None
@@ -1357,12 +1180,12 @@ def debug(request):
                 with transaction.atomic():
                     command = import_bod_avl.Command()
                     command.do_source()
-                    vehicle, created = command.get_vehicle(item)
+                    vehicle, _created = command.get_vehicle(item)
                     journey = command.get_journey(item, vehicle)
                     if not journey.datetime:
                         journey.datetime = command.get_datetime(item)
-                    raise Exception
-            except Exception:
+                    raise _Rollback
+            except _Rollback:
                 pass
             connection.force_debug_cursor = False
 
@@ -1423,7 +1246,7 @@ def overland(request, uuid=None):
 
     subscription = get_object_or_404(SiriSubscription, uuid=uuid)
 
-    data = json.loads(request.body)
+    data = loads(request.body)
 
     for item in data["locations"][-1:]:
         when = item["properties"]["timestamp"]

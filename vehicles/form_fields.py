@@ -1,4 +1,5 @@
 from re import sub
+
 from django.forms import CharField, Textarea
 from django.utils.text import normalize_newlines
 

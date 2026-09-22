@@ -1,15 +1,17 @@
 import json
 import logging
-from collections import namedtuple
-from datetime import timedelta, datetime
+from collections import defaultdict, namedtuple
+from datetime import datetime, timedelta
 from time import sleep
 
 import requests
 import sentry_sdk
+from asgiref.sync import async_to_sync
+from channels.exceptions import ChannelFull
+from channels.layers import get_channel_layer
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.core.management.base import BaseCommand
-from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.db.models.functions import Now
@@ -20,8 +22,8 @@ from tenacity import before_sleep_log, retry, wait_exponential
 from busstops.models import DataSource
 from bustimes.models import Route, Trip
 
-from ..models import Vehicle, VehicleJourney, VehicleCode
-from ..utils import calculate_bearing, redis_client
+from ..models import Vehicle, VehicleCode, VehicleJourney
+from ..utils import VEHICLE_POSITIONS_CHANNEL, calculate_bearing, redis_client
 
 logger = logging.getLogger(__name__)
 fifteen_minutes = timedelta(minutes=15)
@@ -61,8 +63,6 @@ class ImportLiveVehiclesCommand(BaseCommand):
     url = ""
     vehicles = Vehicle.objects.select_related("latest_journey__trip")
     wait = 66
-    history = True
-    status = []
     status_key = None
     tzinfo = None
 
@@ -73,6 +73,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.session = requests.Session()
+        self.status = []
         self.to_save = []
         self.journeys_to_create = {}
         self.journeys_to_update = []
@@ -81,9 +82,10 @@ class ImportLiveVehiclesCommand(BaseCommand):
         self.journeys_ids = {}
         self.journeys_ids_ids = {}
         self.duplicate_vehicles = set()  # vehicles on 'two journeys at once'
+        self.max_datetime = None  # newest item timestamp in the current update
 
     @staticmethod
-    def get_datetime(self):
+    def get_datetime():
         return
 
     @retry(
@@ -133,13 +135,15 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 logger.warning(
                     "%s: %s: %s is %s from now", timezone.now(), vehicle, dt, dt - now
                 )
+            elif not self.max_datetime or dt > self.max_datetime:
+                self.max_datetime = dt
 
         location = None
         if vehicle is None:
             try:
                 vehicle, _ = self.get_vehicle(item)
-            except Vehicle.MultipleObjectsReturned as e:
-                logger.exception(e)
+            except Vehicle.MultipleObjectsReturned:
+                logger.exception("multiple vehicles found")
                 return
             if not vehicle:
                 return
@@ -158,7 +162,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 # timestamp isn't newer
                 # but allow if the latest journey from another source has no service info
                 if not (
-                    vehicle.latest_journey_id
+                    vehicle.latest_journey
                     and vehicle.latest_journey.source_id != self.source.id
                     and not vehicle.latest_journey.service_id
                 ):
@@ -180,14 +184,11 @@ class ImportLiveVehiclesCommand(BaseCommand):
         else:
             journey = self.get_journey(item, vehicle)
 
-            if (
-                journey
-                and journey.trip
-                and journey.trip.garage_id
-                and journey.trip.garage_id != vehicle.garage_id
-            ):
+            if journey and journey.trip and journey.trip.garage_id != vehicle.garage_id:
                 vehicle.garage_id = journey.trip.garage_id
-                vehicle.save(update_fields=["garage"])
+                Vehicle.objects.filter(id=vehicle.id).update(
+                    garage_id=vehicle.garage_id
+                )
 
         if not journey:
             return
@@ -198,11 +199,11 @@ class ImportLiveVehiclesCommand(BaseCommand):
             and latest_journey
             and latest_journey.source_id != self.source.id
             and self.source.name != "Bus Open Data"
+            and ((dt or now) - latest_datetime).total_seconds()
+            < 300  # less than 5 minutes old
+            and (latest_journey.service_id or not journey.service_id)
         ):
-            if ((dt or now) - latest_datetime).total_seconds() < 300:
-                # less than 5 minutes old
-                if latest_journey.service_id or not journey.service_id:
-                    return  # defer to other source
+            return  # defer to other source
 
         if not location:
             location = self.create_vehicle_location(item)
@@ -235,8 +236,10 @@ class ImportLiveVehiclesCommand(BaseCommand):
         if keep_journey:
             pass
         else:
-            if latest_journey and same_journey(
-                journey, latest_journey, location.datetime
+            if (
+                latest_journey
+                and latest_journey.id
+                and same_journey(journey, latest_journey, location.datetime)
             ):
                 journey.uuid = latest_journey.uuid
                 journey.id = latest_journey.id
@@ -270,16 +273,22 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 journey.datetime = location.datetime
             if not journey.date:
                 journey.date = timezone.localdate(journey.datetime)
-                if journey.trip and journey.trip.start >= timedelta(days=1):
+                if (
+                    journey.trip
+                    and journey.trip.start >= timedelta(days=1)
+                    and timezone.localtime(journey.datetime).hour < 12
+                ):
                     # if the driver signed in before midnight on the service date,
                     # the calendar date is already correct — don't roll back
-                    if timezone.localtime(journey.datetime).hour < 12:
-                        journey.date -= timedelta(days=1)
+                    journey.date -= timedelta(days=1)
 
-            if journey.service_id and VehicleJourney.service.is_cached(journey):
-                if not journey.service.tracking:
-                    journey.service.tracking = True
-                    journey.service.save(update_fields=["tracking"])
+            if (
+                journey.service_id
+                and VehicleJourney.service.is_cached(journey)
+                and not journey.service.tracking
+            ):
+                journey.service.tracking = True
+                journey.service.save(update_fields=["tracking"])
 
             if not (
                 concurrent
@@ -330,8 +339,8 @@ class ImportLiveVehiclesCommand(BaseCommand):
                     self.vehicles_to_update,
                     ["latest_journey", "latest_journey_data"],
                 )
-            except IntegrityError as e:
-                logger.exception(e)
+            except IntegrityError:
+                logger.exception("error bulk updating vehicles")
             self.vehicles_to_update = []
 
         # update locations in Redis
@@ -339,7 +348,9 @@ class ImportLiveVehiclesCommand(BaseCommand):
         pipeline = redis_client.pipeline(transaction=False)
 
         geoadd = []
-        sadd = {}
+        sadd = defaultdict(list)
+        items = []
+        appendages = []
 
         for location, vehicle in self.to_save:
             if not location.latlong or (
@@ -354,16 +365,10 @@ class ImportLiveVehiclesCommand(BaseCommand):
 
             if location.journey.service_id:
                 key = f"service{location.journey.service_id}vehicles"
-                if key in sadd:
-                    sadd[key].append(vehicle.id)
-                else:
-                    sadd[key] = [vehicle.id]
+                sadd[key].append(vehicle.id)
             if vehicle.operator_id:
                 key = f"operator{vehicle.operator_id}vehicles"
-                if key in sadd:
-                    sadd[key].append(vehicle.id)
-                else:
-                    sadd[key] = [vehicle.id]
+                sadd[key].append(vehicle.id)
             try:
                 if (
                     location.journey.trip
@@ -371,34 +376,49 @@ class ImportLiveVehiclesCommand(BaseCommand):
                     and location.journey.trip.operator_id != vehicle.operator_id
                 ):
                     key = f"operator{location.journey.trip.operator_id}vehicles"
-                    if key in sadd:
-                        sadd[key].append(vehicle.id)
-                    else:
-                        sadd[key] = [vehicle.id]
+                    sadd[key].append(vehicle.id)
             except Trip.DoesNotExist:
                 location.journey.trip = None
 
             redis_json = location.get_redis_json(tz=self.tzinfo)
-            redis_json = json.dumps(redis_json, cls=DjangoJSONEncoder)
-            pipeline.set(f"vehicle{vehicle.id}", redis_json, ex=900)
-            # can't use 'mset' cos it doesn't let us specify an expiry (900 secs = 15 min)
+            items.append(redis_json)
+            pipeline.set(
+                f"vehicle{vehicle.id}",
+                json.dumps(redis_json),
+                ex=900,  # 900 secs = 15 min
+            )
+            # can't use 'mset' cos it doesn't let us specify an expiry
+
+            appendages.append(
+                (
+                    location.journey.get_redis_key(),
+                    int(location.datetime.timestamp()),
+                    location.latlong.x,
+                    location.latlong.y,
+                )
+            )
 
         if geoadd:
             pipeline.geoadd("vehicle_location_locations", geoadd)
-        for key in sadd:
-            pipeline.sadd(key, *sadd[key])
-
-        if self.history:
-            # add locations to journey history
-
-            for location, vehicle in self.to_save:
-                if location.latlong:
-                    pipeline.rpush(*location.get_appendage())
+        for key, value in sadd.items():
+            pipeline.sadd(key, *value)
 
         try:
             pipeline.execute()
-        except ConnectionError as e:
-            logger.exception(e)
+        except ConnectionError:
+            logger.exception("error executing redis pipeline")
+
+        channel_layer = get_channel_layer()
+        if channel_layer is not None and items:
+            try:
+                async_to_sync(channel_layer.send)(
+                    VEHICLE_POSITIONS_CHANNEL,
+                    {"type": "move_vehicles", "items": appendages},
+                )
+            except ChannelFull as e:
+                # distribute_vehicle_locations worker isn't keeping up (or is down) -
+                # drop this batch rather than blocking the importer
+                logger.error(e)
 
         self.to_save = []
 
@@ -413,6 +433,9 @@ class ImportLiveVehiclesCommand(BaseCommand):
         return self
 
     def handle_items(self, items, identities):
+        if not items:
+            return
+
         with sentry_sdk.start_span(name="get vehicle codes"):
             vehicle_codes = (
                 VehicleCode.objects.filter(
@@ -434,6 +457,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         }
 
         i = 1
+        handled = {}
         for item, vehicle_identity in zip(items, identities):
             journey_identity = self.get_journey_identity(item)
             concurrent = vehicle_identity in self.duplicate_vehicles
@@ -441,7 +465,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
             if vehicle_identity in vehicles_by_identity:
                 vehicle = vehicles_by_identity[vehicle_identity]
             else:
-                vehicle, created = self.get_vehicle(item)
+                vehicle, _created = self.get_vehicle(item)
                 # print(vehicle_identity, vehicle, created)
                 if vehicle:
                     VehicleCode.objects.get_or_create(
@@ -454,7 +478,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
             keep_journey = False
             if not concurrent and vehicle_identity in self.journeys_ids_ids:
                 journey_identity_id = self.journeys_ids_ids[vehicle_identity]
-                if journey_identity_id == (journey_identity, vehicle.latest_journey_id):
+                if vehicle and journey_identity_id == (journey_identity, vehicle.latest_journey_id):
                     keep_journey = True  # can dumbly keep same latest_journey
 
             if vehicle:
@@ -468,20 +492,28 @@ class ImportLiveVehiclesCommand(BaseCommand):
                 )
 
                 if result:
-                    location, vehicle = result
+                    _location, vehicle = result
 
-                self.journeys_ids_ids[vehicle_identity] = (
-                    journey_identity,
-                    vehicle.latest_journey_id,
-                )
+                handled[vehicle_identity] = (journey_identity, vehicle)
 
             self.identifiers[vehicle_identity] = self.get_item_identity(item)
 
             if i % 500 == 0:
                 self.save()
+                self.record_journeys_ids_ids(handled)
+                handled = {}
             i += 1
 
         self.save()
+        self.record_journeys_ids_ids(handled)
+
+    def record_journeys_ids_ids(self, handled):
+        # a newly created journey only has an id after save()
+        for vehicle_identity, (journey_identity, vehicle) in handled.items():
+            self.journeys_ids_ids[vehicle_identity] = (
+                journey_identity,
+                vehicle.latest_journey_id,
+            )
 
     def get_changed_items(self, items=None):
         changed_items = []
@@ -509,9 +541,11 @@ class ImportLiveVehiclesCommand(BaseCommand):
             else:
                 vehicle_identities.add(vehicle_identity)
 
-            if self.identifiers.get(vehicle_identity) == self.get_item_identity(item):
-                if journey_identity == self.journeys_ids[vehicle_identity]:
-                    continue
+            if (
+                self.identifiers.get(vehicle_identity) == self.get_item_identity(item)
+                and journey_identity == self.journeys_ids[vehicle_identity]
+            ):
+                continue
             if (
                 vehicle_identity not in self.journeys_ids
                 or journey_identity != self.journeys_ids[vehicle_identity]
@@ -536,6 +570,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         with sentry_sdk.start_transaction(name=f"{self.source.name} update"):
             now = timezone.localtime()
             self.source.datetime = now
+            self.max_datetime = None
 
             wait = self.wait
 
@@ -548,8 +583,8 @@ class ImportLiveVehiclesCommand(BaseCommand):
                         changed_journey_identities,
                         total_items,
                     ) = self.get_changed_items()
-                except requests.exceptions.RequestException as e:
-                    logger.exception(e)
+                except requests.exceptions.RequestException:
+                    logger.exception("error getting changed items")
                     return self.wait
 
             with sentry_sdk.start_span(name="handle quick items") as span:
@@ -566,11 +601,16 @@ class ImportLiveVehiclesCommand(BaseCommand):
         time_taken = (timezone.now() - now).total_seconds()
 
         if self.source_name:
+            timestamp = self.source.datetime
+            if timestamp is now and self.max_datetime:
+                # the feed has no timestamp of its own
+                timestamp = self.max_datetime
+
             self.status.append(
                 Status(
                     now,
-                    self.source.datetime,
-                    now - self.source.datetime,
+                    timestamp,
+                    now - timestamp,
                     total_items,
                     len(changed_items) + len(changed_journey_items),
                     time_taken,
@@ -578,6 +618,12 @@ class ImportLiveVehiclesCommand(BaseCommand):
             )
             self.status = self.status[-50:]
             cache.set(self.status_key, self.status, None)
+
+            sentry_sdk.metrics.count(
+                "vehicle_locations",
+                self.status[-1].changed_items,
+                attributes={"source": self.source_name},
+            )
 
         if time_taken < wait:
             return wait - time_taken

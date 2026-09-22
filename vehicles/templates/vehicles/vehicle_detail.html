@@ -16,12 +16,12 @@
         <meta property="og:description" content="{% firstof object.vehicle_type object.operator %}{% if object.name %}
 
 {{ object.name }}{% endif %}">
-        {% with photos=vehicle.photo_set.all %}{% if photos %}
+        {% if photo %}
             <meta name="twitter:card" content="summary_large_image">
-            <meta property="og:image" content="{{ photos.0.image_1200_630.url }}">
+            <meta property="og:image" content="{{ photo.image_1200_630.url }}">
             <meta property="og:image:width" content="1200">
             <meta property="og:image:height" content="630">
-        {% endif %}{% endwith %}
+        {% endif %}
     {% endif %}
 {% endblock head %}
 
@@ -30,6 +30,21 @@
 {% block content %}
 
 {% if vehicle %}
+    {% if photo %}
+        <figure class="vehicle-photo">
+            {% if form %}<a href="{% url 'admin:photos_photo_change' photo.id %}">{% endif %}
+            <img src="{{ photo.image_320.url }}"{% if photo.width and photo.height %} width="{{ photo.width }}" height="{{ photo.height }}"{% endif %} alt="" />
+            {% if photo.credit %}
+                <figcaption>
+                    {% if photo.url %}
+                        <a href="{{ photo.url }}">{{ photo.credit }}</a>
+                    {% else %}{{ photo.credit }}{% endif %}
+                </figcaption>
+            {% endif %}
+            {% if form %}</a>{% endif %}
+        </figure>
+    {% endif %}
+
     <h1>
         {% if vehicle.reg %}
             {% if vehicle.fleet_code or vehicle.fleet_number %}
@@ -94,12 +109,23 @@
 
 {% load static %}
 
-<div id="journeys" hx-history="false">
+{% if date %}
+    {# outside of the #journeys element! #}
+    <script src="{% static 'js/htmx.org/htmx.min.js' %}"></script>
+{% endif %}
+
+<div id="journeys" data-hx-history-elt>
 
 {% if date %}
-    <script src="{% static 'js/htmx.org/htmx.min.js' %}"></script>
-
-    <form class="timetable-date" autocomplete="off" hx-trigger="change" hx-get="{{ request.path }}" hx-select="#journeys" hx-target="#journeys" hx-indicator="#journeys" hx-swap="outerHTML" hx-push-url="true">
+    <form class="timetable-date" autocomplete="off"
+        data-hx-trigger="change"
+        data-hx-get="{{ request.path }}"
+        data-hx-select="#journeys"
+        data-hx-target="#journeys"
+        data-hx-indicator="#journeys"
+        data-hx-swap="outerHTML"
+        data-hx-push-url="true"
+    >
         {% if dates %}
             <select name="date" aria-label="Date">
                 {% for option in dates %}
@@ -154,7 +180,7 @@
                     <a href="{% if journey.locations is not False %}/journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.trip }}</a>
                 </td>
             {% else %}
-                <td class="tabular">{{ journey.datetime|time:"H:i" }}{% if journey.datetime.date > date %}⁺¹{% endif %}</td>
+                <td class="tabular">{{ journey.datetime|time:"H:i" }}{% if journey.datetime|date:"Y-m-d" > date.isoformat %}⁺¹{% endif %}</td>
             {% endif %}
             <td>{% firstof journey.destination journey.direction %}</td>
             {% if journey.locations is not False %}
@@ -191,24 +217,21 @@
 </div>
 
 {% if form %}
-
-    {% for photo in vehicle.photo_set.all %}
-        <p><img src="{{ photo.image_1200_630.url }}" width="600" height="315" alt=""></p>
-    {% endfor %}
-
-    <form action="{{ request.path }}" method="POST">
+<details name="advanced"{% if form.is_bound %} open{% endif %}>
+    <summary>Add photo</summary>
+    <form action="{{ request.path }}" method="POST" enctype="multipart/form-data">
         {{ form.as_p }}
-        {% csrf_token %}
         <input type="submit">
     </form>
-
+</details>
 {% endif %}
 
-
-<div id="history"></div>
-
-{% if vehicle and request.user.is_superuser %}
-    <p><a href="{% url 'latest_journey_debug' vehicle.pk %}">Debug</a></p>
+{% if latest_journey_debug %}
+<style>{{ css }}</style>
+<details name="advanced">
+    <summary>Latest journey data</summary>
+    <code>{{ latest_journey_debug }}</code>
+</details>
 {% endif %}
 
 {% if next or previous %}

@@ -1,6 +1,7 @@
 import logging
+
 from django.core.management.base import BaseCommand
-from pyrosm import get_data, OSM
+from pyrosm import OSM, get_data
 
 from busstops.models import DataSource, StopPoint
 
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
     def handle(self, *args, **options):
-        source, name = DataSource.objects.get_or_create(name="OpenStreetMap")
+        source, _name = DataSource.objects.get_or_create(name="OpenStreetMap")
         self.source = source
 
         existing_stops = StopPoint.objects.filter(

@@ -45,8 +45,7 @@ def generate_unique_slug(field, instance, slug, manager):
             original_slug = original_slug[: field.max_length - tail_length]
 
         # re-generate the slug
-        data = dict(slug=original_slug, sep=field.index_sep, index=index)
-        slug = "%(slug)s%(sep)s%(index)d" % data
+        slug = f"{original_slug}{field.index_sep}{index}"
 
         # ...next iteration...
 

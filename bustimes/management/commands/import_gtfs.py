@@ -1,23 +1,30 @@
 import logging
 from pathlib import Path
-import gtfs_kit
-import pandas as pd
-from shapely.errors import EmptyPartError
 from zipfile import BadZipFile
+
+import gtfs_kit
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand
-from django.db import connection
 from django.db.models import Count, Exists, OuterRef, Q
 from django.db.models.functions import Now
-from django.utils.dateparse import parse_duration
+from shapely.errors import EmptyPartError
 
 from busstops.models import AdminArea, DataSource, Operator, Region, Service, StopPoint
 
 from ...download_utils import download_if_modified
+from ...gtfs_utils import (
+    MODES,
+    copy_stop_times,
+    do_route_links,
+    get_calendars,
+    get_first_and_last_stop_times,
+    get_str,
+    save_trips,
+    set_trip_times,
+)
+from ...models import Route, StopTime, Trip
 from ...utils import log_time_taken
-from ...models import Route, Trip
-from ...gtfs_utils import get_calendars, MODES, do_route_links
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +144,7 @@ class Command(BaseCommand):
                 service.operator.set([operator])
         self.services[service.id] = service
 
-        route, created = Route.objects.update_or_create(
+        route, _ = Route.objects.update_or_create(
             {
                 "line_name": service.line_name,
                 "description": service.description,
@@ -146,8 +153,6 @@ class Command(BaseCommand):
             source=self.source,
             code=line.route_id,
         )
-        if not created:
-            route.trip_set.all().delete()
         self.routes[line.route_id] = route
         self.route_operators[line.route_id] = operator
 
@@ -177,99 +182,68 @@ class Command(BaseCommand):
 
         calendars = get_calendars(feed, source=self.source)
 
+        # reuse existing trip ids where possible, so foreign keys elsewhere
+        # (e.g. vehicle journeys) don't get orphaned by every reimport
+        existing_trip_ids = dict(
+            Trip.objects.filter(route__source=self.source)
+            .order_by("id")
+            .values_list("ticket_machine_code", "id")
+        )
+
         trips = {}
 
         # line as in line in a spreadsheet, not as in the Elizabeth Line
         for line in feed.trips.itertuples():
             route = self.routes[line.route_id]
-            trips[line.trip_id] = Trip(
+            trip = Trip(
                 route=route,
                 calendar=calendars[line.service_id],
                 inbound=line.direction_id == 1,
-                headsign=line.trip_headsign,
+                headsign=get_str(line, "trip_headsign", default=None),
                 ticket_machine_code=line.trip_id,
-                block=""
-                if pd.isna(block_id := getattr(line, "block_id", ""))
-                else block_id,
-                vehicle_journey_code=getattr(line, "trip_short_name", ""),
+                block=get_str(line, "block_id", default=None),
+                vehicle_journey_code=get_str(line, "trip_short_name", default=None),
                 operator=self.route_operators[line.route_id],
             )
+            if line.trip_id in existing_trip_ids:
+                trip.id = existing_trip_ids[line.trip_id]
+            trips[line.trip_id] = trip
 
-        # use stop_times.txt to calculate trips' start times, end times and destinations:
-
-        trip = None
-        previous_line = None
-
-        for line in feed.stop_times.itertuples():
-            if not previous_line or previous_line.trip_id != line.trip_id:
-                if trip:
-                    trip.destination = stops.get(previous_line.stop_id)
-                    trip.end = previous_line.arrival_time
-
-                trip = trips[line.trip_id]
-                trip.start = line.departure_time
-
-            previous_line = line
-
-        if previous_line:
-            # last trip:
-            trip.destination = stops.get(line.stop_id)
-            trip.end = line.arrival_time
-
-        for trip_id in trips:
-            trip = trips[trip_id]
-            if trip.start is None:
-                logger.warning(f"trip {trip_id} has no stop times")
-                trips[trip_id] = None
-
-        Trip.objects.bulk_create(
-            [trip for trip in trips.values() if isinstance(trip, Trip)],
-            batch_size=1000,
+        _, first_stop_times, last_stop_times = get_first_and_last_stop_times(
+            feed.stop_times
         )
 
-        with (
-            connection.cursor() as cursor,
-            cursor.copy(
-                "COPY bustimes_stoptime (stop_id, arrival, departure, sequence, trip_id, timing_status, pick_up, set_down, stop_code) FROM STDIN"
-            ) as copy,
-        ):
-            for line in feed.stop_times.itertuples():
-                timing_status = "PTP" if getattr(line, "timepoint", 1) == 1 else "OTH"
+        for trip_id in set_trip_times(trips, first_stop_times, last_stop_times, stops):
+            logger.warning(f"trip {trip_id} has no stop times")
 
-                pick_up = None
-                match line.pickup_type:
-                    case 0:  # Regularly scheduled pickup
-                        pick_up = True
-                    case 1:  # "No pickup available"
-                        pick_up = False
+        trip_objs = [trip for trip in trips.values() if trip is not None]
+        existing_trips = save_trips(
+            trip_objs,
+            fields=[
+                "route",
+                "calendar",
+                "inbound",
+                "headsign",
+                "ticket_machine_code",
+                "block",
+                "vehicle_journey_code",
+                "operator",
+                "start",
+                "end",
+                "destination",
+            ],
+        )
+        StopTime.objects.filter(trip__in=existing_trips).delete()
 
-                set_down = None
-                match line.drop_off_type:
-                    case 0:  # Regularly scheduled drop off
-                        set_down = True
-                    case 1:  # "No drop off available"
-                        set_down = False
+        copy_stop_times(feed, trips, last_stop_times)
 
-                departure = int(parse_duration(line.departure_time).total_seconds())
-                arrival = None
-                if line.arrival_time != departure:
-                    arrival = int(parse_duration(line.arrival_time).total_seconds())
-
-                copy.write_row(
-                    (
-                        line.stop_id,
-                        arrival,
-                        departure,
-                        line.stop_sequence,
-                        trips[line.trip_id].pk,
-                        timing_status,
-                        pick_up,
-                        set_down,
-                        "",
-                    )
-                )
-
+        kept_trip_ids = {trip.pk for trip in trips.values() if trip}
         del trips
+
+        # remove trips that used to belong to these routes but weren't in this import
+        Trip.objects.filter(route__in=self.routes.values()).exclude(
+            id__in=kept_trip_ids
+        ).delete()
 
         services = Service.objects.filter(id__in=self.services.keys())
 
@@ -312,7 +286,6 @@ class Command(BaseCommand):
                 current=False
             )
         )
-        old_routes.update(service=None)
 
         feed_stops = {row.stop_id: row for row in feed.stops.itertuples()}
         do_route_links(feed, self.source, self.routes, feed_stops)
@@ -337,7 +310,7 @@ class Command(BaseCommand):
                 try:
                     with log_time_taken(logger):
                         self.handle_zipfile(path)
-                except (OSError, BadZipFile) as e:
-                    logger.exception(e)
+                except (OSError, BadZipFile):
+                    logger.exception("error handling zipfile")
 
             # sleep(2)

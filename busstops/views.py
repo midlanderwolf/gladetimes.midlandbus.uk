@@ -2,9 +2,10 @@
 
 import csv
 import datetime
-import os
 import logging
+import os
 from http import HTTPStatus
+from itertools import groupby
 from urllib.parse import urlencode
 
 import requests
@@ -12,22 +13,20 @@ from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
-from django.contrib.postgres.aggregates import ArrayAgg, BoolOr, StringAgg
-from itertools import groupby
+from django.contrib.postgres.aggregates import ArrayAgg, BoolOr
 from django.contrib.postgres.search import SearchHeadline, SearchQuery, SearchRank
 from django.contrib.sitemaps import Sitemap
 from django.core.cache import cache
+from django.core.exceptions import PermissionDenied
 from django.core.mail import EmailMessage
 from django.core.paginator import Paginator
 from django.db import connection
-from django.db.models import F, OuterRef, Prefetch, Q, When, Case, Value, Exists
+from django.db.models import Case, F, OuterRef, Prefetch, Q, StringAgg, Value, When
 from django.db.models.functions import Coalesce, Now
 from django.http import (
     Http404,
     HttpResponse,
     HttpResponseBadRequest,
-    HttpResponseRedirect,
-    JsonResponse,
     StreamingHttpResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
@@ -36,15 +35,15 @@ from django.urls import resolve, reverse
 from django.utils import timezone
 from django.utils.cache import patch_response_headers
 from django.utils.functional import SimpleLazyObject
-from django.views.csrf import csrf_failure as django_csrf_failure
 from django.views.decorators.cache import cache_control
 from django.views.decorators.http import last_modified
 from django.views.generic.detail import DetailView
+from django_orjson.http import JsonResponse
 from redis.exceptions import ConnectionError
 from sql_util.utils import Exists, SubqueryMax, SubqueryMin
 from ukpostcodeutils import validation
 
-from bustimes.models import Trip, StopTime
+from bustimes.models import StopTime, Trip
 from departures import live
 from disruptions.models import Consequence, Situation
 from fares.models import FareTable
@@ -63,10 +62,13 @@ from .models import (
     Region,
     Service,
     ServiceColour,
+    ServiceOverride,
     StopArea,
     StopPoint,
 )
 from .utils import get_bounding_box
+
+logger = logging.getLogger(__name__)
 
 operator_has_current_services = Exists("service", filter=Q(service__current=True))
 operator_has_current_services_or_vehicles = operator_has_current_services | Exists(
@@ -75,7 +77,7 @@ operator_has_current_services_or_vehicles = operator_has_current_services | Exis
 
 
 def get_colours(services):
-    colours = set(service.colour_id for service in services if service.colour_id)
+    colours = {service.colour_id for service in services if service.colour_id}
     if colours:
         return ServiceColour.objects.filter(id__in=colours)
 
@@ -215,7 +217,6 @@ def not_found(request, exception):
     # anonymise request (cos response may be cached)
     request.user = AnonymousUser
 
-    context["ad"] = False
     response = render(request, "404.html", context)
     response.status_code = HTTPStatus.NOT_FOUND
 
@@ -224,19 +225,6 @@ def not_found(request, exception):
         patch_response_headers(response, cache_timeout=3600)
 
     return response
-
-
-def csrf_failure(request, reason=""):
-    logging.warning("CSRF failure: %s", reason)
-    if (
-        request.resolver_match
-        and request.resolver_match.url_name == "login"
-        and request.user.is_authenticated
-    ):
-        return HttpResponseRedirect(
-            request.POST.get("next") or settings.LOGIN_REDIRECT_URL
-        )
-    return django_csrf_failure(request, reason)
 
 
 @cache_control(max_age=3600)
@@ -353,21 +341,23 @@ def status(request):
     }
 
     context["statuses"] = cache.get_many(
-        f"{key}_status"
-        for key in (
-            "bod_avl",
-            "Transport_for_Wales",
-            "Bus_Open_Data",
-            "Todd's_Travel",
-            "Ember",
-            "Realtime_Transport_Operators",
-            "FlixBus",
-            "Irish_Citylink",
-            "Translink",
-            "Stagecoach",
-            "TfE",
-            "jersey",
-        )
+        [
+            f"{key}_status"
+            for key in (
+                "bod_avl",
+                "Transport_for_Wales",
+                "Bus_Open_Data",
+                "Todd's_Travel",
+                "Ember",
+                "Realtime_Transport_Operators",
+                "FlixBus",
+                "Irish_Citylink",
+                "Translink",
+                "Stagecoach",
+                "TfE",
+                "jersey",
+            )
+        ]
     ).items()
 
     return render(
@@ -455,11 +445,11 @@ def stops_mvt(request, z, x, y):
 
 
 def stats(request):
-    return JsonResponse(cache.get("vehicle-tracking-stats", []), safe=False)
+    return JsonResponse(cache.get("vehicle-tracking-stats", []))
 
 
 def timetable_source_stats(request):
-    return JsonResponse(cache.get("timetable-source-stats", []), safe=False)
+    return JsonResponse(cache.get("timetable-source-stats", []))
 
 
 @cache_control(max_age=3600)
@@ -768,13 +758,13 @@ def get_departures_context(stop, services, form_data, stops=None) -> dict:
     # for stop area departures - indicate child stop/platform number
     if stops:
         context["stoparea"] = stop
-        for stop in stops:
-            if " " in stop.indicator:
-                prefix = stop.indicator.split(" ")[0].title()
+        for child_stop in stops:
+            if " " in child_stop.indicator:
+                prefix = child_stop.indicator.split(" ")[0].title()
                 context["indicator_prefix"] = prefix  # Stand, Stance, Stop
                 break
-        if "breadcrumb" in context and stop.locality:
-            context["breadcrumb"] += [stop.locality.parent, stop.locality]
+        if "breadcrumb" in context and child_stop.locality:
+            context["breadcrumb"] += [child_stop.locality.parent, child_stop.locality]
 
         stops_dict = {stop.pk: stop for stop in stops}
 
@@ -876,7 +866,6 @@ class StopPointDetailView(DetailView):
         if nearby is not None:
             context["nearby"] = (
                 nearby.exclude(pk=self.object.pk)
-                .filter(service__current=True)
                 .annotate(line_names=stop_line_names)
                 .defer("latlong")
             )
@@ -1064,17 +1053,19 @@ class OperatorDetailView(DetailView):
             context["tickets_link"] = reverse(
                 "operator_tickets", kwargs={"slug": self.object.slug}
             )
-        elif self.object.name == "FlixBus":
-            context["tickets_link"] = flixbus_affiliate_link(
-                clickref="ot",
-                ued="https://www.flixbus.co.uk/bus-routes/london-london-stansted-airport",
-            )
-        elif self.object.name == "Flibco":
-            context["tickets_link"] = flibco_affiliate_link(clickref="ot")
-        elif self.object.name == "National Express":
-            context["tickets_link"] = (
-                "https://nationalexpress.prf.hn/click/camref:1011ljPYw"
-            )
+        else:
+            match self.object.name:
+                case "FlixBus":
+                    context["tickets_link"] = flixbus_affiliate_link(
+                        clickref="ot",
+                        ued="https://www.flixbus.co.uk/bus-routes/london-london-stansted-airport",
+                    )
+                case "Flibco":
+                    context["tickets_link"] = flibco_affiliate_link(clickref="ot")
+                case "National Express":
+                    context["tickets_link"] = (
+                        "https://nationalexpress.prf.hn/click/camref:1011ljPYw"
+                    )
 
         context["nocs"] = [
             code.code
@@ -1103,7 +1094,10 @@ class OperatorDetailView(DetailView):
                 "line_name": route["route_name"],
                 "line_brand": "",
                 "description": route["description"],
-                "get_absolute_url": f"/services/{self.object.noc}:{route['route_name']}/vehicles",
+                "get_absolute_url": reverse(
+                    "ad_hoc_service_vehicles",
+                    args=(self.object.noc, route["route_name"]),
+                ),
             }
             for route in VehicleJourney.objects.filter(
                 latest_vehicle__operator=self.object,
@@ -1112,7 +1106,7 @@ class OperatorDetailView(DetailView):
             )
             .exclude(route_name="")
             .values("route_name")
-            .annotate(description=StringAgg("destination", ", ", distinct=True))
+            .annotate(description=StringAgg("destination", Value(", "), distinct=True))
             .order_by("route_name")
         ]
 
@@ -1129,7 +1123,6 @@ class OperatorDetailView(DetailView):
             if alternative:
                 return redirect(alternative)
             # no services or vehicles - render a 404 page that looks like a normal page
-            context["ad"] = False
             status_code = HTTPStatus.NOT_FOUND
 
         response = super().render_to_response(context)
@@ -1155,7 +1148,7 @@ class ServiceDetailView(DetailView):
 
         try:
             service = super().get_object()
-        except Http404 as e:
+        except Http404:
             slug = self.kwargs["slug"]
 
             service = services.filter(service_code=slug).first()
@@ -1171,7 +1164,7 @@ class ServiceDetailView(DetailView):
                 ).first()
 
             if not service:
-                raise e
+                raise
 
         if not service.current:
             alternative = None
@@ -1341,8 +1334,10 @@ class ServiceDetailView(DetailView):
 
         def get_stopusages():
             stopusages = list(
-                self.object.stopusage_set.select_related("stop__locality").defer(
-                    "stop__latlong", "stop__locality__latlong"
+                self.object.stopusage_set.select_related("stop")
+                .defer("stop__latlong")
+                .prefetch_related(
+                    Prefetch("stop__locality", queryset=Locality.objects.only("name"))
                 )
             )
             # don't bother marking individual stops if they're all disrupted
@@ -1402,7 +1397,7 @@ class ServiceDetailView(DetailView):
                         accepted=False,
                     )
                 ),
-            ):
+            ).order_by("id"):
                 if "app" in method.name and method.url:
                     context["app"] = method
                 else:
@@ -1415,7 +1410,7 @@ class ServiceDetailView(DetailView):
                     context["links"].append(
                         {
                             "url": context["tickets_link"],
-                            "text": "Buy tickets at National Express",
+                            "text": "(ad) Buy tickets at National Express",
                         }
                     )
                     break
@@ -1424,7 +1419,7 @@ class ServiceDetailView(DetailView):
                     context["links"].append(
                         {
                             "url": context["tickets_link"],
-                            "text": "Buy tickets at Flibco",
+                            "text": "(ad) Buy tickets at Flibco",
                         }
                     )
                     break
@@ -1433,7 +1428,9 @@ class ServiceDetailView(DetailView):
                     or self.object.service_code == "PF0000508:488"
                 ):
                     query = {"clickref": self.object.line_name}
-                    if context["breadcrumb"][0].name == "Scotland":
+                    if (
+                        region := context["breadcrumb"][0]
+                    ) and region.name == "Scotland":
                         query["ued"] = "https://www.flixbus.co.uk/scotland"
                     elif self.object.service_code == "PF0000508:488":  # Green Line 757
                         query["ued"] = (
@@ -1443,7 +1440,7 @@ class ServiceDetailView(DetailView):
                     context["links"].append(
                         {
                             "url": context["tickets_link"],
-                            "text": "Buy tickets at FlixBus",
+                            "text": "(ad) Buy tickets at FlixBus",
                         }
                     )
                     break
@@ -1452,7 +1449,35 @@ class ServiceDetailView(DetailView):
         for url, text in self.object.get_traveline_links(date):
             context["links"].append({"url": url, "text": text})
 
+        if self.request.user.has_perm("busstops.change_service"):
+            context["override_form"] = forms.ServiceOverrideForm()
+
         return context
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+
+        if not request.user.has_perm("busstops.change_service"):
+            raise PermissionDenied
+
+        if "delete" in request.POST:
+            ServiceOverride.objects.filter(
+                id=request.POST["delete"], service=self.object
+            ).delete()
+        else:
+            form = forms.ServiceOverrideForm(request.POST)
+            if form.is_valid():
+                ServiceOverride.objects.update_or_create(
+                    service=self.object,
+                    field=form.cleaned_data["field"],
+                    defaults={"value": form.cleaned_data["value"]},
+                )
+                setattr(
+                    self.object, form.cleaned_data["field"], form.cleaned_data["value"]
+                )
+                self.object.save(update_fields=[form.cleaned_data["field"]])
+
+        return redirect(self.object)
 
     def render_to_response(self, context):
         if "redirect_to" in context:
@@ -1463,9 +1488,7 @@ class ServiceDetailView(DetailView):
 
         if not (settings.TEST or "debug_toolbar" in self.request.GET):
             template = get_template("busstops/service_detail.html")
-            generator = template.template.generate(
-                **context, ad=True, request=self.request
-            )
+            generator = template.template.generate(**context, request=self.request)
             return StreamingHttpResponse(
                 generator,
                 content_type="text/html",
@@ -1578,11 +1601,6 @@ def service_map_data(request, service_id):
             "coordinates": service.geometry.coords,
         }
     else:
-        route_links = {
-            (route_link.from_stop_id, route_link.to_stop_id): route_link
-            for route_link in service.routelink_set.all()
-        }
-
         # in theory the use of `distinct` might exclude some stops, but it's worth it
         trips = Trip.objects.filter(route__service=service).distinct(
             "destination", "journey_pattern", "inbound"
@@ -1601,6 +1619,13 @@ def service_map_data(request, service_id):
                 if previous_stop_id:
                     pairs.add((previous_stop_id, stop_id))
                 previous_stop_id = stop_id
+
+        route_links = {
+            (route_link.from_stop_id, route_link.to_stop_id): route_link
+            for route_link in service.routelink_set.filter(
+                from_stop__in={pair[0] for pair in pairs}
+            )
+        }
 
         line_string = []
         multi_line_string = [line_string]
@@ -1676,15 +1701,18 @@ def search(request):
 
         postcode = "".join(query_text.split()).upper()
         if validation.is_valid_postcode(postcode):
-            res = requests.get(
-                "https://api.postcodes.io/postcodes/" + postcode, timeout=1
-            )
+            url = "postcodes/" + postcode
         elif validation.is_valid_partial_postcode(postcode):
-            res = requests.get(
-                "https://api.postcodes.io/outcodes/" + postcode, timeout=1
-            )
+            url = "outcodes/" + postcode
         else:
-            postcode = None
+            url = postcode = None
+
+        if postcode:
+            try:
+                res = requests.get("https://api.postcodes.io/" + url, timeout=1)
+            except requests.RequestException:
+                logger.exception("postcode lookup")
+                postcode = None
 
         if postcode and res.ok:
             result = res.json()["result"]
@@ -1704,7 +1732,7 @@ def search(request):
                         .distinct()
                         .annotate(distance=Distance("latlong", point))
                         .order_by("distance")
-                        .defer("latlong")[:20]
+                        .defer("latlong")[:6]
                     ),
                 }
 
@@ -1737,15 +1765,19 @@ def search(request):
 
                 queryset = queryset.annotate(rank=rank).order_by("-rank")
 
-                if key == "operators" or key == "localities":
-                    queryset = queryset.annotate(
-                        headline=SearchHeadline("name", query, config="english")
-                    )
-                elif key == "services":
-                    queryset = queryset.annotate(
-                        headline=SearchHeadline("description", query, config="english")
-                    )
-                context[key] = Paginator(queryset, 20).get_page(request.GET.get("page"))
+                page = Paginator(queryset, 20).get_page(request.GET.get("page"))
+
+                # SearchHeadlines for just this page of results
+                field = "description" if key == "services" else "name"
+                headlines = dict(
+                    queryset.model.objects.filter(pk__in=[obj.pk for obj in page])
+                    .annotate(headline=SearchHeadline(field, query, config="english"))
+                    .values_list("pk", "headline")
+                )
+                for obj in page:
+                    obj.headline = headlines[obj.pk]
+
+                context[key] = page
 
             vehicles = Vehicle.objects.select_related("operator")
             query_text = query_text.replace(" ", "")

@@ -1,5 +1,4 @@
 from datetime import timedelta
-from itertools import pairwise
 
 from django.contrib.gis.db import models
 from django.db.models import Q
@@ -25,12 +24,14 @@ class TimetableDataSource(models.Model):
         help_text="for non-BODS sources, i.e. Stagecoach, Passenger, or Ticketer",
     )
     modified_at = models.DateTimeField(null=True, blank=True, auto_now=True)
-    operators = models.ManyToManyField("busstops.Operator", blank=True)
+    operators = models.ManyToManyField(
+        "busstops.Operator", blank=True, through="TimetableDataSourceOperator"
+    )
     settings = models.JSONField(null=True, blank=True)
     complete = models.BooleanField(default=True)
     active = models.BooleanField(default=True)
     region = models.ForeignKey(
-        "busstops.Region", models.SET_NULL, null=True, blank=True
+        "busstops.Region", models.DB_SET_NULL, null=True, blank=True
     )
     notes = models.CharField(null=True, blank=True)
 
@@ -38,8 +39,25 @@ class TimetableDataSource(models.Model):
         return self.name
 
 
+class TimetableDataSourceOperator(models.Model):
+    timetabledatasource = models.ForeignKey(
+        TimetableDataSource,
+        models.DB_CASCADE,
+        related_name="timetabledatasourceoperator+",
+    )
+    operator = models.ForeignKey(
+        "busstops.Operator",
+        models.DB_CASCADE,
+        related_name="timetabledatasourceoperator+",
+    )
+
+    class Meta:
+        db_table = "bustimes_timetabledatasource_operators"
+        unique_together = ("timetabledatasource", "operator")
+
+
 class Version(models.Model):
-    source = models.ForeignKey(TimetableDataSource, models.CASCADE)
+    source = models.ForeignKey(TimetableDataSource, models.DB_CASCADE)
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     datetime = models.DateTimeField(null=True, blank=True)
@@ -48,23 +66,21 @@ class Version(models.Model):
     current = models.BooleanField(default=True)
 
     class Meta:
-        indexes = [
-            models.Index(fields=("source", "start_date", "end_date")),
-        ]
+        indexes = (models.Index(fields=("source", "start_date", "end_date")),)
 
     def __str__(self):
-        return self.name
+        return self.name or ""
 
 
 class Route(models.Model):
-    source = models.ForeignKey("busstops.DataSource", models.CASCADE)
-    version = models.ForeignKey(Version, models.CASCADE, null=True, blank=True)
+    source = models.ForeignKey("busstops.DataSource", models.DB_CASCADE)
+    version = models.ForeignKey(Version, models.DB_CASCADE, null=True, blank=True)
     code = models.CharField(max_length=255, blank=True)  # qualified filename
     service_code = models.CharField(max_length=255, blank=True)
     revision_number_context = models.CharField(max_length=48, blank=True)
     line_id = models.CharField(max_length=255, blank=True)
     registration = models.ForeignKey(
-        "vosa.Registration", models.SET_NULL, null=True, blank=True
+        "vosa.Registration", models.DB_SET_NULL, null=True, blank=True
     )
     line_brand = models.CharField(max_length=255, blank=True)
     line_name = models.CharField(max_length=255, blank=True, db_collation="en_numeric")
@@ -80,7 +96,7 @@ class Route(models.Model):
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     service = models.ForeignKey(
-        "busstops.Service", models.CASCADE, null=True, blank=True
+        "busstops.Service", models.DO_NOTHING, null=True, blank=True
     )
     public_use = models.BooleanField(null=True)
     file_hash = models.CharField(max_length=40, null=True, blank=True, db_index=True)
@@ -88,7 +104,7 @@ class Route(models.Model):
 
     class Meta:
         unique_together = ("source", "code")
-        indexes = [
+        indexes = (
             models.Index(fields=("start_date", "end_date")),
             models.Index(
                 fields=("source", "service_code"),
@@ -96,7 +112,7 @@ class Route(models.Model):
                 name="route_source_service_code",
             ),
             models.Index(Upper("line_name"), name="route_line_name"),
-        ]
+        )
 
     def __str__(self):
         return " – ".join(
@@ -138,28 +154,24 @@ class BankHoliday(models.Model):
 
 
 class BankHolidayDate(models.Model):
-    bank_holiday = models.ForeignKey(BankHoliday, models.CASCADE)
+    bank_holiday = models.ForeignKey(BankHoliday, models.DB_CASCADE)
     date = models.DateField()
     scotland = models.BooleanField(
         null=True, help_text="Yes = Scotland only, No = not Scotland, Unknown = both"
     )
 
     class Meta:
-        constraints = [
+        constraints = (
             models.UniqueConstraint(
                 fields=["bank_holiday", "date"], name="unique_bank_holiday_date"
-            )
-        ]
-        indexes = [
-            models.Index(fields=["bank_holiday"]),
-            models.Index(fields=["date"]),
-        ]
+            ),
+        )
 
 
 class CalendarBankHoliday(models.Model):
     operation = models.BooleanField()
-    bank_holiday = models.ForeignKey(BankHoliday, models.CASCADE)
-    calendar = models.ForeignKey("bustimes.Calendar", models.CASCADE)
+    bank_holiday = models.ForeignKey(BankHoliday, models.DB_CASCADE)
+    calendar = models.ForeignKey("bustimes.Calendar", models.DB_CASCADE)
 
     class Meta:
         unique_together = ("bank_holiday", "calendar")
@@ -198,25 +210,26 @@ class Calendar(models.Model):
     summary = models.CharField(max_length=255, blank=True)
     bank_holidays = models.ManyToManyField(BankHoliday, through=CalendarBankHoliday)
     source = models.ForeignKey(
-        "busstops.DataSource", models.CASCADE, null=True, blank=True
+        "busstops.DataSource", models.DB_CASCADE, null=True, blank=True
     )
 
     def contains(self, date):
-        if not self.start_date or self.start_date <= date:
-            if not self.end_date or self.end_date >= date:
-                return True
+        if (not self.start_date or self.start_date <= date) and (
+            not self.end_date or self.end_date >= date
+        ):
+            return True
 
     class Meta:
-        indexes = [models.Index(fields=["start_date", "end_date"])]
+        indexes = (models.Index(fields=["start_date", "end_date"]),)
 
     def is_sufficiently_simple(self, today, future) -> bool:
-        if all(
-            date.start_date > future or date.end_date and date.end_date < today
-            for date in self.calendardate_set.all()
-        ):
-            if str(self):
-                return True
-        return False
+        return bool(
+            all(
+                date.start_date > future or date.end_date and date.end_date < today
+                for date in self.calendardate_set.all()
+            )
+            and str(self)
+        )
 
     def allows(self, date) -> bool:
         if not self.contains(date):
@@ -260,7 +273,7 @@ class Calendar(models.Model):
         start_date = self.start_date
         end_date = self.end_date
 
-        for i in range(0, 6):
+        for i in range(6):
             if not self.allows(start_date):
                 start_date += timedelta(days=1)
 
@@ -268,13 +281,15 @@ class Calendar(models.Model):
             for calendar_date in self.calendardate_set.all():
                 if (
                     not calendar_date.operation
-                    and calendar_date.end_date >= end_date
+                    and (
+                        not calendar_date.end_date or calendar_date.end_date >= end_date
+                    )
                     and calendar_date.start_date <= end_date
                 ):
                     # "until 30 may 2020, but not from 20 may to 30 may" - simplify to "until 19 may"
                     end_date = calendar_date.start_date - timedelta(days=1)
 
-            for i in range(0, 6):
+            for i in range(6):
                 if not self.allows(end_date):
                     end_date -= timedelta(days=1)
 
@@ -336,7 +351,7 @@ class Calendar(models.Model):
 
 
 class CalendarDate(models.Model):
-    calendar = models.ForeignKey(Calendar, models.CASCADE)
+    calendar = models.ForeignKey(Calendar, models.DB_CASCADE)
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     operation = models.BooleanField()
@@ -346,10 +361,11 @@ class CalendarDate(models.Model):
     contains = Calendar.contains
 
     class Meta:
-        indexes = [
+        ordering = ("start_date",)
+        indexes = (
             models.Index(fields=["calendar", "operation", "special"]),
             models.Index(fields=["calendar", "start_date", "end_date", "operation"]),
-        ]
+        )
 
     def __str__(self):
         string = str(self.start_date)
@@ -373,7 +389,7 @@ class Note(models.Model):
 
 
 class Trip(models.Model):
-    route = models.ForeignKey(Route, models.CASCADE, null=True, blank=True)
+    route = models.ForeignKey(Route, models.DB_CASCADE, null=True, blank=True)
     inbound = models.BooleanField(default=False)
     journey_pattern = models.CharField(max_length=100, null=True, blank=True)
     vehicle_journey_code = models.CharField(max_length=100, null=True, blank=True)
@@ -383,19 +399,19 @@ class Trip(models.Model):
         "busstops.StopPoint", models.DO_NOTHING, null=True, blank=True
     )
     headsign = models.CharField(null=True, blank=True)
-    calendar = models.ForeignKey(Calendar, models.DO_NOTHING, null=True, blank=True)
+    calendar = models.ForeignKey(Calendar, models.DB_CASCADE, null=True, blank=True)
     sequence = models.PositiveSmallIntegerField(null=True, blank=True)
-    notes = models.ManyToManyField(Note, blank=True)
+    notes = models.ManyToManyField(Note, blank=True, through="TripNote")
     start = SecondsField()
     end = SecondsField()
-    garage = models.ForeignKey("Garage", models.SET_NULL, null=True, blank=True)
+    garage = models.ForeignKey("Garage", models.DB_SET_NULL, null=True, blank=True)
     vehicle_type = models.ForeignKey(
-        "VehicleType", models.SET_NULL, null=True, blank=True
+        "VehicleType", models.DB_SET_NULL, null=True, blank=True
     )
     operator = models.ForeignKey(
-        "busstops.Operator", models.SET_NULL, null=True, blank=True
+        "busstops.Operator", models.DB_SET_NULL, null=True, blank=True
     )
-    next_trip = models.OneToOneField("Trip", models.SET_NULL, null=True, blank=True)
+    next_trip = models.OneToOneField("Trip", models.DB_SET_NULL, null=True, blank=True)
 
     def __str__(self):
         return format_timedelta(self.start, plus_one=True) or ""
@@ -407,7 +423,7 @@ class Trip(models.Model):
         return time_datetime(self.end, date, tzinfo)
 
     class Meta:
-        indexes = [
+        indexes = (
             models.Index(fields=["route", "start", "end"]),
             models.Index(
                 fields=["vehicle_journey_code"],
@@ -424,7 +440,7 @@ class Trip(models.Model):
                 condition=Q(block__isnull=False),
                 name="bustimes_trip_block",
             ),
-        ]
+        )
 
     def copy(self, start):
         difference = start - self.start
@@ -449,76 +465,31 @@ class Trip(models.Model):
     def get_absolute_url(self):
         return reverse("trip_detail", args=(self.id,))
 
-    def get_trips(self):
-        if self.ticket_machine_code and self.route and self.route.service_id:
-            # get other parts of this trip (if the service has been split into parts)
-            # see also: merge_split_trips
 
-            code_filter = Q(ticket_machine_code=self.ticket_machine_code)
-            if self.vehicle_journey_code:
-                code_filter |= Q(vehicle_journey_code=self.vehicle_journey_code)
+class TripNote(models.Model):
+    trip = models.ForeignKey(Trip, models.DB_CASCADE, related_name="tripnote+")
+    note = models.ForeignKey(Note, models.DB_CASCADE, related_name="tripnote+")
 
-            calendar_filter = Q(calendar=self.calendar)
-            if self.calendar:
-                for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
-                    if getattr(self.calendar, day):
-                        calendar_filter |= Q(**{f"calendar__{day}": True})
-
-            trips = (
-                Trip.objects.filter(
-                    Q(id=self.id)
-                    | Q(
-                        code_filter,
-                        calendar_filter,
-                        Q(start__gte=self.end) | Q(end__lte=self.start),
-                        ~Q(destination_id=self.destination_id),
-                        block=self.block,
-                        inbound=self.inbound,
-                        operator_id=self.operator_id,
-                        route__service=self.route.service_id,
-                    )
-                )
-                .order_by("start")
-                .distinct("start")
-            )
-            no_minutes = timedelta()
-            fifteen_minutes = timedelta(minutes=15)
-            trips_list = []
-            for trip_a, trip_b in pairwise(trips):
-                if no_minutes <= trip_b.start - trip_a.end < fifteen_minutes:
-                    if not trips_list:
-                        trips_list.append(trip_a)
-                    trips_list.append(trip_b)
-                elif self in trips_list:
-                    return trips_list
-                else:
-                    trips_list = []
-            if self in trips_list:
-                return trips_list
-        return [self]
+    class Meta:
+        db_table = "bustimes_trip_notes"
+        unique_together = ("trip", "note")
 
 
 class StopTime(models.Model):
     id = models.BigAutoField(primary_key=True)
-    trip = models.ForeignKey(Trip, models.CASCADE)
-    stop_code = models.CharField(max_length=255, blank=True)
-    stop = models.ForeignKey(
-        "busstops.StopPoint", models.DO_NOTHING, null=True, blank=True
-    )
+    trip = models.ForeignKey(Trip, models.DB_CASCADE, db_index=False)
+    stop = models.ForeignKey("busstops.StopPoint", models.DO_NOTHING)
     arrival = SecondsField(null=True, blank=True)
     departure = SecondsField(null=True, blank=True)
     sequence = models.PositiveSmallIntegerField(null=True, blank=True)
-    timing_status = models.CharField(max_length=3, blank=True)
+    timing_point = models.BooleanField(null=True, blank=True)
     pick_up = models.BooleanField(default=True)
     set_down = models.BooleanField(default=True)
-    notes = models.ManyToManyField(Note, blank=True)
-
-    def get_key(self):
-        return self.stop_id or self.stop_code
+    notes = models.ManyToManyField(Note, blank=True, through="StopTimeNote")
 
     class Meta:
         ordering = ("id",)
-        indexes = [
+        indexes = (
             models.Index(
                 fields=["stop", "departure"],
                 include=["trip"],
@@ -529,10 +500,10 @@ class StopTime(models.Model):
                 fields=["trip", "id"],
                 name="stoptime_trip_id",
             ),
-        ]
+        )
 
     def __str__(self):
-        return format_timedelta(self.arrival_or_departure())
+        return format_timedelta(self.arrival_or_departure()) or ""
 
     def __repr__(self):
         return f"<StopTime: {self.pk} {self.stop_id} {self}>"
@@ -561,13 +532,27 @@ class StopTime(models.Model):
         if self.departure is not None:
             return time_datetime(self.departure, date, tzinfo)
 
+    def timing_status(self):
+        return "PTP" if self.timing_point else "OTH"
+
     def is_minor(self):
-        return self.timing_status and self.timing_status != "PTP"
+        return self.timing_point is False
+
+
+class StopTimeNote(models.Model):
+    stoptime = models.ForeignKey(
+        StopTime, models.DB_CASCADE, related_name="stoptimenote+"
+    )
+    note = models.ForeignKey(Note, models.DB_CASCADE, related_name="stoptimenote+")
+
+    class Meta:
+        db_table = "bustimes_stoptime_notes"
+        unique_together = ("stoptime", "note")
 
 
 class Garage(models.Model):
     operator = models.ForeignKey(
-        "busstops.Operator", models.SET_NULL, null=True, blank=True
+        "busstops.Operator", models.DB_SET_NULL, null=True, blank=True
     )
     code = models.CharField(max_length=50, blank=True)
     name = models.CharField(max_length=100, blank=True)
@@ -588,3 +573,41 @@ class VehicleType(models.Model):
 
     def __str__(self):
         return self.code
+
+
+class ImportTask(models.Model):
+    source = models.ForeignKey("busstops.DataSource", models.DB_CASCADE)
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+
+class DataQualityObservation(models.Model):
+    task = models.ForeignKey(ImportTask, models.DB_CASCADE)
+    file_name = models.CharField()
+    category = models.CharField()
+    comment = models.CharField()
+
+
+class DodgyRunTime(DataQualityObservation):
+    dataqualityobservation_ptr = models.OneToOneField(
+        DataQualityObservation, models.DB_CASCADE, parent_link=True, primary_key=True
+    )
+    from_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_time_from"
+    )
+    to_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_time_to"
+    )
+
+
+class DodgyRouteLink(DataQualityObservation):
+    dataqualityobservation_ptr = models.OneToOneField(
+        DataQualityObservation, models.DB_CASCADE, parent_link=True, primary_key=True
+    )
+    from_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_link_from"
+    )
+    to_stop = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="dodgy_link_to"
+    )
+    geometry = models.LineStringField()

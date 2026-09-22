@@ -36,14 +36,6 @@ urlpatterns = [
     path("status", views.status),
     path("timetable-source-stats.json", views.timetable_source_stats),
     path("stats.json", views.stats),
-    path(
-        "ads.txt",
-        cache_control(max_age=1800)(
-            RedirectView.as_view(
-                url="https://cdn.adfirst.media/adstxt/bustimes-ads.txt"
-            )
-        ),
-    ),
     path("robots.txt", views.robots_txt),
     path("stops.json", views.stops_json),
     path("stops/<int:z>/<int:x>/<int:y>.pbf", views.stops_mvt),

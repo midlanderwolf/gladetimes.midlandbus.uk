@@ -16,8 +16,13 @@ from busstops.models import DataSource
 
 from ...download_utils import write_file
 from ...models import TimetableDataSource, Version
-from .import_bod_timetables import clean_up, get_operator_ids, handle_file, logger
-from .import_transxchange import Command as TransXChangeCommand
+from .import_bod_timetables import (
+    clean_up,
+    get_command,
+    get_operator_ids,
+    handle_file,
+    logger,
+)
 
 
 def get_version(session, source, dates, url):
@@ -111,10 +116,8 @@ class Command(BaseCommand):
         parser.add_argument("operator_name", type=str, nargs="?")
 
     def handle(self, operator_name, *args, **options):
-        command = TransXChangeCommand()
-        command.set_up()
-
-        session = CurlSession(impersonate="chrome")
+        command = get_command()
+        session = CurlSession()
 
         prefix = "https://data.discoverpassenger.com/operator"
         suffix = "/open-data"
@@ -132,9 +135,10 @@ class Command(BaseCommand):
                 prefix = versions[0][0].name.split("_")[0]
                 prefix = f"{prefix}_"  # eg 'transdevblazefield_'
                 for filename in os.listdir(settings.DATA_DIR):
-                    if filename.startswith(prefix):
-                        if not any(filename == version.name for version, _ in versions):
-                            os.remove(os.path.join(settings.DATA_DIR, filename))
+                    if filename.startswith(prefix) and not any(
+                        filename == version.name for version, _ in versions
+                    ):
+                        os.remove(os.path.join(settings.DATA_DIR, filename))
             else:
                 sleep(2)
                 continue

@@ -2,12 +2,13 @@ from pathlib import Path
 from unittest import mock
 
 import fakeredis
-import vcr
 import time_machine
-from django.test import TestCase
+import vcr
 from django.core.management import call_command
+from django.test import TestCase
 
 from busstops.models import DataSource, Operator
+
 from ...models import VehicleJourney
 
 

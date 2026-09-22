@@ -1,34 +1,34 @@
 import functools
 import json
-from datetime import datetime, timedelta
 import zipfile
+from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models import Count, Q
 from django.utils import timezone
-from django.conf import settings
 from huey import crontab
 from huey.contrib.djhuey import db_periodic_task, db_task
 
 from busstops.models import DataSource, Operator
 
-from .utils import archive_avl_data
 from .management.commands import import_bod_avl
 from .models import (
     SiriSubscription,
     Vehicle,
+    VehicleCode,
     VehicleJourney,
     VehicleRevision,
-    VehicleCode,
 )
+from .utils import archive_avl_data
 
 
 @functools.cache
-def get_bod_avl_command(source_name: str):
+def get_bod_avl_command(source: DataSource):
     command = import_bod_avl.Command()
-    command.source_name = source_name
-    command.do_source()
+    command.source = source
+    command.source_name = source.name
     return command
 
 
@@ -38,7 +38,7 @@ def handle_siri_post(uuid, data: dict):
 
     data = data["Siri"]
 
-    subscription = SiriSubscription.objects.get(uuid=uuid)
+    subscription = SiriSubscription.objects.select_related("source").get(uuid=uuid)
 
     if "HeartbeatNotification" in data:
         timestamp = datetime.fromisoformat(
@@ -49,7 +49,7 @@ def handle_siri_post(uuid, data: dict):
     else:
         data = data["ServiceDelivery"]
 
-        command = get_bod_avl_command(subscription.name)
+        command = get_bod_avl_command(subscription.source)
 
         items = data["VehicleMonitoringDelivery"]["VehicleActivity"]
 
@@ -228,11 +228,7 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
         return
 
     if not vehicle.latest_journey or vehicle.latest_journey.datetime < journey.datetime:
-        if (
-            journey.trip
-            and journey.trip.garage_id
-            and journey.trip.garage_id != vehicle.garage_id
-        ):
+        if journey.trip and journey.trip.garage_id != vehicle.garage_id:
             vehicle.garage_id = journey.trip.garage_id
         vehicle.latest_journey = journey
         vehicle.latest_journey_data = data

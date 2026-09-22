@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 import fakeredis
 import time_machine
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from vcr import use_cassette
 
 from busstops.models import DataSource
@@ -37,7 +37,7 @@ class SiriPostTest(TestCase):
         ):
             with mock.patch(
                 "vehicles.management.commands.siri_vm_subscribe.cache.get",
-                return_value=[[datetime(2023, 12, 15, 8, 20, tzinfo=timezone.utc)]],
+                return_value=[[datetime(2023, 12, 15, 8, 20, tzinfo=UTC)]],
             ):
                 call_command(
                     "siri_vm_subscribe",
@@ -66,7 +66,10 @@ class SiriPostTest(TestCase):
         self.assertEqual(404, response.status_code)
 
     def test_siri_post_heartbeat(self):
-        response = self.client.post(
+        # check that view is CSRF-exempt
+        client = Client(enforce_csrf_checks=True)
+
+        response = client.post(
             "/siri/475d1d1f-5708-4ee1-8f51-c63d948bc0b9",
             data="""<?xml version="1.0" encoding="UTF-8" ?>
 <Siri xmlns="http://www.siri.org.uk/siri" version="1.3"
@@ -153,6 +156,9 @@ class SiriPostTest(TestCase):
     def test_overland(self):
         redis_client = fakeredis.FakeStrictRedis(version=7)
 
+        # check that view is CSRF-exempt
+        client = Client(enforce_csrf_checks=True)
+
         with (
             mock.patch(
                 "vehicles.management.import_live_vehicles.redis_client", redis_client
@@ -167,26 +173,36 @@ class SiriPostTest(TestCase):
                 },
             ),
         ):
-            response = self.client.post(
-                "/overland/475d1d1f-5708-4ee1-8f51-c63d948bc0b9",
-                data={
-                    "locations": [
-                        {
-                            "type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": [-48.3, 52.3]},
-                            "properties": {
-                                "timestamp": "2023-12-15T08:24:05Z",
-                                "device_id": "NADT:MB182:34:1982",
-                            },
-                        }
-                    ]
-                },
-                content_type="application/json",
-            )
-            self.assertEqual(200, response.status_code)
-            self.assertEqual(response.text, """{"result": "ok"}""")
+            uuid = "475d1d1f-5708-4ee1-8f51-c63d948bc0b9"
+            data = {
+                "locations": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [-48.3, 52.3]},
+                        "properties": {
+                            "timestamp": "2023-12-15T08:24:05Z",
+                            "device_id": "NADT:MB182:34:1982",
+                        },
+                    }
+                ]
+            }
 
-            response = self.client.get("/siri/475d1d1f-5708-4ee1-8f51-c63d948bc0b9")
+            for response in (
+                client.post(f"/overland/{uuid}", data, content_type="application/json"),
+                client.post(
+                    "/overland",
+                    data,
+                    content_type="application/json",
+                    headers={"Authorization": f"Bearer {uuid}"},
+                ),
+            ):
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(response.text, """{"result":"ok"}""")
+
+            with self.assertRaises(KeyError):
+                self.client.post("/overland", data, content_type="application/json")
+
+            response = client.get("/siri/475d1d1f-5708-4ee1-8f51-c63d948bc0b9")
             self.assertEqual(response.headers["Content-Type"], "application/json")
 
         vehicle = Vehicle.objects.get()

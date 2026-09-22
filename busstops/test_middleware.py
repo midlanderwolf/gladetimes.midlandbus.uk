@@ -1,6 +1,7 @@
-from multidb.pinning import this_thread_is_pinned
 from http import HTTPStatus
-from django.test import TestCase, override_settings, modify_settings
+
+from django.test import TestCase, modify_settings, override_settings
+from multidb.pinning import this_thread_is_pinned
 
 
 class MiddlewareTest(TestCase):

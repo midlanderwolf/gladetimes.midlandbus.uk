@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class PolylineWrapper:
     def __init__(self):
         self.polyline = ""
-        self.pending = ""
+        self.pending = ""  # newly extended bytes not yet flushed to Redis
         self.last_lat = 0
         self.last_lng = 0
         self.last_time = 0
@@ -100,6 +100,9 @@ class Command(BaseCommand):
                 ]
             )
             wrapper.set_polyline(polyline)
+            # the key currently holds the old 'list' type, so it needs a
+            # full SET (not APPEND) to convert it and store the migrated
+            # history; subsequent updates can be appended incrementally
             migrate_pipe.set(uuid, polyline)
             migrating = True
 
@@ -133,6 +136,7 @@ class Command(BaseCommand):
                 await self.handle_items(message["items"])
             except ConnectionError:
                 logger.exception("error distributing vehicle locations")
+                raise
 
     def handle(self, *args, **options):
         asyncio.run(self.run())

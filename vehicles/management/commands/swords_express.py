@@ -5,10 +5,11 @@ from django.contrib.gis.geos import GEOSGeometry
 from django.db.models import Q
 
 from busstops.models import Operator
-from bustimes.utils import get_calendars, get_routes
 from bustimes.models import Route, StopTime
+from bustimes.utils import get_calendars, get_routes
+
+from ...models import VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
-from ...models import VehicleLocation, VehicleJourney
 
 
 def hyphenate(reg: str) -> str:
@@ -87,15 +88,13 @@ class Command(ImportLiveVehiclesCommand):
             stop__latlong__dwithin=(get_latlong(item), 0.01),
         ).select_related("trip__route__service")
 
-        if stop_times:
-            if all(
-                stop_times[0].trip_id == stop_time.trip_id
-                for stop_time in stop_times[1:]
-            ):
-                journey.trip = stop_times[0].trip
-                journey.service = journey.trip.route.service
-                journey.route_name = journey.trip.route.line_name
-                journey.destination = journey.trip.headsign
+        if stop_times and all(
+            stop_times[0].trip_id == stop_time.trip_id for stop_time in stop_times[1:]
+        ):
+            journey.trip = stop_times[0].trip
+            journey.service = journey.trip.route.service
+            journey.route_name = journey.trip.route.line_name
+            journey.destination = journey.trip.headsign
         return journey
 
     def create_vehicle_location(self, item):

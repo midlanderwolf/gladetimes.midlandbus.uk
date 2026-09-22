@@ -1,16 +1,16 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 from django.contrib.gis.db.models import GeometryField
-from django.forms import ModelForm, Textarea
-from django.db.models import Func, Value
+from django.db.models import CharField, Exists, F, Func, OuterRef, Value
 from django.db.models.aggregates import StringAgg
-from django.db.models import Exists, OuterRef, F, CharField
 from django.db.models.functions import Cast, Now
+from django.forms import ModelForm, Textarea
 from django.urls import reverse
-from django.utils.safestring import mark_safe
 from django.utils.html import format_html
-
+from django.utils.safestring import mark_safe
 from sql_util.utils import SubqueryCount
+
+from buses.admin_utils import M2MThroughMixin
 
 from .models import (
     BankHoliday,
@@ -41,7 +41,7 @@ def log_change(request, queryset, fields):
 class TripInline(admin.TabularInline):
     model = Trip
     show_change_link = True
-    raw_id_fields = [
+    raw_id_fields = (
         "destination",
         "notes",
         "calendar",
@@ -49,13 +49,13 @@ class TripInline(admin.TabularInline):
         "vehicle_type",
         "operator",
         "next_trip",
-    ]
-    fields = ["start", "end", "destination", "inbound", "calendar"]
+    )
+    fields = ("start", "end", "destination", "inbound", "calendar")
 
 
 class StopTimeInline(admin.TabularInline):
     model = StopTime
-    autocomplete_fields = ["stop"]
+    autocomplete_fields = ("stop",)
 
 
 class VersionInline(admin.TabularInline):
@@ -68,9 +68,9 @@ class TimetableDataSourceAdminForm(ModelForm):
 
 
 @admin.register(TimetableDataSource)
-class TimetableDataSourceAdmin(admin.ModelAdmin):
-    autocomplete_fields = ["operators"]
-    list_display = [
+class TimetableDataSourceAdmin(M2MThroughMixin, admin.ModelAdmin):
+    autocomplete_fields = ("operators",)
+    list_display = (
         "id",
         "name",
         "url",
@@ -80,12 +80,12 @@ class TimetableDataSourceAdmin(admin.ModelAdmin):
         "region_id",
         "sources",
         "modified_at",
-    ]
-    list_filter = ["modified_at", "active", "complete"]
-    search_fields = ["url", "name", "search"]
-    actions = ["activate", "deactivate"]
-    inlines = [VersionInline]
-    readonly_fields = ["modified_at"]
+    )
+    list_filter = ("modified_at", "active", "complete")
+    search_fields = ("url", "name", "search")
+    actions = ("activate", "deactivate")
+    inlines = (VersionInline,)
+    readonly_fields = ("modified_at",)
     form = TimetableDataSourceAdminForm
 
     def nocs(self, obj):
@@ -116,18 +116,18 @@ class TimetableDataSourceAdmin(admin.ModelAdmin):
 
 @admin.register(Route)
 class RouteAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "code", "start_date", "end_date"]
-    list_filter = [("source", admin.RelatedOnlyFieldListFilter)]
-    raw_id_fields = ["source", "service", "registration"]
-    search_fields = ["code"]
+    list_display = ("__str__", "code", "start_date", "end_date")
+    list_filter = (("source", admin.RelatedOnlyFieldListFilter),)
+    raw_id_fields = ("source", "service", "registration")
+    search_fields = ("code",)
     # inlines = [TripInline]
 
 
 @admin.register(Trip)
-class TripAdmin(admin.ModelAdmin):
-    list_filter = [("calendar", admin.EmptyFieldListFilter)]
-    raw_id_fields = ["route"] + TripInline.raw_id_fields
-    list_display = [
+class TripAdmin(M2MThroughMixin, admin.ModelAdmin):
+    list_filter = (("calendar", admin.EmptyFieldListFilter),)
+    raw_id_fields = ("route", *TripInline.raw_id_fields)
+    list_display = (
         "__str__",
         "vehicle_journey_code",
         "ticket_machine_code",
@@ -136,7 +136,7 @@ class TripAdmin(admin.ModelAdmin):
         "inbound",
         "block",
         "operator_id",
-    ]
+    )
     # inlines = [StopTimeInline]
 
 
@@ -146,22 +146,26 @@ class CalendarDateInline(admin.TabularInline):
 
 class CalendarBankHolidayInline(admin.TabularInline):
     model = CalendarBankHoliday
-    select_related = ["bank_holiday"]
+    select_related = ("bank_holiday",)
 
 
 @admin.register(CalendarDate)
 class CalendarDateAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "start_date", "end_date"]
-    list_filter = ["start_date", "end_date", ("summary", admin.EmptyFieldListFilter)]
-    raw_id_fields = ["calendar"]
+    list_display = ("__str__", "start_date", "end_date")
+    list_filter = (
+        "start_date",
+        "end_date",
+        ("summary", admin.EmptyFieldListFilter),
+    )
+    raw_id_fields = ("calendar",)
 
 
 @admin.register(Calendar)
 class CalendarAdmin(admin.ModelAdmin):
-    list_display = ["id", "__str__", "summary"]
-    inlines = [CalendarDateInline, CalendarBankHolidayInline]
-    list_filter = [("trip", admin.EmptyFieldListFilter)]
-    readonly_fields = ["routes"]
+    list_display = ("id", "__str__", "summary")
+    inlines = (CalendarDateInline, CalendarBankHolidayInline)
+    list_filter = (("trip", admin.EmptyFieldListFilter),)
+    readonly_fields = ("routes",)
     save_as = True
 
     def routes(self, obj):
@@ -179,20 +183,20 @@ class CalendarAdmin(admin.ModelAdmin):
 
 @admin.register(Note)
 class NoteAdmin(admin.ModelAdmin):
-    list_display = ["code", "text"]
-    search_fields = ["code", "text"]
+    list_display = ("code", "text")
+    search_fields = ("code", "text")
 
 
 @admin.register(Garage)
 class GarageAdmin(GISModelAdmin):
-    search_fields = ["code", "name"]
-    list_display = ["code", "name", "operators"]
-    list_filter = [
+    search_fields = ("code", "name")
+    list_display = ("code", "name", "operators")
+    list_filter = (
         ("vehicle", admin.EmptyFieldListFilter),
         ("trip", admin.EmptyFieldListFilter),
         ("vehicle__operator", admin.RelatedOnlyFieldListFilter),
-    ]
-    raw_id_fields = ["operator"]
+    )
+    raw_id_fields = ("operator",)
 
     def operators(self, obj):
         return obj.operators
@@ -212,8 +216,8 @@ class BankHolidayDateInline(admin.StackedInline):
 
 @admin.register(BankHoliday)
 class BankHolidayAdmin(admin.ModelAdmin):
-    inlines = [BankHolidayDateInline]
-    list_display = ["name", "dates", "calendars"]
+    inlines = (BankHolidayDateInline,)
+    list_display = ("name", "dates", "calendars")
 
     def dates(self, obj):
         return obj.dates
@@ -267,7 +271,7 @@ class DodgyRouteLinkFilter(admin.SimpleListFilter):
 
 @admin.register(RouteLink)
 class RouteLinkAdmin(GISModelAdmin):
-    raw_id_fields = ["from_stop", "to_stop", "service"]
-    list_display = ["from_stop", "to_stop", "service"]
+    raw_id_fields = ("from_stop", "to_stop", "service")
+    list_display = ("from_stop", "to_stop", "service")
 
-    list_filter = [DodgyRouteLinkFilter]
+    list_filter = (DodgyRouteLinkFilter,)

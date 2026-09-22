@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand
 
 from vehicles.models import Vehicle
+
 from ...models import ServiceColour
 
 
