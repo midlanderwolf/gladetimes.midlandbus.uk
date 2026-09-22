@@ -6,9 +6,10 @@ import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle
 import stopMarker from "data-url:../stop-marker.png";
 import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import { captureException, ErrorBoundary } from "@sentry/react";
-import type {
-  FilterSpecification,
-  Map as MapLibreMap,
+import {
+  type FilterSpecification,
+  type Map as MapLibreMap,
+  setWorkerUrl,
 } from "maplibre-gl";
 import React, { createContext, memo, useEffect } from "react";
 import { createRoot } from "react-dom/client";
@@ -25,7 +26,10 @@ import MapGL, {
   useControl,
   useMap,
 } from "react-map-gl/maplibre";
+import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
 import { ErrorFallback } from "./LoadingSorry";
+
+setWorkerUrl(maplibreWorkerUrl);
 
 const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
@@ -223,10 +227,10 @@ export default function BusTimesMap(
   }, [mapStyle, darkModeQuery.matches]);
 
   const fluffynetUrls: { [key: string]: string } = {
-    light: "https://tiles.fluffynet.dev/styles/glade-light/style.json",
-    dark: "https://tiles.fluffynet.dev/styles/glade-dark/style.json",
-    satellite: "https://tiles.fluffynet.dev/styles/esri/style.json",
-    backup: "https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json",
+    light: "https://tiles.fluffynet.dev/styles/glade-light/style.json?key=PEHPEzyh1ICpbllOIt4v67hfWA4d6BY4",
+    dark: "https://tiles.fluffynet.dev/styles/glade-dark/style.json?key=PEHPEzyh1ICpbllOIt4v67hfWA4d6BY4",
+    satellite: "https://tiles.fluffynet.dev/styles/esri/style.json?key=PEHPEzyh1ICpbllOIt4v67hfWA4d6BY4",
+    backup: "https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json?key=PEHPEzyh1ICpbllOIt4v67hfWA4d6BY4",
   };
   const mapStyleURL = fluffynetUrls[mapStyle];
 
