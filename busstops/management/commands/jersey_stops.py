@@ -3,6 +3,7 @@ from pathlib import Path
 
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand
+
 from ...models import DataSource, StopPoint
 
 

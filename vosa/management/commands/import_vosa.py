@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def parse_date(date_string: str):
     if date_string:
-        return datetime.strptime(date_string, "%d/%m/%y").date()
+        return datetime.strptime(date_string, "%d/%m/%y").date()  # noqa: DTZ007
 
 
 def download_if_modified(path: str):
@@ -125,7 +125,7 @@ class Command(BaseCommand):
 
             if licence.address != line["Address"]:
                 if licence.address:
-                    print(licence.address, line["Address"])
+                    logger.info("%s %s", licence.address, line["Address"])
                 licence.address = line["Address"]
 
             if licence.traffic_area != line["Current Traffic Area"]:
@@ -299,11 +299,3 @@ class Command(BaseCommand):
             ],
             batch_size=1000,
         )
-
-        # for reg in regs.values():
-        #     if reg not in regs_to_create and reg not in regs_to_update:
-        #         print(reg.registration_number, reg.delete())
-
-        for lic in lics.values():
-            if lic not in lics_to_create and lic not in lics_to_update:
-                print(lic.licence_number, lic.delete())

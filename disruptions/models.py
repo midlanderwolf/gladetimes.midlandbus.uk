@@ -21,7 +21,7 @@ def time_range(lower, upper):
 class Situation(models.Model):
     source = models.ForeignKey(
         "busstops.DataSource",
-        models.CASCADE,
+        models.DB_CASCADE,
         limit_choices_to={
             "name__in": (
                 "bustimes.org",
@@ -42,6 +42,7 @@ class Situation(models.Model):
     )
     situation_number = models.CharField(max_length=36, blank=True)
     reason = models.CharField(max_length=25, blank=True)
+    severity = models.CharField(max_length=25, blank=True)
     summary = models.CharField(max_length=255, blank=True, help_text="(title)")
     show_summary = models.BooleanField(default=True)
     participant_ref = models.CharField(max_length=36, blank=True)
@@ -62,10 +63,10 @@ class Situation(models.Model):
         return reverse("situation", args=(self.id,))
 
     class Meta:
-        indexes = [
+        indexes = (
             models.Index(fields=["current", "publication_window"]),
             models.Index(fields=["source", "situation_number"]),
-        ]
+        )
 
     def applies_on(self, date) -> bool:
         """Whether this situation is in effect on the given (local) date.
@@ -160,7 +161,7 @@ class Situation(models.Model):
 
 class Link(models.Model):
     url = models.URLField()
-    situation = models.ForeignKey(Situation, models.CASCADE)
+    situation = models.ForeignKey(Situation, models.DB_CASCADE)
 
     def __str__(self):
         return self.url
@@ -169,7 +170,7 @@ class Link(models.Model):
 
 
 class ValidityPeriod(models.Model):
-    situation = models.ForeignKey(Situation, models.CASCADE)
+    situation = models.ForeignKey(Situation, models.DB_CASCADE)
     period = DateTimeRangeField()
 
     def __str__(self):
@@ -177,10 +178,16 @@ class ValidityPeriod(models.Model):
 
 
 class Consequence(models.Model):
-    situation = models.ForeignKey(Situation, models.CASCADE)
-    stops = models.ManyToManyField("busstops.StopPoint", blank=True)
-    services = models.ManyToManyField("busstops.Service", blank=True)
-    operators = models.ManyToManyField("busstops.Operator", blank=True)
+    situation = models.ForeignKey(Situation, models.DB_CASCADE)
+    stops = models.ManyToManyField(
+        "busstops.StopPoint", blank=True, through="ConsequenceStop"
+    )
+    services = models.ManyToManyField(
+        "busstops.Service", blank=True, through="ConsequenceService"
+    )
+    operators = models.ManyToManyField(
+        "busstops.Operator", blank=True, through="ConsequenceOperator"
+    )
     text = models.TextField(blank=True)
     data = models.TextField(blank=True)
 
@@ -188,15 +195,56 @@ class Consequence(models.Model):
         return self.text
 
     def get_absolute_url(self):
-        service = self.services.first()
-        if service:
+        if service := self.services.first():
             return service.get_absolute_url()
         return ""
 
 
+class ConsequenceStop(models.Model):
+    # StopPoint is deleted by Python; the ON DELETE CASCADE comes from the migration
+    consequence = models.ForeignKey(
+        Consequence, models.DB_CASCADE, related_name="consequencestop+"
+    )
+    stoppoint = models.ForeignKey(
+        "busstops.StopPoint", models.DO_NOTHING, related_name="consequencestop+"
+    )
+
+    class Meta:
+        db_table = "disruptions_consequence_stops"
+        unique_together = ("consequence", "stoppoint")
+
+
+class ConsequenceService(models.Model):
+    # as above
+    consequence = models.ForeignKey(
+        Consequence, models.DB_CASCADE, related_name="consequenceservice+"
+    )
+    service = models.ForeignKey(
+        "busstops.Service", models.DO_NOTHING, related_name="consequenceservice+"
+    )
+
+    class Meta:
+        db_table = "disruptions_consequence_services"
+        unique_together = ("consequence", "service")
+
+
+class ConsequenceOperator(models.Model):
+    consequence = models.ForeignKey(
+        Consequence, models.DB_CASCADE, related_name="consequenceoperator+"
+    )
+    operator = models.ForeignKey(
+        "busstops.Operator", models.DB_CASCADE, related_name="consequenceoperator+"
+    )
+
+    class Meta:
+        db_table = "disruptions_consequence_operators"
+        unique_together = ("consequence", "operator")
+
+
 class AffectedJourney(models.Model):
-    situation = models.ForeignKey(Situation, models.CASCADE)
-    trip = models.ForeignKey("bustimes.Trip", models.CASCADE)
+    situation = models.ForeignKey(Situation, models.DB_CASCADE)
+    trip = models.ForeignKey("bustimes.Trip", models.DB_CASCADE)
+    date = models.DateField(null=True, blank=True)
     origin_departure_time = models.DateTimeField(null=True, blank=True)
     condition = models.CharField()  # cancelled, altered, etc
 
@@ -205,8 +253,8 @@ class AffectedJourney(models.Model):
 
 
 class Call(models.Model):
-    journey = models.ForeignKey(AffectedJourney, models.CASCADE)
-    stop_time = models.ForeignKey("bustimes.StopTime", models.CASCADE)
+    journey = models.ForeignKey(AffectedJourney, models.DB_CASCADE)
+    stop_time = models.ForeignKey("bustimes.StopTime", models.DB_CASCADE)
     arrival_time = models.DateTimeField(null=True, blank=True)
     departure_time = models.DateTimeField(null=True, blank=True)
     condition = models.CharField()

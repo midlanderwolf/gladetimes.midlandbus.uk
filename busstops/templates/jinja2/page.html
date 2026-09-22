@@ -16,22 +16,17 @@
 
 {% block head %}{% endblock %}
 
-{% block fuse %}
-{% if ad %}
-<script src="{{ static('consent.js') }}"></script>
-<script>if(window.top===window.self&&window.location.host==="gladetimes"&&typeof Array.prototype.includes!=="undefined"){s=document.getElementsByTagName('script')[0];var sc=document.createElement('script');sc.async=true;sc.src='https://cdn.adfirst.media/hb/bustimes.js?v'+Math.floor(new Date().getTime()/600000);s.parentNode.insertBefore(sc,s);}</script>
-{% endif %}
-{% endblock fuse %}
+{% block fuse %}{% endblock fuse %}
 
 <script async src="https://umami.bustimes.org.uk/script.js" data-website-id="62fea6ac-a287-4ede-962b-5cf0029a8a7b" data-exclude-hash="true"></script>
 
 </head>
-<body class="{% block bodyclass %}wide{% endblock %}{% if ad is false %} no-ads{% endif %}">
+<body class="{% block bodyclass %}wide{% endblock %} no-ads">
 <script>
-(() => {
+(function () {
     var a = localStorage && localStorage["map-style"];
     var m = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    if ((!a || a === "alidade_satellite") && m || a && a.indexOf("_dark") !== -1) {
+    if (m && (!a || a.endsWith("_satellite")) || a && a.endsWith("_dark")) {
         document.body.classList.add("dark-mode")
     }
 })();
@@ -67,6 +62,9 @@
         <form action="{{ url('logout') }}" method="POST">
             <ul class="user">
                 <li><a href="{{ url('user_detail', args=[request.user.id]) }}">user {{ request.user.id }}</a></li>
+                <li>
+                    <input type="submit" value="Log out">
+                </li>
                 <li><a href="/rules">Rules & FAQ</a></li>
                 <li><a href="https://discord.com/invite/gY4PdDFau7">Discord</a></li>
             </ul>
@@ -77,7 +75,6 @@
         <li><a href="/data">Data sources</a></li>
         <li><a href="https://status.gladetimes">Status</a></li>
         <li><a href="/privacy">Privacy policy</a></li>
-        {% if ad %}<li><a href="javascript:window.__tcfapi('displayConsentUi',2,function(){})">Privacy settings</a></li>{% endif %}
     </ul>
 </footer>
 {% endblock footer %}

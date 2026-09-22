@@ -1,7 +1,9 @@
 from datetime import datetime
+
 from django.contrib.gis.geos import GEOSGeometry
 from django.utils.timezone import localdate
-from ...models import VehicleLocation, VehicleJourney
+
+from ...models import VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
 
 

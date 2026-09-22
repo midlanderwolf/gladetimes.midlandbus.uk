@@ -1,11 +1,11 @@
 """Tests for the buses app"""
 
-from django.test import TestCase, RequestFactory
+from django.test import RequestFactory, SimpleTestCase
 
-from . import utils, wsgi, asgi
+from . import asgi, utils, wsgi
 
 
-class UtilsTests(TestCase):
+class UtilsTests(SimpleTestCase):
     """Tests for the buses.utils module"""
 
     def test_minify(self):
@@ -35,13 +35,13 @@ class UtilsTests(TestCase):
         )
 
 
-class WSGITest(TestCase):
+class WSGITest(SimpleTestCase):
     def test_wsgi_and_asgi(self):
         rf = RequestFactory()
 
         resolver_match_1 = wsgi.application.resolve_request(rf.get("/"))
         self.assertEqual(resolver_match_1.url_name, "index")
 
-        resolver_match_2 = asgi.application.resolve_request(rf.get("/"))
+        resolver_match_2 = asgi.django_asgi_app.resolve_request(rf.get("/"))
 
         self.assertEqual(str(resolver_match_1), str(resolver_match_2))

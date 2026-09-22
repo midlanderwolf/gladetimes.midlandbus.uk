@@ -1,9 +1,9 @@
-from http import HTTPStatus
-import time
 import json
+import time
+from datetime import datetime
+from http import HTTPStatus
 
 import requests
-from datetime import datetime
 from django.contrib.gis.geos import GEOSGeometry
 from django.utils import timezone
 
@@ -18,7 +18,7 @@ class Command(ImportLiveVehiclesCommand):
         parts = item.split("|")
 
         (
-            dunno,
+            _dunno,
             vehicle_code,
             journey_code,
             route,
@@ -27,7 +27,7 @@ class Command(ImportLiveVehiclesCommand):
             longitude,
             timestamp,
             bearing,
-            mode,
+            _mode,
         ) = parts
 
         recorded_at_time = datetime.fromisoformat(timestamp)
@@ -47,14 +47,13 @@ class Command(ImportLiveVehiclesCommand):
             )
 
         journey = None
-        if not created:
-            if (
-                vehicle.latest_journey
-                and vehicle.latest_journey.code == journey_code
-                and vehicle.latest_journey.route_name == route
-                and vehicle.latest_journey.direction == direction
-            ):
-                journey = vehicle.latest_journey
+        if not created and (
+            vehicle.latest_journey
+            and vehicle.latest_journey.code == journey_code
+            and vehicle.latest_journey.route_name == route
+            and vehicle.latest_journey.direction == direction
+        ):
+            journey = vehicle.latest_journey
 
         if not journey:
             try:
@@ -134,7 +133,7 @@ class Command(ImportLiveVehiclesCommand):
         hub_url = self.source.url
 
         self.timetable_source = DataSource.objects.get(name="IM")
-        self.operator_id = "bus-vannin"
+        self.operator_id = "BVAN"
         self.region_id = "IM"
 
         session = requests.Session()

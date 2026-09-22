@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +8,7 @@ from unittest.mock import patch
 
 import time_machine
 from django.contrib.gis.geos import Point
+from django.core.files.storage import storages
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -38,6 +40,7 @@ from ...models import (
 from ..commands import import_transxchange
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+LOGGER = "bustimes.management.commands.import_transxchange"
 
 
 @override_settings(TNDS_DIR=FIXTURES_DIR, ABBREVIATE_HOURLY=True)
@@ -129,6 +132,12 @@ class ImportTransXChangeTest(TestCase):
         )
         cls.user = User.objects.create()
 
+    @contextmanager
+    def assertWarnings(self, *messages):
+        with self.assertLogs(LOGGER, "WARNING") as cm:
+            yield
+        self.assertEqual([record.getMessage() for record in cm.records], list(messages))
+
     @staticmethod
     def handle_files(archive_name, filenames):
         command = import_transxchange.Command()
@@ -140,6 +149,7 @@ class ImportTransXChangeTest(TestCase):
 
         command.set_region(archive_name)
         command.source.datetime = timezone.now()
+        command.start_task()
         for filename in filenames:
             path = FIXTURES_DIR / filename
             with open(path, "rb") as open_file:
@@ -344,20 +354,11 @@ class ImportTransXChangeTest(TestCase):
     def test_timetable_ne(self):
         """Test timetable with some abbreviations and a missing leading 0 in an ATCO code"""
 
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
+        with self.assertWarnings(
+            "_0_90079682980",
+            "{'NationalOperatorCode': 'SCMB', 'OperatorCode': 'SCC', 'OperatorShortName': 'SCC'}",
+        ):
             self.handle_files("NE.zip", ["NE_03_SCC_X6_1.xml"])
-
-        self.assertEqual(
-            cm.output,
-            [
-                "WARNING:bustimes.management.commands.import_transxchange:"
-                "90079682980 090079682980",
-                "WARNING:bustimes.management.commands.import_transxchange:"
-                "{'NationalOperatorCode': 'SCMB', 'OperatorCode': 'SCC', 'OperatorShortName': 'SCC'}",
-            ],
-        )
 
         service = Service.objects.get()
         response = self.client.get(service.get_absolute_url())
@@ -394,20 +395,12 @@ class ImportTransXChangeTest(TestCase):
     def test_delaine_101(self):
         """Test timetable with some batshit year 2099 dates"""
 
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
+        with self.assertWarnings(
+            "{'NationalOperatorCode': 'DELA', 'OperatorCode': 'DELA', 'OperatorShortName': 'Delaine Buses'}",
+            "2021-04-19 to 2021-05-28 is 39 days long",
+            "2021-06-07 to 2021-07-21 is 44 days long",
+        ):
             self.handle_files("EA.zip", ["lincs_DELA_101_13101_.xml"])
-        prefix = "WARNING:bustimes.management.commands.import_transxchange"
-        self.assertEqual(
-            cm.output,
-            [
-                prefix
-                + ":{'NationalOperatorCode': 'DELA', 'OperatorCode': 'DELA', 'OperatorShortName': 'Delaine Buses'}",
-                prefix + ":2021-04-19 to 2021-05-28 is 39 days long",
-                prefix + ":2021-06-07 to 2021-07-21 is 44 days long",
-            ],
-        )
 
         service = Service.objects.get()
         timetable = service.get_timetable().render()
@@ -503,7 +496,7 @@ class ImportTransXChangeTest(TestCase):
             str(grouping.rows[11].times[15:20]), "[09:24, 09:47, 15:47, 16:07, 16:12]"
         )
 
-        feet = list(grouping.column_feet.values())[0]
+        feet = next(iter(grouping.column_feet.values()))
         self.assertEqual(feet[0].span, 9)
         self.assertEqual(feet[1].span, 2)
         self.assertEqual(feet[2].span, 24)
@@ -521,15 +514,14 @@ class ImportTransXChangeTest(TestCase):
         timetable = service.get_timetable().render()
         self.assertEqual("2017-12-10", str(timetable.date))
 
-        self.assertEqual(
-            "Wilmorton Ascot Drive (Adj)",
-            timetable.groupings[0].rows[49].stop.common_name,
-        )
-        self.assertEqual(
-            "Wilmorton Ascot Drive (Adj)",
-            timetable.groupings[0].rows[50].stop.common_name,
-        )
-        self.assertEqual(60, len(timetable.groupings[0].rows))
+        # a timing link from the stop to itself, instead of a WaitTime -
+        # one row with an arrival and a departure time
+        row = timetable.groupings[0].rows[48]
+        self.assertEqual("Wilmorton Ascot Drive (Adj)", row.stop.common_name)
+        self.assertTrue(row.has_waittimes)
+        self.assertEqual(str(row.times[3]), "18:09")
+        self.assertEqual(row.times[3].departure_time(), "18:10")
+        self.assertEqual(58, len(timetable.groupings[0].rows))
 
     @time_machine.travel("2017-04-13")
     def test_timetable_deadruns(self):
@@ -640,7 +632,7 @@ class ImportTransXChangeTest(TestCase):
         )
 
         # Has some journeys that operate on 1 May 2017
-        with time_machine.travel(date(2017, 4, 28)):
+        with time_machine.travel("2017-04-28T00:00:00Z"):
             response = self.client.get(service.get_absolute_url())
         timetable = response.context_data["timetable"]
         self.assertEqual(timetable.date, date(2017, 5, 1))
@@ -747,32 +739,25 @@ class ImportTransXChangeTest(TestCase):
         # test route_xml
         with (
             TemporaryDirectory() as data_dir,
-            override_settings(DATA_DIR=Path(data_dir)),
         ):
-            response = self.client.get(route.get_absolute_url())
-            self.assertEqual(response.status_code, 404)
-
             service.source.datetime = "2025-01-01 00:00:00Z"
             service.source.save()
+            service.source.refresh_from_db()
 
-            zipfile_path = Path(data_dir) / "TNDS" / "EA.zip"
+            # instead of downloading from the real archive, make our own zipfile
+            zipfile_path = Path(data_dir) / "EA.zip"
+            with zipfile.ZipFile(zipfile_path, "a") as open_zipfile:
+                self.write_file_to_zipfile(open_zipfile, route.code)
+            service.source.save_to_archive(zipfile_path)
 
-            # instead of downloading from S3, make our own zipfile
-            def side_effect(Bucket, Key, Filename):
-                with zipfile.ZipFile(zipfile_path, "a") as open_zipfile:
-                    self.write_file_to_zipfile(open_zipfile, route.code)
+            response = self.client.get(route.get_absolute_url())
+            self.assertEqual(response.headers["content-type"], "application/xml")
 
-            with patch("boto3.client") as boto3_client:
-                boto3_client.return_value.download_file.side_effect = side_effect
+            response = self.client.get(f"/sources/{route.source_id}/routes/")
+            self.assertContains(response, route.code)
 
-                response = self.client.get(route.get_absolute_url())
-                self.assertEqual(response.headers["content-type"], "text/plain")
-
-                response = self.client.get(f"/sources/{route.source_id}/routes/")
-                self.assertContains(response, route.code)
-
-                response = self.client.get(f"/sources/{route.source_id}/routes/404")
-                self.assertEqual(response.status_code, 404)
+            response = self.client.get(f"/sources/{route.source_id}/routes/404")
+            self.assertEqual(response.status_code, 404)
 
     def test_multiple_operators(self):
         """
@@ -780,22 +765,15 @@ class ImportTransXChangeTest(TestCase):
         """
 
         with (
-            self.assertLogs(
-                "bustimes.management.commands.import_transxchange", "WARNING"
-            ) as cm,
+            self.assertWarnings(
+                "{'NationalOperatorCode': 'SBLB', 'OperatorCode': 'BLB', "
+                "'OperatorShortName': 'Stagecoach North Scotlan'}"
+            ),
             time_machine.travel(1582385679),
         ):
             self.write_files_to_zipfile_and_import("EA.zip", ["SVRABAO421.xml"])
         service = Service.objects.get()
         self.assertTrue(service.current)
-
-        self.assertEqual(
-            [
-                "WARNING:bustimes.management.commands.import_transxchange:{'NationalOperatorCode': 'SBLB', "
-                "'OperatorCode': 'BLB', 'OperatorShortName': 'Stagecoach North Scotlan'}"
-            ],
-            cm.output,
-        )
 
         service.slug = "abao421"
         service.save(update_fields=["slug"])
@@ -807,16 +785,15 @@ class ImportTransXChangeTest(TestCase):
             self.assertContains(response, "Saturdays until Saturday 14 August 2021")
 
         # after operating period
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
-            with patch("os.path.getmtime", return_value=1645544079):
-                self.write_files_to_zipfile_and_import("EA.zip", ["SVRABAO421.xml"])
-            self.assertEqual(
-                cm.output[0],
-                "WARNING:bustimes.management.commands.import_transxchange:"
-                "SVRABAO421.xml: ABAO421 end 2021-08-19 is in the past",
-            )
+        with (
+            self.assertLogs(LOGGER, "WARNING") as cm,
+            patch("os.path.getmtime", return_value=1645544079),
+        ):
+            self.write_files_to_zipfile_and_import("EA.zip", ["SVRABAO421.xml"])
+        self.assertEqual(
+            cm.records[0].getMessage(),
+            "SVRABAO421.xml: ABAO421 end 2021-08-19 is in the past",
+        )
 
     def test_multiple_services(self):
         with patch("os.path.getmtime", return_value=1582385679):
@@ -852,17 +829,22 @@ class ImportTransXChangeTest(TestCase):
 
         garage = Garage.objects.create(code="LE", name="Leicester")
 
-        call_command("import_transxchange", FIXTURES_DIR / "22A 22B 22C 08032021.xml")
+        with self.assertWarnings(*["_0_260006515", "_0_260006516"] * 2):
+            call_command(
+                "import_transxchange", FIXTURES_DIR / "22A 22B 22C 08032021.xml"
+            )
 
-        trip_1935_id = Trip.objects.get(ticket_machine_code="1935").id
+            trip_1935_id = Trip.objects.get(ticket_machine_code="1935").id
 
-        # reset file_hash so journeys are re-imported, not skipped
-        Route.objects.update(file_hash="")
-        # delete a 22C trip so the trip count changes and ids can't be reused
-        Trip.objects.get(ticket_machine_code="1530").delete()
+            # reset file_hash so journeys are re-imported, not skipped
+            Route.objects.update(file_hash="")
+            # delete a 22C trip so the trip count changes and ids can't be reused
+            Trip.objects.get(ticket_machine_code="1530").delete()
 
-        # re-import to test handling of already-existing ServiceCode
-        call_command("import_transxchange", FIXTURES_DIR / "22A 22B 22C 08032021.xml")
+            # re-import to test handling of already-existing ServiceCode
+            call_command(
+                "import_transxchange", FIXTURES_DIR / "22A 22B 22C 08032021.xml"
+            )
 
         # 22A trip ids reused
         self.assertEqual(Trip.objects.get(ticket_machine_code="1935").id, trip_1935_id)
@@ -905,20 +887,13 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("2021-06-28")
     def test_difficult_layout(self):
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
+        with self.assertWarnings(
+            "{'NationalOperatorCode': 'COMT', 'OperatorCode': 'COMT', "
+            "'OperatorShortName': 'Compass Travel'}"
+        ):
             call_command(
                 "import_transxchange", FIXTURES_DIR / "square_COMT_100_06100B.xml"
             )
-
-        self.assertEqual(
-            cm.output,
-            [
-                "WARNING:bustimes.management.commands.import_transxchange:{'NationalOperatorCode': 'COMT', "
-                "'OperatorCode': 'COMT', 'OperatorShortName': 'Compass Travel'}"
-            ],
-        )
 
         response = self.client.get(Service.objects.get().get_absolute_url())
         timetable = response.context_data["timetable"]
@@ -933,28 +908,22 @@ class ImportTransXChangeTest(TestCase):
     @time_machine.travel("2021-06-28")
     def test_different_notes_in_same_row(self):
         with (
-            self.assertLogs(
-                "bustimes.management.commands.import_transxchange", "WARNING"
-            ) as cm,
+            self.assertWarnings(
+                "{'NationalOperatorCode': 'YEOC', 'OperatorCode': 'YEC', "
+                "'OperatorShortName': 'Yeomans Travel', "
+                "'OperatorNameOnLicence': 'Yeomans Travel', "
+                "'TradingName': 'Yeomans Travel'}"
+            ),
             patch("os.path.getmtime", return_value=0),
         ):
             call_command("import_transxchange", FIXTURES_DIR / "twm_3-74-_-y11-1.xml")
-
-        self.assertEqual(
-            cm.output,
-            [
-                "WARNING:bustimes.management.commands.import_transxchange:{'NationalOperatorCode': 'YEOC', "
-                "'OperatorCode': 'YEC', 'OperatorShortName': 'Yeomans Travel', 'OperatorNameOnLicence': 'Yeomans Travel', "
-                "'TradingName': 'Yeomans Travel'}"
-            ],
-        )
 
         response = self.client.get(Service.objects.get().get_absolute_url())
         timetable = response.context_data["timetable"]
 
         self.assertEqual(26, len(timetable.groupings[0].rows))
 
-        feet = list(timetable.groupings[0].column_feet.values())[0]
+        feet = next(iter(timetable.groupings[0].column_feet.values()))
 
         self.assertEqual(3, feet[0].span)
         self.assertEqual(1, feet[1].span)
@@ -1019,9 +988,7 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("2021-07-07")
     def test_confusing_start_date(self):
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
+        with self.assertLogs(LOGGER, "WARNING") as cm:
             call_command(
                 "import_transxchange", FIXTURES_DIR / "notts_KRWL_DS_180DS_.xml"
             )
@@ -1040,6 +1007,8 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("1 September 2017")
     def test_services_nw(self):
+        self.enterContext(self.assertLogs(LOGGER, "WARNING"))  # missing operators
+
         self.handle_files(
             "NW.zip",
             ["NW_04_GMN_2_1.xml", "NW_04_GMS_237_1.xml", "NW_04_GMS_237_2.xml"],
@@ -1222,7 +1191,7 @@ class ImportTransXChangeTest(TestCase):
     @time_machine.travel("22 January 2017")
     def test_megabus(self):
         # simulate a National Coach Service Database zip file
-        with TemporaryDirectory() as directory, patch("boto3.client") as mock_client:
+        with TemporaryDirectory() as directory:
             zipfile_path = Path(directory) / "NCSD.zip"
             with zipfile.ZipFile(zipfile_path, "a") as open_zipfile:
                 self.write_file_to_zipfile(
@@ -1234,18 +1203,9 @@ class ImportTransXChangeTest(TestCase):
                     Path("NCSD_TXC") / "Megabus_Megabus14032016 163144_MEGA_M12.xml",
                 )
 
-            with self.assertLogs(
-                "bustimes.management.commands.import_transxchange", "WARNING"
-            ) as cm:
+            # warnings about ATCO codes used as origin/destination, and a missing stop
+            with self.assertWarnings("1800SHIC0G1 490016736W", "370010201"):
                 call_command("import_transxchange", zipfile_path)
-
-                # warning about missing stop
-                self.assertEqual(
-                    cm.output,
-                    [
-                        "WARNING:bustimes.management.commands.import_transxchange:370010201"
-                    ],
-                )
 
             m11a_trip_ids = Trip.objects.filter(route__line_name="M11A").last().id
             m12_trip_ids = Trip.objects.filter(route__line_name="M12").last().id
@@ -1260,30 +1220,23 @@ class ImportTransXChangeTest(TestCase):
             )
             Trip.objects.filter(id=last_trip.id).update(start="27:00:00")
 
-            # test re-importing a previously imported service again
-            with self.assertLogs(
-                "bustimes.management.commands.import_transxchange", "WARNING"
-            ) as cm:
+            # Test re-importing a previously imported service again.
+            # The missing stop now exists, but the origin/destination is still a warning
+            with self.assertWarnings("1800SHIC0G1 490016736W"):
                 call_command("import_transxchange", zipfile_path)
-
-                # warning about missing stop (again)
-                self.assertEqual(
-                    cm.output,
-                    [
-                        "WARNING:bustimes.management.commands.import_transxchange:370010201"
-                    ],
-                )
 
             # ids should have kept the same
             self.assertEqual(
                 m11a_trip_ids, Trip.objects.filter(route__line_name="M11A").last().id
             )
-            # ids should not have kept the same
+            # ids should not have kept the same (different departure time)
             self.assertNotEqual(
                 m12_trip_ids, Trip.objects.filter(route__line_name="M12").last().id
             )
 
-            mock_client.assert_called()
+            # the source file was uploaded to the archive
+            source = DataSource.objects.get(name="GB")
+            self.assertTrue(storages["archive"].exists(source.get_archive_path()))
 
         # M11A
 
@@ -1479,6 +1432,8 @@ class ImportTransXChangeTest(TestCase):
         )
 
     def test_get_operator(self):
+        self.enterContext(self.assertLogs(LOGGER, "WARNING"))  # missing operators
+
         command = import_transxchange.Command()
         command.missing_operators = []
         command.set_region("EA.zip")
@@ -1590,9 +1545,7 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("2023-10-23")
     def test_split_registration(self):
-        with self.assertLogs(
-            "bustimes.management.commands.import_transxchange", "WARNING"
-        ) as cm:
+        with self.assertLogs(LOGGER, "WARNING") as cm:
             self.handle_files(
                 "FECS.zip",
                 [
@@ -1601,9 +1554,12 @@ class ImportTransXChangeTest(TestCase):
                 ],
             )
 
-        self.assertEqual(
-            cm.output[-1][-68:],
-            ":0500FWISM032 is 0.24674205822477827 from POINT (-0.260562 52.59902)",
+        self.assertTrue(
+            cm.records[-1]
+            .getMessage()
+            .endswith(
+                "0500FWISM032 52.616189,-0.014418 is 16730m from 52.59902,-0.260562"
+            )
         )
         self.assertEqual(3, Service.objects.filter(current=True).count())  # A, B, C
         self.assertEqual(6, Route.objects.count())
@@ -1620,7 +1576,7 @@ class ImportTransXChangeTest(TestCase):
         self.assertContains(response, "Peterborough Bus Station")
 
         # test modern trip API too:
-        with self.assertNumQueries(6):
+        with self.assertNumQueries(5):
             response = self.client.get(f"/api/trips/{trip.id}.json")
         self.assertEqual(response.json()["block"], "6001")
 
@@ -1668,14 +1624,20 @@ class ImportTransXChangeTest(TestCase):
         response = self.client.get(v.get_absolute_url())
         self.assertEqual(5, len(response.context_data["predictions"]))
 
-        response = self.client.get(f"/journeys/{vj_1.id}.json").json()
+        response = self.client.get(f"/api/vehiclejourneys/{vj_1.id}/details/").json()
 
         self.assertEqual(vj_2.id, response["next"]["id"])
-        self.assertEqual(20, len(response["stops"]))
+
+        times = response["trip"]["times"]
+        self.assertEqual(20, len(times))
+        # the two trips are joined at this stop - arrival time from the first trip,
+        # departure time from the second
+        self.assertEqual(times[12]["aimed_arrival_time"], "2025-10-12T08:01:00+01:00")
+        self.assertEqual(times[12]["aimed_departure_time"], "2025-10-12T08:05:00+01:00")
 
     @time_machine.travel("2024-01-01")
     def test_frequency(self):
-        with self.assertLogs(level="WARNING") as cm:
+        with self.assertLogs(LOGGER, "WARNING") as cm:
             # import a document with a Frequency structure (journey repeats every 10 minutes)
             # (also with a Ticketer possibly-dodgy revision number)
             self.handle_files(
@@ -1688,8 +1650,7 @@ class ImportTransXChangeTest(TestCase):
             )
 
         self.assertEqual(
-            cm.output[-1],
-            "WARNING:bustimes.management.commands.import_transxchange:"
+            cm.records[-1].getMessage(),
             "CBNL_22.xml has {'tkt_oid': FABD: First Aberdeen} but unexpected filename format",
         )
 
@@ -1713,6 +1674,8 @@ class ImportTransXChangeTest(TestCase):
 
     @time_machine.travel("2024-01-01")
     def test_multiple_wait_times(self):
+        self.enterContext(self.assertLogs(LOGGER, "WARNING"))  # missing operator
+
         # Nottingham City Transport 34/34C
         self.handle_files("FECS.zip", ["PB0002362-132_NCT_2025-1-12.xml"])
 

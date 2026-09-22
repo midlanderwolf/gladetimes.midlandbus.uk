@@ -14,7 +14,11 @@ urlpatterns = [
     ),
     path("operators/<slug>/map", views.operator_map, name="operator_map"),
     path("operators/<slug:slug>/debug", views.operator_debug),
-    path("services/<noc>:<line_name>/vehicles", views.service_vehicles_history),
+    path(
+        "services/<noc>:<path:line_name>/vehicles",
+        views.service_vehicles_history,
+        name="ad_hoc_service_vehicles",
+    ),
     path(
         "services/<slug>/vehicles",
         views.service_vehicles_history,
@@ -43,22 +47,12 @@ urlpatterns = [
     ),
     path("vehicles/<slug>/debug", views.latest_journey_debug),
     path("journeys/<int:pk>", views.VehicleJourneyDetailView.as_view()),
-    path("journeys/<int:pk>.json", views.journey_json),
-    path(
-        "vehicles/<int:vehicle_id>/journeys/<int:pk>.json",
-        views.journey_json,
-        name="vehicle_journey",
-    ),
-    path(
-        "services/<int:service_id>/journeys/<int:pk>.json",
-        views.journey_json,
-        name="service_journey",
-    ),
     path("liveries.<int:version>.css", views.liveries_css),
     path("rules", TemplateView.as_view(template_name="rules.html")),
     path("map", TemplateView.as_view(template_name="map.html"), name="map"),
     path("maps", views.get_redirect_view("map", permanent=True)),
-    path("map/old", TemplateView.as_view(template_name="map_classic.html")),
+    path("firehose", TemplateView.as_view(template_name="firehose_map.html")),
     path("siri/<uuid:uuid>", views.siri_post, name="siri_post"),
     path("overland/<uuid:uuid>", views.overland),
+    path("overland", views.overland),
 ]

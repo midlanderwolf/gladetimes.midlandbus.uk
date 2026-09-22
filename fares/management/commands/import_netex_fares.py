@@ -2,7 +2,7 @@ import io
 import logging
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cache
 
 import requests
@@ -141,8 +141,8 @@ class Command(BaseCommand):
                 # remove NeTEx namespace for simplicity's sake:
                 if element.tag[:31] == "{http://www.netex.org.uk/netex}":
                     element.tag = element.tag[31:]
-        except ET.ParseError as e:
-            logger.exception(e)
+        except ET.ParseError:
+            logger.exception("error parsing %s", filename)
             return
 
         operators = element.findall(
@@ -545,8 +545,8 @@ class Command(BaseCommand):
         with zipfile.ZipFile(file) as archive:
             for filename in archive.namelist():
                 if filename in filenames:
-                    logger.warn(f"duplicate filename {filename} in {archive}")
-                elif filename.endswith(".xml"):
+                    logger.warning(f"duplicate filename {filename} in {archive}")
+                else:
                     self.handle_file(dataset, archive.open(filename), filename)
                     filenames.add(filename)
 
@@ -580,7 +580,7 @@ class Command(BaseCommand):
             except IntegrityError:
                 logger.warning(item["noc"])
 
-            response = self.session.get(download_url, stream=True)
+            response = self.session.get(download_url, stream=True, timeout=61)
 
             self.user_profiles = {}
             self.sales_offer_packages = {}
@@ -607,7 +607,7 @@ class Command(BaseCommand):
     def ticketer(self, noc):
         download_url = f"https://opendata.ticketer.com/uk/{noc}/fares/current.zip"
 
-        dataset, created = models.DataSet.objects.get_or_create(
+        dataset, _created = models.DataSet.objects.get_or_create(
             {"name": f"{noc}"}, url=download_url
         )
 
@@ -615,7 +615,9 @@ class Command(BaseCommand):
         if dataset.datetime:
             headers["if-modified-since"] = http_date(dataset.datetime.timestamp())
 
-        response = self.session.get(download_url, headers=headers, stream=True)
+        response = self.session.get(
+            download_url, headers=headers, stream=True, timeout=61
+        )
         response.raise_for_status()
 
         if response.status_code == 304:
@@ -623,7 +625,7 @@ class Command(BaseCommand):
 
         last_modified = response.headers["last-modified"]
         last_modified = parse_http_date(last_modified)
-        last_modified = datetime.fromtimestamp(last_modified, timezone.utc)
+        last_modified = datetime.fromtimestamp(last_modified, UTC)
 
         if dataset.datetime == last_modified:
             return dataset
@@ -653,7 +655,7 @@ class Command(BaseCommand):
             "limit": 100,
         }
         while url:
-            response = self.session.get(url, params=params)
+            response = self.session.get(url, params=params, timeout=61)
 
             data = response.json()
 

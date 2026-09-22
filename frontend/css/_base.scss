@@ -330,8 +330,15 @@ h3 {
     margin-left: 1em;
 }
 
+input[type='file'] {
+    font: inherit;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+}
+
 .button,
-input[type='submit'] {
+input[type='submit'],
+input[type='file']::file-selector-button {
     appearance: none;
     background: var(--brand-color);
     border: 0;
@@ -347,7 +354,8 @@ input[type='submit'] {
 }
 
 .button,
-input[type='submit'] {
+input[type='submit'],
+input[type='file']::file-selector-button {
     &:hover {
         border-bottom-width: 2px;
         text-decoration: none;
@@ -1253,6 +1261,7 @@ input:not(:checked) + label {
     table {
         table-layout: fixed;
         width: 100%;
+        margin-bottom: 1em;
     }
 
     tbody {
@@ -1483,10 +1492,13 @@ input:not(:checked) + label {
 }
 
 .contact-details {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1em;
-    overflow-wrap: anywhere;
+    margin-top: -1em;
+
+    > div {
+        display: inline-block;
+        margin: 1em 1em 0 0;
+        vertical-align: top;
+    }
 
     dt {
         font-size: 12px;
@@ -1500,6 +1512,10 @@ input:not(:checked) + label {
         float: left;
         margin-right: .25em;
     }
+}
+
+.vehicle-photo + h1 + .contact-details > div:first-child {
+    max-width: calc(100% - 140px - 1em);
 }
 
 .previous {
@@ -1519,6 +1535,7 @@ nav {
     }
 }
 
+// table header
 .sticky {
     position: sticky;
     top: 0;
@@ -1528,13 +1545,14 @@ nav {
 
 .vehicle-photo {
     float: right;
-    width: 170px;
+    margin: 0;
+    width: 140px;
     position: relative;
     margin: 0;
 
     img {
         display: block;
-        width: 170px;
+        width: 100%;
         height: auto;
     }
 
@@ -1577,12 +1595,26 @@ nav {
         top: 0;
         pointer-events: none;
         z-index: 9999;
+        container-type: scroll-state;
 
         iframe {
             background: var(--background-color);
             pointer-events: auto;
+
+            @container scroll-state(stuck: top) {
+                box-shadow: 0 0 20px rgba(0, 0, 0, 0.63);
+            }
         }
     }
+
+    // account for height of sticky .ad-wrapper
+    body:not(.no-ads):not(.no-consent) #departures {
+        scroll-margin-top: 140px;
+    }
+}
+
+.no-consent .ad-wrapper {
+    position: static;
 }
 
 .no-consent .ad-wrapper {

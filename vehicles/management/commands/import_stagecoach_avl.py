@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
+
 from django.contrib.gis.geos import GEOSGeometry
 from django.db.models import Exists, OuterRef, Q
 from django.utils.timezone import localdate
@@ -7,6 +9,8 @@ from busstops.models import Operator, Service, StopPoint
 
 from ...models import Vehicle, VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
+
+logger = logging.getLogger(__name__)
 
 # "fn" "fleetNumber": "10452",
 # "ut" "updateTime": "1599550016135",
@@ -48,7 +52,7 @@ from ..import_live_vehicles import ImportLiveVehiclesCommand
 
 def parse_timestamp(timestamp):
     if timestamp:
-        return datetime.fromtimestamp(int(timestamp) / 1000, timezone.utc)
+        return datetime.fromtimestamp(int(timestamp) / 1000, UTC)
 
 
 def has_stop(stop):
@@ -162,7 +166,12 @@ class Command(ImportLiveVehiclesCommand):
             ).first()
 
             if not journey.service:
-                print(journey.route_name, item.get("or"), vehicle.get_absolute_url())
+                logger.info(
+                    "%s %s %s",
+                    journey.route_name,
+                    item.get("or"),
+                    vehicle.get_absolute_url(),
+                )
 
         if departure_time and journey.service and not journey.id:
             journey.direction = item["dn"].lower()

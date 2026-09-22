@@ -23,8 +23,8 @@ def get_locality(locality_element: ET.Element) -> Locality:
         ),
         created_at=get_datetime(locality_element.attrib["CreationDateTime"]),
         admin_area_id=locality_element.findtext("AdministrativeAreaRef"),
-        district_id=locality_element.findtext("NptgDistrictRef"),
-        parent_id=locality_element.findtext("ParentNptgLocalityRef"),
+        district_id=locality_element.findtext("NptgDistrictRef") or None,
+        parent_id=locality_element.findtext("ParentNptgLocalityRef") or None,
         modified_at=get_datetime(locality_element.attrib["ModificationDateTime"]),
         latlong=GEOSGeometry(f"POINT({lon} {lat})"),
     )
@@ -86,10 +86,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if options["filename"]:
-            source, created = DataSource.objects.get_or_create(name=options["filename"])
+            source, _created = DataSource.objects.get_or_create(
+                name=options["filename"]
+            )
             path = options["filename"]
         else:
-            source, created = DataSource.objects.get_or_create(name="NPTG")
+            source, _created = DataSource.objects.get_or_create(name="NPTG")
 
             path = settings.DATA_DIR / "nptg.xml"
 
@@ -122,6 +124,9 @@ class Command(BaseCommand):
                 continue
 
             element.tag = element.tag.removeprefix("{http://www.naptan.org.uk/}")
+
+            if element.text:
+                element.text = element.text.strip()
 
             if element.tag == "Regions":
                 for item in handle_regions(element):

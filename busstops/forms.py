@@ -1,6 +1,8 @@
 from django import forms
 from turnstile.fields import TurnstileField
 
+from .models import ServiceOverride
+
 
 class ContactForm(forms.Form):
     name = forms.CharField(label="Name")
@@ -20,13 +22,22 @@ class SearchForm(forms.Form):
     q = forms.CharField(widget=forms.TextInput(attrs={"type": "search"}))
 
 
+class CheckboxSelectMultipleWithDefault(forms.CheckboxSelectMultiple):
+    default = ()
+
+    def value_from_datadict(self, data, files, name):
+        if name not in data:
+            return self.default
+        return super().value_from_datadict(data, files, name)
+
+
 class TimetableForm(forms.Form):
     date = forms.DateField(required=False)
     calendar = forms.IntegerField(required=False)
     detailed = forms.BooleanField(required=False)
     vehicles = forms.BooleanField(required=False)
     service = forms.MultipleChoiceField(
-        required=False, widget=forms.CheckboxSelectMultiple
+        required=False, widget=CheckboxSelectMultipleWithDefault
     )
 
     def __init__(self, *args, **kwargs):
@@ -38,7 +49,7 @@ class TimetableForm(forms.Form):
         self.fields["service"].choices = [
             (f"{service.id}:{line_name}", line_name) for line_name in line_names
         ]
-        self.fields["service"].initial = [
+        self.fields["service"].initial = self.fields["service"].widget.default = [
             choice[0] for choice in self.fields["service"].choices
         ]
 
@@ -80,3 +91,9 @@ class TimetableForm(forms.Form):
 class DeparturesForm(forms.Form):
     date = forms.DateField()
     time = forms.TimeField(required=False)
+
+
+class ServiceOverrideForm(forms.ModelForm):
+    class Meta:
+        model = ServiceOverride
+        fields = ("field", "value")

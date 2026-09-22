@@ -1,5 +1,5 @@
-[![Test](https://github.com/jclgoodwin/bustimes.org/actions/workflows/test.yml/badge.svg)](https://github.com/jclgoodwin/bustimes.org/actions/workflows/test.yml)
-[![Coverage badge](https://raw.githubusercontent.com/jclgoodwin/bustimes.org/python-coverage-comment-action-data/badge.svg)](https://htmlpreview.github.io/?https://github.com/jclgoodwin/bustimes.org/blob/python-coverage-comment-action-data/htmlcov/index.html)
+[![Test](https://github.com/jclgoodwin/bustimes.org/actions/workflows/test.yml/badge.svg)](https://github.com/jclgoodwin/bustimes.org/actions/workflows/test.yml) 
+[Coverage](https://bustimes.github.io/bustimes.org/)
 
 ## What's this?
 
@@ -13,7 +13,7 @@ accounts | user accounts
 api      | the Django Rest Framework–powered API
 buses    | contains the site settings.py
 busstops | bus stops - but also operating companies, places, and routes 🤯 and the site's static file assets
-bustimes | getting timetable data out of various formats (GTFS, TransXChange, ATCO-CIF) and into a database and doing stuff therewith
+bustimes | getting timetable data out of various formats (GTFS, TransXChange, ~~ATCO-CIF~~) and into a database and doing stuff therewith
 config   | Kamal and Supervisor configuration
 departures | listing the "next departures" at a bus stop – from a timetable and/or predicted by an API
 disruptions | information about like roadworks, diversions and stuff

@@ -4,9 +4,9 @@ import datetime
 import logging
 import re
 from urllib.parse import urlencode, urlparse
+from zoneinfo import ZoneInfo
 
 import yaml
-from botocore.exceptions import NoCredentialsError
 from django.contrib.gis.db import models
 from django.contrib.gis.db.models import Extent
 from django.contrib.gis.geos import Polygon
@@ -14,6 +14,7 @@ from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.indexes import GinIndex
 from django.contrib.postgres.search import SearchVector, SearchVectorField
 from django.core.cache import cache
+from django.core.files.storage import storages
 from django.db.models import Q, Value
 from django.db.models.aggregates import StringAgg
 from django.db.models.functions import Coalesce, Concat, Upper
@@ -23,9 +24,10 @@ from django.utils.safestring import mark_safe
 from django.utils.text import slugify
 from timezone_field import TimeZoneField
 
-from bustimes.models import Route, TimetableDataSource, StopTime
+from bustimes.models import Route, StopTime, TimetableDataSource
 from bustimes.timetables import Timetable
 from bustimes.utils import get_descriptions
+
 from .fields import AutoSlugField
 
 TIMING_STATUS_CHOICES = (
@@ -56,7 +58,7 @@ class Region(models.Model):
     name = models.CharField(max_length=48)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ("name",)
 
     def __str__(self):
         return self.name
@@ -150,7 +152,14 @@ class Locality(SearchMixin, models.Model):
 
     class Meta:
         ordering = ("name",)
-        indexes = [GinIndex(fields=["search_vector"])]
+        indexes = (
+            GinIndex(fields=["search_vector"]),
+            GinIndex(
+                fields=["name"],
+                opclasses=["gin_trgm_ops"],
+                name="locality_name_trgm",
+            ),
+        )
 
     def __str__(self):
         return self.name or self.id
@@ -203,14 +212,14 @@ class DataSource(models.Model):
     sha1 = models.CharField(max_length=40, null=True, blank=True, db_index=True)
     settings = models.JSONField(null=True, blank=True)
     source = models.ForeignKey(
-        TimetableDataSource, models.CASCADE, null=True, blank=True
+        TimetableDataSource, models.DO_NOTHING, null=True, blank=True
     )
     # for HTTP "if-modified-since" and "if-none-match":
     last_modified = models.DateTimeField(null=True, blank=True)
     etag = models.CharField(max_length=255, blank=True)
 
     class Meta:
-        ordering = ["id"]
+        ordering = ("id",)
 
     def __str__(self):
         return self.name
@@ -303,7 +312,9 @@ class DataSource(models.Model):
             if timestamp.isdigit():
                 timestamp = int(timestamp)
                 if timestamp > 1600000000:
-                    date = datetime.datetime.fromtimestamp(int(timestamp))
+                    date = datetime.datetime.fromtimestamp(
+                        int(timestamp), tz=ZoneInfo("Europe/London")
+                    )
 
         if text:
             if url:
@@ -319,21 +330,19 @@ class DataSource(models.Model):
         return ""
 
     def older_than(self, when):
-        if not self.datetime or not when or self.datetime < when:
-            return True
-        return False
+        return bool(not self.datetime or not when or self.datetime < when)
 
-    def get_s3_path(self):
-        return f"source/{self.id}/{self.datetime.isoformat()}"
+    def get_archive_path(self):
+        # always UTC, so the path matches however self.datetime was set
+        return f"source/{self.id}/{self.datetime.astimezone(datetime.UTC).isoformat()}"
 
-    def upload_to_s3_etc(self, path):
-        import boto3
-
-        client = boto3.client("s3", endpoint_url="https://ams3.digitaloceanspaces.com")
-        try:
-            client.upload_file(path, "bustimes-data", self.get_s3_path())
-        except NoCredentialsError:
-            pass
+    def save_to_archive(self, path):
+        with open(path, "rb") as open_file:
+            try:
+                storages["archive"].save(self.get_archive_path(), open_file)
+            except Exception:
+                # archiving is not essential - don't fail the whole import
+                logging.getLogger(__name__).exception("error archiving %s", path)
 
 
 class StopPoint(models.Model):
@@ -429,12 +438,8 @@ class StopPoint(models.Model):
 
     class Meta:
         ordering = ("common_name", "atco_code")
-        indexes = [
-            models.Index(Upper("naptan_code"), name="naptan_code"),
-        ]
-        constraints = [
-            models.UniqueConstraint(Upper("atco_code"), name="atco_code"),
-        ]
+        indexes = (models.Index(Upper("naptan_code"), name="naptan_code"),)
+        constraints = (models.UniqueConstraint(Upper("atco_code"), name="atco_code"),)
 
     def __str__(self):
         name = self.get_unqualified_name()
@@ -505,7 +510,7 @@ class StopPoint(models.Model):
                         indicator = self.prepositions[indicator]
                     return f"{locality_name}, {indicator} {self.common_name}"
                 return f"{locality_name} {name}"
-        elif self.town not in self.common_name:
+        elif self.town and self.town not in self.common_name:
             return f"{self.town} {name}"
         return name
 
@@ -583,11 +588,20 @@ class Operator(SearchMixin, models.Model):
     aka = models.CharField(max_length=100, blank=True)
     slug = AutoSlugField(populate_from=str, editable=True, unique=True)
     vehicle_mode = models.CharField(max_length=48, blank=True)
-    group = models.ForeignKey(OperatorGroup, models.SET_NULL, null=True, blank=True)
-    siblings = models.ManyToManyField("self", blank=True)
-    region = models.ForeignKey(Region, models.SET_NULL, null=True, blank=True)
-    regions = models.ManyToManyField(Region, blank=True, related_name="operators")
-    colour = models.ForeignKey("ServiceColour", models.SET_NULL, null=True, blank=True)
+    group = models.ForeignKey(OperatorGroup, models.DB_SET_NULL, null=True, blank=True)
+    siblings = models.ManyToManyField(
+        "self",
+        blank=True,
+        through="OperatorSibling",
+        through_fields=("from_operator", "to_operator"),
+    )
+    region = models.ForeignKey(Region, models.DB_SET_NULL, null=True, blank=True)
+    regions = models.ManyToManyField(
+        Region, blank=True, related_name="operators", through="OperatorRegion"
+    )
+    colour = models.ForeignKey(
+        "ServiceColour", models.DB_SET_NULL, null=True, blank=True
+    )
 
     address = models.CharField(max_length=128, blank=True)
     url = models.URLField(blank=True)
@@ -597,8 +611,12 @@ class Operator(SearchMixin, models.Model):
 
     timezone = TimeZoneField(null=True, blank=True)
 
-    licences = models.ManyToManyField("vosa.Licence", blank=True)
-    payment_methods = models.ManyToManyField("PaymentMethod", blank=True)
+    licences = models.ManyToManyField(
+        "vosa.Licence", blank=True, through="OperatorLicence"
+    )
+    payment_methods = models.ManyToManyField(
+        "PaymentMethod", blank=True, through="OperatorPaymentMethod"
+    )
     search_vector = SearchVectorField(null=True, blank=True)
     modified_at = models.DateTimeField(auto_now=True)
 
@@ -606,7 +624,7 @@ class Operator(SearchMixin, models.Model):
 
     class Meta:
         ordering = ("name",)
-        indexes = [GinIndex(fields=["search_vector"])]
+        indexes = (GinIndex(fields=["search_vector"]),)
 
     def __repr__(self):
         return f"{self.noc}: {self.name}"
@@ -636,6 +654,58 @@ class Operator(SearchMixin, models.Model):
         return "A " + mode  # 'A hovercraft'
 
 
+class OperatorSibling(models.Model):
+    from_operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="from_operatorsibling+"
+    )
+    to_operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="to_operatorsibling+"
+    )
+
+    class Meta:
+        db_table = "busstops_operator_siblings"
+        unique_together = ("from_operator", "to_operator")
+
+
+class OperatorRegion(models.Model):
+    operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="operatorregion+"
+    )
+    region = models.ForeignKey(
+        Region, models.DB_CASCADE, related_name="operatorregion+"
+    )
+
+    class Meta:
+        db_table = "busstops_operator_regions"
+        unique_together = ("operator", "region")
+
+
+class OperatorLicence(models.Model):
+    operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="operatorlicence+"
+    )
+    licence = models.ForeignKey(
+        "vosa.Licence", models.DB_CASCADE, related_name="operatorlicence+"
+    )
+
+    class Meta:
+        db_table = "busstops_operator_licences"
+        unique_together = ("operator", "licence")
+
+
+class OperatorPaymentMethod(models.Model):
+    operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="operatorpaymentmethod+"
+    )
+    paymentmethod = models.ForeignKey(
+        "PaymentMethod", models.DB_CASCADE, related_name="operatorpaymentmethod+"
+    )
+
+    class Meta:
+        db_table = "busstops_operator_payment_methods"
+        unique_together = ("operator", "paymentmethod")
+
+
 class StopCode(models.Model):
     stop = models.ForeignKey(StopPoint, models.CASCADE)
     source = models.ForeignKey(
@@ -659,8 +729,8 @@ class StopCode(models.Model):
 
 
 class OperatorCode(models.Model):
-    operator = models.ForeignKey(Operator, models.CASCADE)
-    source = models.ForeignKey(DataSource, models.CASCADE)
+    operator = models.ForeignKey(Operator, models.DB_CASCADE)
+    source = models.ForeignKey(DataSource, models.DB_CASCADE)
     code = models.CharField(max_length=100, db_index=True)
 
     class Meta:
@@ -750,7 +820,7 @@ class Service(models.Model):
     description = models.CharField(max_length=255, blank=True, db_index=True)
     slug = AutoSlugField(populate_from=str, editable=True, unique=True)
     mode = models.CharField(max_length=11, blank=True, default="bus")
-    operator = models.ManyToManyField(Operator, blank=True)
+    operator = models.ManyToManyField(Operator, blank=True, through="ServiceOperator")
     region = models.ForeignKey(Region, models.CASCADE, null=True, blank=True)
     stops = models.ManyToManyField(StopPoint, through=StopUsage)
     current = models.BooleanField(default=True, db_index=True)
@@ -774,11 +844,11 @@ class Service(models.Model):
     update_search_vector = SearchMixin.update_search_vector
 
     class Meta:
-        ordering = ["id"]
-        indexes = [
+        ordering = ("id",)
+        indexes = (
             models.Index(Upper("line_name"), name="line_name"),
             GinIndex(fields=["search_vector"]),
-        ]
+        )
 
     def __str__(self):
         line_name = self.get_line_name()
@@ -907,18 +977,19 @@ class Service(models.Model):
             ).values("service")
         )
 
-        if ":" not in self.service_code:
-            if match := re.match(r"^(?P<number>\d+)[A-Za-z]?$", self.line_name):
-                number = match.group("number")
-                ids = ids.union(
-                    Service.objects.filter(
-                        ~Q(id=self.id),
-                        source=self.source_id,
-                        current=True,
-                        operator__service=self,
-                        line_name__regex=rf"^{number}[A-Za-z]?$",
-                    ).values("id")
-                )
+        if ":" not in self.service_code and (
+            match := re.match(r"^(?P<number>\d+)[A-Za-z]?$", self.line_name)
+        ):
+            number = match.group("number")
+            ids = ids.union(
+                Service.objects.filter(
+                    ~Q(id=self.id),
+                    source=self.source_id,
+                    current=True,
+                    operator__service=self,
+                    line_name__regex=rf"^{number}[A-Za-z]?$",
+                ).values("id")
+            )
 
         services = (
             Service.objects.with_line_names()
@@ -968,10 +1039,10 @@ class Service(models.Model):
                 detailed=detailed,
                 operators=operators,
             )
-        except (IndexError, UnboundLocalError, AssertionError) as e:
+        except (IndexError, UnboundLocalError, AssertionError):
             logger = logging.getLogger(__name__)
 
-            logger.exception(e)
+            logger.exception("error building timetable")
             return
 
         cache_key = [
@@ -1010,7 +1081,7 @@ class Service(models.Model):
             "trip__inbound",
             "sequence",
             "stop_id",
-            "timing_status",
+            "timing_point",
         )
         stop_usages = [
             (
@@ -1018,7 +1089,7 @@ class Service(models.Model):
                 st["trip__inbound"],
                 st["sequence"] or 0,
                 st["stop_id"],
-                st["timing_status"],
+                st["timing_point"],
             )
             for st in stop_times
         ]
@@ -1028,7 +1099,7 @@ class Service(models.Model):
             StopUsage(
                 service=self,
                 stop_id=stop_id,
-                timing_point=(timing_status == "PTP"),
+                timing_point=True if timing_point is None else timing_point,
                 inbound=inbound,
                 order=i,
                 line_name=line_name,
@@ -1038,7 +1109,7 @@ class Service(models.Model):
                 inbound,
                 sequence,
                 stop_id,
-                timing_status,
+                timing_point,
             ) in enumerate(stop_usages)
         ]
 
@@ -1106,6 +1177,25 @@ class ServiceCode(models.Model):
         return f"{self.scheme} {self.code}"
 
 
+class ServiceOverride(models.Model):
+    service = models.ForeignKey(Service, models.CASCADE)
+    field = models.CharField(
+        max_length=32,
+        choices=(
+            ("description", "Description"),
+            ("line_brand", "Marketing name"),
+        ),
+        default="description",
+    )
+    value = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        unique_together = ("service", "field")
+
+    def __str__(self):
+        return f"{self.field} {self.value}"
+
+
 class ServiceLink(models.Model):
     from_service = models.ForeignKey(Service, models.CASCADE, "link_from")
     to_service = models.ForeignKey(Service, models.CASCADE, "link_to")
@@ -1127,6 +1217,20 @@ class PaymentMethod(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ServiceOperator(models.Model):
+    # Service is deleted by Python; the ON DELETE CASCADE comes from the migration
+    service = models.ForeignKey(
+        "Service", models.DO_NOTHING, related_name="serviceoperator+"
+    )
+    operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="serviceoperator+"
+    )
+
+    class Meta:
+        db_table = "busstops_service_operator"
+        unique_together = ("service", "operator")
 
 
 class ServicePaymentMethod(models.Model):
@@ -1152,7 +1256,9 @@ class SIRISource(models.Model):
     url = models.URLField()
     requestor_ref = models.CharField(max_length=255, blank=True)
     admin_areas = models.ManyToManyField(AdminArea, blank=True)
-    operators = models.ManyToManyField(Operator, blank=True)
+    operators = models.ManyToManyField(
+        Operator, blank=True, through="SIRISourceOperator"
+    )
 
     def __str__(self):
         return self.name
@@ -1162,3 +1268,16 @@ class SIRISource(models.Model):
 
     def is_poorly(self):
         return cache.get(self.get_poorly_key())
+
+
+class SIRISourceOperator(models.Model):
+    sirisource = models.ForeignKey(
+        SIRISource, models.DB_CASCADE, related_name="sirisourceoperator+"
+    )
+    operator = models.ForeignKey(
+        Operator, models.DB_CASCADE, related_name="sirisourceoperator+"
+    )
+
+    class Meta:
+        db_table = "busstops_sirisource_operators"
+        unique_together = ("sirisource", "operator")

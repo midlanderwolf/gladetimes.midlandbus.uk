@@ -142,19 +142,18 @@ class Timetable:
             self.yesterday = self.date - datetime.timedelta(days=1)
             self.yesterday_routes = get_routes(routes, self.yesterday)
 
-        if not self.calendar:
-            if self.calendars:
-                calendar_ids = [calendar.id for calendar in self.calendars]
-                self.calendar_ids = list(
-                    get_calendars(
-                        self.date, calendar_ids, scotland=scotland
-                    ).values_list("id", flat=True)
+        if not self.calendar and self.calendars:
+            calendar_ids = [calendar.id for calendar in self.calendars]
+            self.calendar_ids = list(
+                get_calendars(self.date, calendar_ids, scotland=scotland).values_list(
+                    "id", flat=True
                 )
-                self.yesterday_calendar_ids = list(
-                    get_calendars(
-                        self.yesterday, calendar_ids, scotland=scotland
-                    ).values_list("id", flat=True)
-                )
+            )
+            self.yesterday_calendar_ids = list(
+                get_calendars(
+                    self.yesterday, calendar_ids, scotland=scotland
+                ).values_list("id", flat=True)
+            )
 
     def correct_directions(self, trips):
         # for merged multi-operator routes: reverse the polarity if they disagree which direction is inbound/outbound
@@ -340,7 +339,7 @@ class Timetable:
 
     def apply_stops(self, stop_situations=None):
         stop_codes = (
-            row.stop.atco_code for grouping in self.groupings for row in grouping.rows
+            row.stop.stop_code for grouping in self.groupings for row in grouping.rows
         )
         stops = (
             StopTime.stop.field.related_model.objects.select_related("locality")
@@ -378,14 +377,19 @@ class Timetable:
                 return  # some overlap between calendar days, too complicated
 
             for calendar_date in calendar.calendardate_set.all():
-                if calendar.end_date and calendar_date.end_date >= calendar.end_date:
+                if calendar.end_date and (
+                    not calendar_date.end_date
+                    or calendar_date.end_date >= calendar.end_date
+                ):
                     continue
                 return  # exceptions or extra days, too complicated
 
         for calendar in self.calendars:
-            if calendar.id == calendar_id:
-                self.calendar = calendar
-            elif calendar_id is None and calendar.allows(self.today):
+            if (
+                calendar.id == calendar_id
+                or calendar_id is None
+                and calendar.allows(self.today)
+            ):
                 self.calendar = calendar
 
         calendar_options = list(self.calendars)
@@ -405,6 +409,7 @@ class Timetable:
                 if (
                     calendar_date.operation is False
                     and calendar_date.contains(date)
+                    and calendar_date.end_date
                     and calendar.end_date
                 ):
                     # fast-forward to end of current period of non-operation
@@ -443,7 +448,7 @@ class Timetable:
 
     def credits(self):
         credits = (route.source.credit(route) for route in self.current_routes)
-        return set(credit for credit in credits if credit)
+        return {credit for credit in credits if credit}
 
 
 @dataclass
@@ -462,16 +467,16 @@ class Repetition:
                 return "then\u00a0hourly until"
             return "then hourly until"
         if self.duration.seconds % 3600 == 0:
-            duration = "{} hours".format(int(self.duration.seconds / 3600))
+            duration = f"{int(self.duration.seconds / 3600)} hours"
         else:
-            duration = "{} minutes".format(int(self.duration.seconds / 60))
+            duration = f"{int(self.duration.seconds / 60)} minutes"
         if self.min_height < 3:
             return "then\u00a0every {}\u00a0until".format(
                 duration.replace(" ", "\u00a0")
             )
         if self.min_height < 4:
             return "then every\u00a0{} until".format(duration.replace(" ", "\u00a0"))
-        return "then every {} until".format(duration)
+        return f"then every {duration} until"
 
 
 def abbreviate(grouping, i, in_a_row, difference):
@@ -511,12 +516,12 @@ def abbreviate(grouping, i, in_a_row, difference):
 def journey_patterns_match(trip_a, trip_b):
     if trip_a.route_id != trip_b.route_id or trip_a.operator_id != trip_b.operator_id:
         return False
-    if trip_a.journey_pattern:
-        if trip_a.journey_pattern == trip_b.journey_pattern:
-            if trip_a.destination_id == trip_b.destination_id:
-                if trip_a.end - trip_a.start == trip_b.end - trip_b.start:
-                    return True
-    return False
+    return bool(
+        trip_a.journey_pattern
+        and trip_a.journey_pattern == trip_b.journey_pattern
+        and trip_a.destination_id == trip_b.destination_id
+        and trip_a.end - trip_a.start == trip_b.end - trip_b.start
+    )
 
 
 class Grouping:
@@ -546,7 +551,7 @@ class Grouping:
                 partses = [reversed(parts) for parts in partses]
             return "\n".join([" - ".join(parts) for parts in partses])
 
-        if headsigns := set(trip.headsign for trip in self.trips if trip.headsign):
+        if headsigns := {trip.headsign for trip in self.trips if trip.headsign}:
             return f"To {' or '.join(headsigns)}"
 
         if self.inbound:
@@ -556,7 +561,7 @@ class Grouping:
     def txt(self):
         width = max(len(str(row.stop)) for row in self.rows)
         return "\n".join(
-            f"{str(row.stop):<{width}}  {'  '.join(str(time) or '     ' for time in row.times)}"
+            f"{row.stop!s:<{width}}  {'  '.join(str(time) or '     ' for time in row.times)}"
             for row in self.rows
         )
 
@@ -569,13 +574,13 @@ class Grouping:
     def has_set_down_only(self):
         for row in self.rows:
             for cell in row.times:
-                if type(cell) is Cell and cell.set_down_only():
+                if type(cell) is Cell and not cell.last and cell.set_down_only():
                     return True
 
     def has_pick_up_only(self):
         for row in self.rows:
             for cell in row.times:
-                if type(cell) is Cell and cell.pick_up_only():
+                if type(cell) is Cell and not cell.first and cell.pick_up_only():
                     return True
 
     def has_after_midnight(self):
@@ -654,7 +659,7 @@ class Grouping:
         for trip in self.trips:
             prev = None
             for stop_time in trip.times:
-                key = stop_time.get_key()
+                key = stop_time.stop_id
                 stop_times[key] = stop_time
                 successors.setdefault(key, set())
                 in_degree.setdefault(key, 0)
@@ -726,12 +731,9 @@ class Grouping:
             # longest trips first, to minimise duplicate rows
             self.trips.sort(key=lambda t: -len(t.times))
         else:
-            self.rows = [
-                Row(Stop(stop_times[key].stop_id, stop_times[key].stop_code))
-                for key in result
-            ]
+            self.rows = [Row(Stop(stop_times[key].stop_id)) for key in result]
             for row in self.rows:
-                row.timing_status = stop_times[row.stop.stop_code].timing_status
+                row.timing_point = stop_times[row.stop.stop_code].timing_point
 
     def sort_columns(self):
         rows = self.rows
@@ -754,9 +756,7 @@ class Grouping:
                         b_time = row.times[b_index].departure_or_arrival()
                         if a_time > b_time:  # a after b
                             sorter.add(id(a), id(b))
-                        elif a_time < b_time:  # a before b
-                            sorter.add(id(b), id(a))
-                        elif b.top is a.bottom:
+                        elif a_time < b_time or b.top is a.bottom:  # a before b
                             sorter.add(id(b), id(a))
                         break
 
@@ -798,8 +798,8 @@ class Grouping:
             prev_trip = trip_a
 
             # don't merge circular trips (start and finish at same stop))
-            origin = trip_a.times[0].get_key()
-            destination = trip_a.times[-1].get_key()
+            origin = trip_a.times[0].stop_id
+            destination = trip_a.times[-1].stop_id
             if origin == destination:
                 continue
 
@@ -814,16 +814,16 @@ class Grouping:
                         or trip_a.ticket_machine_code == trip_b.ticket_machine_code
                     )
                     and trip_a.operator_id == trip_b.operator_id
-                    and destination == trip_b.times[0].get_key()
-                    and origin != trip_b.times[-1].get_key()  # not circular
-                    and destination != trip_b.times[-1].get_key()  # not circular
+                    and destination == trip_b.times[0].stop_id
+                    and origin != trip_b.times[-1].stop_id  # not circular
+                    and destination != trip_b.times[-1].stop_id  # not circular
                     and zero
                     <= (trip_b.start - trip_a.end)
                     <= fifteen  # short wait time
                 ):
                     # merge trip_a and trip_b
-                    origin = trip_b.times[0].get_key()
-                    destination = trip_b.times[-1].get_key()
+                    origin = trip_b.times[0].stop_id
+                    destination = trip_b.times[-1].stop_id
                     trip_a.times[-1].departure = trip_b.times[0].departure
                     trip_a.times[-1].pick_up = trip_b.times[0].pick_up
                     trip_a.times += trip_b.times[1:]
@@ -839,7 +839,7 @@ class Grouping:
         else:
             x = 0
         previous_list = [row.stop.stop_code for row in rows]
-        current_list = [stoptime.get_key() for stoptime in trip.times]
+        current_list = [stoptime.stop_id for stoptime in trip.times]
         if current_list == previous_list:
             diff = None
         else:
@@ -849,7 +849,7 @@ class Grouping:
         first = True
 
         for stoptime in trip.times:
-            key = stoptime.get_key()
+            key = stoptime.stop_id
 
             if y < len(rows):
                 existing_row = rows[y]
@@ -871,8 +871,8 @@ class Grouping:
                 assert instruction[2:] == key
 
                 if instruction[0] == "+":
-                    row = Row(Stop(stoptime.stop_id, stoptime.stop_code), [""] * x)
-                    row.timing_status = stoptime.timing_status
+                    row = Row(Stop(stoptime.stop_id), [""] * x)
+                    row.timing_point = stoptime.timing_point
                     if not existing_row:
                         rows.append(row)
                     else:
@@ -1001,7 +1001,7 @@ class Grouping:
 
     def apply_stops(self, stops):
         for row in self.rows:
-            row.stop = stops.get(row.stop.atco_code, row.stop)
+            row.stop = stops.get(row.stop.stop_code, row.stop)
         min_height = self.min_height()
         rowspan = self.rowspan()
         for cell in self.rows[0].times:
@@ -1012,7 +1012,7 @@ class Grouping:
         if self.has_minor_stops() and not self.has_major_stops():
             for row in self.rows:
                 if row.stop and row.stop.timing_status:
-                    row.timing_status = row.stop.timing_status
+                    row.timing_point = row.stop.timing_status != "OTH"
 
 
 class ColumnHead:
@@ -1046,11 +1046,17 @@ class Row:
 
     @cached_property
     def set_down_only(self) -> bool:
-        return all(cell.set_down_only() for cell in self.times if type(cell) is Cell)
+        cells = [cell for cell in self.times if type(cell) is Cell]
+        return all(cell.set_down_only() for cell in cells) and not all(
+            cell.last for cell in cells
+        )
 
     @cached_property
     def pick_up_only(self) -> bool:
-        return all(cell.pick_up_only() for cell in self.times if type(cell) is Cell)
+        cells = [cell for cell in self.times if type(cell) is Cell]
+        return all(cell.pick_up_only() for cell in cells) and not all(
+            cell.first for cell in cells
+        )
 
     @cached_property
     def note(self):
@@ -1075,13 +1081,12 @@ class Row:
 
 
 class Stop:
-    def __init__(self, stop_id, stop_code=None):
-        self.timing_status = None
-        self.atco_code = stop_id
-        self.stop_code = stop_code or stop_id
+    def __init__(self, stop_id):
+        self.timing_point = None
+        self.stop_code = stop_id
 
     def __str__(self):
-        return self.stop_code or self.atco_code
+        return self.stop_code
 
 
 class Cell:
@@ -1101,17 +1106,15 @@ class Cell:
         return self.stoptime.departure_or_arrival()
 
     def __repr__(self):
-        return format_timedelta(self.arrival, plus_one=True)
+        return format_timedelta(self.arrival, plus_one=True) or ""
 
     def departure_time(self):
         return format_timedelta(self.departure, plus_one=True)
 
     def set_down_only(self):
-        if not self.last:
-            if self.stoptime.set_down and not self.stoptime.pick_up:
-                return True
+        if self.stoptime.set_down and not self.stoptime.pick_up:
+            return True
 
     def pick_up_only(self):
-        if not self.first:
-            if self.stoptime.pick_up and not self.stoptime.set_down:
-                return True
+        if self.stoptime.pick_up and not self.stoptime.set_down:
+            return True

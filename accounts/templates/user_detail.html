@@ -23,10 +23,10 @@
     {% endif %}
 
     <ul class="horizontal">
-        <li><a href="/vehicles/edits{% querystring user=object.id %}">{{ object.total_count }} edit{{ object.total_count|pluralize }}</a></li>
-        <li><a href="/vehicles/edits{% querystring user=object.id status='pending' %}">{{ object.pending_count }} pending</a></li>
-        <li><a href="/vehicles/edits{% querystring user=object.id status='approved' %}">{{ object.approved_count }} approved</a></li>
-        <li><a href="/vehicles/edits{% querystring user=object.id status='disapproved' %}">{{ object.disapproved_count }} disapproved</a></li>
+        <li><a href="/vehicles/edits?user={{ object.id }}">{{ object.total_count }} edit{{ object.total_count|pluralize }}</a></li>
+        <li><a href="/vehicles/edits?user={{ object.id }}&amp;status=pending">{{ object.pending_count }} pending</a></li>
+        <li><a href="/vehicles/edits?user={{ object.id }}&amp;status=approved">{{ object.approved_count }} approved</a></li>
+        <li><a href="/vehicles/edits?user={{ object.id }}&amp;status=disapproved">{{ object.disapproved_count }} disapproved</a></li>
     </ul>
 
     {% if form %}
@@ -37,14 +37,12 @@
             </p>
 
             {{ form.as_p }}
-            {% csrf_token %}
             <input type="submit" value="Save changes">
         </form>
 
         <h2>Delete your account?</h2>
 
         <form method="POST" autocomplete="off">
-            {% csrf_token %}
             {{ delete_form.as_p }}
             <input type="submit" value="☠️ Delete my account!">
         </form>

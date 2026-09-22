@@ -1,5 +1,8 @@
-from django.contrib.gis.geos import Polygon
 from datetime import datetime
+from functools import cache
+
+from django.contrib.gis.gdal import CoordTransform, SpatialReference
+from django.contrib.gis.geos import Polygon
 from django.utils.timezone import make_aware
 
 
@@ -7,6 +10,11 @@ def get_bounding_box(request):
     return Polygon.from_bbox(
         [request.GET[key] for key in ("xmin", "ymin", "xmax", "ymax")]
     )
+
+
+@cache
+def get_coord_transform(source_srid: int, target_srid: int = 4326) -> CoordTransform:
+    return CoordTransform(SpatialReference(source_srid), SpatialReference(target_srid))
 
 
 def get_datetime(string):

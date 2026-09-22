@@ -49,7 +49,6 @@ ticket machines, a byproduct of the live bus tracking.</p>
 
 {% if not parent %}
     <ul class="horizontal">
-        <!-- <li>{% if dates %}<a href="{% querystring grid=None %}">Normal view</a>{% else %}<a href="{% querystring grid=True %}">Calendar view</a>{% endif %}</li> -->
         <li><a href="/vehicles/edits?operator={{ object.noc }}&status=approved">Recent changes</a></li>
         {% if request.user.trusted %}
             <li><a href="/vehicles/edits?operator={{ object.noc }}&status=pending">Pending vehicle edits</a></li>

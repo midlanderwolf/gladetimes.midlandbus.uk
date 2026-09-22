@@ -3,17 +3,18 @@ from django.contrib.auth.forms import AuthenticationForm, PasswordResetForm
 from django.contrib.auth.models import Permission
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError
+from django.db.models.functions import Now
 from django.forms import (
     BooleanField,
     CharField,
+    CheckboxSelectMultiple,
     EmailField,
     EmailInput,
     Form,
     ModelMultipleChoiceField,
-    CheckboxSelectMultiple,
     UUIDField,
 )
-from django.db.models.functions import Now
+
 from .models import Invitation
 
 User = get_user_model()
@@ -33,7 +34,7 @@ class InviteCodeField(UUIDField):
 class RegistrationForm(PasswordResetForm):
     invite_code = InviteCodeField()
 
-    field_order = ["invite_code"]
+    field_order = ("invite_code",)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

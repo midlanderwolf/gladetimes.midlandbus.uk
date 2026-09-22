@@ -4,7 +4,7 @@
 <div class="aside" id="departures">
     <form autocomplete="off">
         <input type="date" name="date" value="{{ when.date.isoformat }}" required>
-        <input type="time" name="time" value="{{ when.time|time:'H:i' }}">
+        <input type="time" name="time" value="{{ when|time:'H:i' }}">
         {% if has_live or when == now %}
             <input type="submit" value="↻" aria-label="Reload" title="Reload">
         {% else %}
@@ -22,18 +22,18 @@
                     <h3>{{ item.time|date:"l j F" }}</h3>
                 {% endif %}
                 <table>
-                <tbody>
                     {% if has_live or has_scheduled %}
-                        <tr>
-                            <td></td>
+                        <thead><tr>
+                            <th></th>
                             <th scope="col">To</th>
                             {% if has_scheduled %}<th scope="col">Sched{% if has_live %}&shy;{% endif %}uled</th>{% endif %}
                             {% if has_live %}<th scope="col">Ex{% if has_scheduled %}&shy;{% endif %}pected</th>{% endif %}
                             {% if indicator_prefix %}
                                 <th scope="col">{{ indicator_prefix }}</th>
                             {% endif %}
-                        </tr>
+                        </tr></thead>
                     {% endif %}
+                <tbody>
             {% endif %}
         {% endifchanged %}
         <tr>

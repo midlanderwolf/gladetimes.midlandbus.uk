@@ -19,8 +19,12 @@ if redis_client:
 else:
     async_redis_client = None
 
+# channel that import_live_vehicles sends batches of updated vehicle locations to,
+# for the distribute_vehicle_locations worker to fan out to websocket groups
 VEHICLE_POSITIONS_CHANNEL = "vehicle_positions"
 
+# Redis sorted set of vehicle_id -> number of websocket clients currently watching it,
+# updated by VehicleLocationConsumer.connect/disconnect
 VEHICLE_WATCHERS_KEY = "vehicle_watchers"
 
 
@@ -50,7 +54,7 @@ def calculate_bearing(a, b):
     y = math.sin(b_lon - a_lon) * math.cos(b_lat)
     x = math.cos(a_lat) * math.sin(b_lat) - math.sin(a_lat) * math.cos(
         b_lat
-    ) * math.cos(b_lon - b_lon)
+    ) * math.cos(b_lon - a_lon)
 
     bearing_radians = math.atan2(y, x)
     bearing_degrees = math.degrees(bearing_radians)
@@ -58,7 +62,7 @@ def calculate_bearing(a, b):
     if bearing_degrees < 0:
         bearing_degrees += 360
 
-    return int(round(bearing_degrees))
+    return round(bearing_degrees)
 
 
 def get_revision(vehicle, data):

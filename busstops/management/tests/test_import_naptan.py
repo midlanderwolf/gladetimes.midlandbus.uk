@@ -62,8 +62,10 @@ class NaptanTest(TestCase):
                 self.assertEqual(
                     cm.output,
                     [
-                        "WARNING:busstops.management.commands.naptan_new:"
-                        "9100BRNYARM locality E0017806 does not exist"
+                        (
+                            "WARNING:busstops.management.commands.naptan_new:"
+                            "9100BRNYARM locality E0017806 does not exist"
+                        )
                     ],
                 )
 
@@ -98,8 +100,10 @@ class NaptanTest(TestCase):
                 self.assertEqual(
                     cm.output,
                     [
-                        "WARNING:busstops.management.commands.naptan_new:"
-                        "9100BRNYARM locality E0017806 does not exist"
+                        (
+                            "WARNING:busstops.management.commands.naptan_new:"
+                            "9100BRNYARM locality E0017806 does not exist"
+                        )
                     ],
                 )
 

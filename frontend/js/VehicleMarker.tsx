@@ -69,23 +69,26 @@ type VehicleMarkerProps = {
 function VehicleMarker({ vehicle, selected }: VehicleMarkerProps) {
   let className = "vehicle-marker";
 
-  let rotation = vehicle.heading;
+  const hasHeading = vehicle.heading != null;
+  // when the heading is unknown, default to the same rotation as heading=0
+  // (north/up) rather than leaving the marker unrotated - the icon is drawn
+  // assuming a rotation is always applied, so an unrotated marker appears
+  // to be lying on its side
+  let rotation = vehicle.heading ?? 0;
 
   let background = "";
   if (vehicle.vehicle?.css) {
     background = vehicle.vehicle.css;
   }
 
-  if (rotation != null) {
-    if (rotation < 180) {
-      rotation -= 90;
-      className += " right";
-      if (vehicle.vehicle?.right_css) {
-        background = vehicle.vehicle.right_css;
-      }
-    } else {
-      rotation -= 270;
+  if (rotation < 180) {
+    rotation -= 90;
+    className += " right";
+    if (vehicle.vehicle?.right_css) {
+      background = vehicle.vehicle.right_css;
     }
+  } else {
+    rotation -= 270;
   }
 
   const liveryId = vehicle.vehicle?.livery;
@@ -138,9 +141,9 @@ function VehicleMarker({ vehicle, selected }: VehicleMarkerProps) {
       data-vehicle-id={vehicle.id}
     >
       {marker}
-      {rotation == null ? null : (
+      {hasHeading ? (
         <div className="arrow" data-vehicle-id={vehicle.id} />
-      )}
+      ) : null}
     </Marker>
   );
 }

@@ -1,7 +1,7 @@
 from unittest import mock
 
-from django.test import TestCase, override_settings
 from django.core.management import call_command
+from django.test import TestCase, override_settings
 
 
 class ListenTest(TestCase):
@@ -11,7 +11,7 @@ class ListenTest(TestCase):
             call_command("listen")
 
     @override_settings(NEW_VEHICLE_WEBHOOK_URL="http://example.com")
-    def test_listen(self):
+    def test_handle(self):
         with (
             mock.patch(
                 "vehicles.management.commands.listen.connection.cursor"
@@ -19,21 +19,26 @@ class ListenTest(TestCase):
             mock.patch(
                 "vehicles.management.commands.listen.requests.Session.post"
             ) as mock_post,
-            mock.patch("vehicles.management.commands.listen.time.sleep") as mock_sleep,
+            mock.patch("vehicles.management.commands.listen.time.sleep"),
         ):
-            mock_cursor.return_value.__enter__.return_value.connection.notifies.return_value = [
-                mock.Mock(payload="sndr-p420-kak"),
+            notifies = (
+                mock_cursor.return_value.__enter__.return_value.connection.notifies
+            )
+            notifies.side_effect = [
+                [mock.Mock(payload="sndr-p420-kak")],  # stop_after=1
+                [mock.Mock(payload="loth-199")],  # timeout=WINDOW
+                KeyboardInterrupt,  # stop listening
             ]
+            with self.assertRaises(KeyboardInterrupt):
+                call_command("listen")
 
-            call_command("listen")
-
-        mock_post.assert_called_with(
+        # debounced into one message
+        mock_post.assert_called_once_with(
             "http://example.com",
             json={
                 "username": "bot",
-                "content": "[sndr-p420-kak](https://bustimes.org/vehicles/sndr-p420-kak) <@813528710404898817>",
+                "content": "[sndr-p420-kak](https://bustimes.org/vehicles/sndr-p420-kak)\n"
+                "[loth-199](https://bustimes.org/vehicles/loth-199) <@813528710404898817>",
             },
             timeout=10,
         )
-
-        mock_sleep.assert_called_with(5)

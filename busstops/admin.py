@@ -1,15 +1,16 @@
-from django.forms import ModelForm, Textarea
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
-from django.db.models.aggregates import StringAgg
 from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.db import transaction
 from django.db.models import CharField, Exists, F, OuterRef, Q, Value
-from django.db.models.functions import Cast, Now
+from django.db.models.aggregates import StringAgg
+from django.db.models.functions import Cast, Now, TruncDate
+from django.forms import ModelForm, Textarea
 from django.urls import reverse
 from django.utils.html import format_html
 from sql_util.utils import SubqueryCount
 
+from buses.admin_utils import M2MThroughMixin
 from bustimes.admin import log_change
 from bustimes.models import Route, RouteLink
 from bustimes.utils import generate_route_links_for_service_valhalla
@@ -26,12 +27,12 @@ class AdminAreaAdmin(admin.ModelAdmin):
 
 class StopCodeInline(admin.TabularInline):
     model = models.StopCode
-    raw_id_fields = ["source"]
+    raw_id_fields = ("source",)
 
 
 @admin.register(models.StopPoint)
 class StopPointAdmin(GISModelAdmin):
-    list_display = [
+    list_display = (
         "atco_code",
         "naptan_code",
         "locality",
@@ -39,9 +40,9 @@ class StopPointAdmin(GISModelAdmin):
         "common_name",
         "modified_at",
         "created_at",
-    ]
-    list_select_related = ["locality", "admin_area"]
-    list_filter = [
+    )
+    list_select_related = ("locality", "admin_area")
+    list_filter = (
         ("source", admin.RelatedOnlyFieldListFilter),
         "modified_at",
         "created_at",
@@ -49,13 +50,19 @@ class StopPointAdmin(GISModelAdmin):
         "stop_type",
         "service__region",
         "admin_area",
-    ]
-    raw_id_fields = ["source", "parents", "stop_area", "locality", "admin_area"]
-    search_fields = ["atco_code"]
-    ordering = ["atco_code"]
-    inlines = [StopCodeInline]
+    )
+    raw_id_fields = (
+        "source",
+        "parents",
+        "stop_area",
+        "locality",
+        "admin_area",
+    )
+    search_fields = ("atco_code",)
+    ordering = ("atco_code",)
+    inlines = (StopCodeInline,)
     show_full_result_count = False
-    readonly_fields = ["search_vector"]
+    readonly_fields = ("search_vector",)
 
     def get_search_results(self, request, queryset, search_term):
         if not search_term:
@@ -72,18 +79,19 @@ class StopPointAdmin(GISModelAdmin):
 
 @admin.register(models.StopCode)
 class StopCodeAdmin(admin.ModelAdmin):
-    list_display = ["stop", "code", "source"]
-    raw_id_fields = ["stop"]
+    list_display = ("stop", "code", "source")
+    raw_id_fields = ("stop",)
 
 
 @admin.register(models.StopArea)
 class StopAreaAdmin(GISModelAdmin):
-    raw_id_fields = ["admin_area", "parent"]
-    list_filter = ["stop_area_type"]
+    raw_id_fields = ("admin_area", "parent")
+    list_filter = ("stop_area_type",)
 
 
 class OperatorCodeInline(admin.TabularInline):
     model = models.OperatorCode
+    raw_id_fields = ("source",)
 
 
 class OperatorAdminForm(ModelForm):
@@ -115,9 +123,9 @@ class DuplicateOperatorFilter(admin.SimpleListFilter):
 
 
 @admin.register(models.Operator)
-class OperatorAdmin(admin.ModelAdmin):
+class OperatorAdmin(M2MThroughMixin, admin.ModelAdmin):
     form = OperatorAdminForm
-    list_display = [
+    list_display = (
         "name",
         "slug",
         "operator_codes",
@@ -126,7 +134,7 @@ class OperatorAdmin(admin.ModelAdmin):
         "region_id",
         "services",
         "vehicles",
-    ]
+    )
     list_filter = (
         "modified_at",
         DuplicateOperatorFilter,
@@ -137,8 +145,8 @@ class OperatorAdmin(admin.ModelAdmin):
     )
     search_fields = ("noc", "name")
     raw_id_fields = ("region", "regions", "siblings", "colour", "source")
-    inlines = [OperatorCodeInline]
-    readonly_fields = ["search_vector", "modified_at"]
+    inlines = (OperatorCodeInline,)
+    readonly_fields = ("search_vector", "modified_at")
     prepopulated_fields = {"slug": ("name",)}
     autocomplete_fields = ("licences", "payment_methods")
 
@@ -204,19 +212,19 @@ class ServiceCodeInline(admin.TabularInline):
 class RouteInline(admin.TabularInline):
     model = Route
     show_change_link = True
-    fields = ["source", "code", "service_code"]
-    raw_id_fields = ["source"]
+    fields = ("source", "code", "service_code")
+    raw_id_fields = ("source",)
 
 
 class FromServiceLinkInline(admin.TabularInline):
     model = models.ServiceLink
     fk_name = "from_service"
-    autocomplete_fields = ["to_service"]
+    autocomplete_fields = ("to_service",)
 
 
 class ToServiceLinkInline(FromServiceLinkInline):
     fk_name = "to_service"
-    autocomplete_fields = ["from_service"]
+    autocomplete_fields = ("from_service",)
 
 
 class SplitServiceFilter(DuplicateOperatorFilter):
@@ -262,8 +270,48 @@ class DuplicateLineNameFilter(DuplicateOperatorFilter):
         return queryset
 
 
+class HasCurrentRouteFilter(admin.SimpleListFilter):
+    title = "has current route"
+    parameter_name = "has_current_route"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("1", "Yes"),
+            ("0", "No"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value:
+            today = TruncDate(Now())
+
+            superseded = Exists(
+                Route.objects.filter(
+                    service=OuterRef("service"),
+                    source=OuterRef("source"),
+                    service_code=OuterRef("service_code"),
+                    revision_number_context=OuterRef("revision_number_context"),
+                    revision_number__gt=OuterRef("revision_number"),
+                    start_date__lte=today,
+                )
+            )
+            exists = Exists(
+                Route.objects.filter(
+                    Q(end_date=None) | Q(end_date__gte=today),
+                    ~superseded,
+                    service=OuterRef("id"),
+                )
+            )
+            if value == "1":
+                queryset = queryset.filter(exists)
+            elif value == "0":
+                queryset = queryset.filter(~exists)
+
+        return queryset
+
+
 @admin.register(models.Service)
-class ServiceAdmin(GISModelAdmin):
+class ServiceAdmin(M2MThroughMixin, GISModelAdmin):
     list_display = (
         "id",
         "line_name",
@@ -283,6 +331,7 @@ class ServiceAdmin(GISModelAdmin):
     list_filter = (
         SplitServiceFilter,
         DuplicateLineNameFilter,
+        HasCurrentRouteFilter,
         "current",
         "timetable_wrong",
         "public_use",
@@ -294,16 +343,21 @@ class ServiceAdmin(GISModelAdmin):
     )
     search_fields = ("service_code", "line_name", "line_brand", "description")
     raw_id_fields = ("operator", "stops", "colour", "source")
-    inlines = [
+    inlines = (
         ServiceCodeInline,
         RouteInline,
         FromServiceLinkInline,
         ToServiceLinkInline,
-    ]
-    readonly_fields = ["search_vector", "modified_at"]
-    list_editable = ["colour", "line_brand", "create_route_links"]
-    list_select_related = ["colour"]
-    actions = ["current_false", "public_use_true", "merge", "unmerge", "generate_route_links"]
+    )
+    readonly_fields = ("search_vector", "modified_at")
+    list_editable = ("colour", "line_brand")
+    list_select_related = ("colour",)
+    actions = ("current_false", "public_use_true", "merge", "unmerge")
+
+    def lookup_allowed(self, lookup, value, request):
+        if lookup == "route__source__source":
+            return True
+        return super().lookup_allowed(lookup, value, request)
 
     @admin.display(ordering="routes")
     def routes(self, obj):
@@ -359,7 +413,10 @@ class ServiceAdmin(GISModelAdmin):
         for other in others:
             if other.current:
                 other.route_set.update(service=first)
-                first.operator.add(*other.operator.all().distinct())
+                first.operator.add(*other.operator.all())
+            else:
+                # route.service is no longer ON DELETE CASCADE
+                other.route_set.all().delete()
             other.vehiclejourney_set.update(service=first)
             other.servicecode_set.filter(
                 ~Exists(
@@ -501,36 +558,36 @@ class LocalityAdmin(GISModelAdmin):
     search_fields = ("id", "name")
     raw_id_fields = ("adjacent", "parent")
     list_filter = ("modified_at", "created_at", "admin_area__region", "admin_area")
-    readonly_fields = ["search_vector"]
+    readonly_fields = ("search_vector",)
 
 
 @admin.register(models.OperatorCode)
 class OperatorCodeAdmin(admin.ModelAdmin):
     save_as = True
     list_display = ("id", "operator", "source", "code")
-    list_filter = [("source", admin.RelatedOnlyFieldListFilter)]
+    list_filter = (("source", admin.RelatedOnlyFieldListFilter),)
     search_fields = ("code",)
     raw_id_fields = ("operator",)
 
 
 @admin.register(models.ServiceCode)
 class ServiceCodeAdmin(admin.ModelAdmin):
-    list_display = ["id", "service", "scheme", "code"]
-    list_filter = [
+    list_display = ("id", "service", "scheme", "code")
+    list_filter = (
         "scheme",
         "service__current",
         ("service__operator", admin.RelatedOnlyFieldListFilter),
         "service__stops__admin_area",
-    ]
-    search_fields = ["code", "service__line_name", "service__description"]
-    autocomplete_fields = ["service"]
+    )
+    search_fields = ("code", "service__line_name", "service__description")
+    autocomplete_fields = ("service",)
 
 
 @admin.register(models.ServiceColour)
 class ServiceColourAdmin(admin.ModelAdmin):
-    list_display = ["preview", "foreground", "background", "services"]
-    search_fields = ["name"]
-    list_filter = [("service__operator", admin.EmptyFieldListFilter)]
+    list_display = ("preview", "foreground", "background", "services")
+    search_fields = ("name",)
+    list_filter = (("service__operator", admin.EmptyFieldListFilter),)
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)
@@ -565,7 +622,7 @@ class DataSourceAdmin(admin.ModelAdmin):
         ("service", admin.EmptyFieldListFilter),
         ("vehiclejourney", admin.EmptyFieldListFilter),
     )
-    actions = ["delete_routes", "remove_datetimes"]
+    actions = ("delete_routes", "remove_datetimes")
     show_full_result_count = False
 
     def get_queryset(self, request):
@@ -610,7 +667,7 @@ class DataSourceAdmin(admin.ModelAdmin):
 
 
 @admin.register(models.SIRISource)
-class SIRISourceAdmin(admin.ModelAdmin):
+class SIRISourceAdmin(M2MThroughMixin, admin.ModelAdmin):
     list_display = ("name", "url", "requestor_ref", "areas", "is_poorly")
     autocomplete_fields = ("operators", "admin_areas")
 
@@ -632,19 +689,19 @@ class SIRISourceAdmin(admin.ModelAdmin):
 
 class PaymentMethodOperatorInline(admin.TabularInline):
     model = models.PaymentMethod.operator_set.through
-    autocomplete_fields = ["operator"]
+    autocomplete_fields = ("operator",)
 
 
 class PaymentMethodServiceInline(admin.TabularInline):
     model = models.PaymentMethod.service_set.through
-    autocomplete_fields = ["service"]
+    autocomplete_fields = ("service",)
 
 
 @admin.register(models.PaymentMethod)
 class PaymentMethodAdmin(admin.ModelAdmin):
     list_display = ("name", "url", "operators")
-    inlines = [PaymentMethodOperatorInline, PaymentMethodServiceInline]
-    search_fields = ["name"]
+    inlines = (PaymentMethodOperatorInline, PaymentMethodServiceInline)
+    search_fields = ("name",)
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)

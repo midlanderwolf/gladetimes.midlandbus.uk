@@ -6,7 +6,9 @@ import vcr
 from django.core.management import call_command
 from django.test import TestCase
 
-from busstops.models import DataSource, Operator, Region, Service
+from busstops.models import DataSource, Operator, Region, Service, StopPoint
+from bustimes.models import Route, StopTime, Trip
+
 from ...models import Vehicle
 from ..commands.lothian import Command
 
@@ -26,8 +28,17 @@ class EdinburghImportTest(TestCase):
         )
         cls.service = Service.objects.create(line_name="N14", current=True)
         cls.service.operator.add(cls.operator_1)
+        service_2 = Service.objects.create(line_name="100", current=True)
+        service_2.operator.add(cls.operator_1)
         cls.source = source
         Vehicle.objects.create(operator_id="EDTR", source=source, code="1120")
+
+        stop = StopPoint.objects.create(
+            naptan_code="36237267", atco_code="6200204990", active=True
+        )
+        route = Route.objects.create(service=cls.service, source=source)
+        cls.trip = Trip.objects.create(route=route, start="26:45:00", end="27:00:00")
+        StopTime.objects.create(trip=cls.trip, stop=stop, departure="26:50:00")
 
     def test_lothian_avl(self):
         redis_client = fakeredis.FakeStrictRedis(version=7)
@@ -45,15 +56,21 @@ class EdinburghImportTest(TestCase):
             with mock.patch(
                 "vehicles.management.import_live_vehicles.redis_client", redis_client
             ):
-                with self.assertNumQueries(170):
+                with self.assertNumQueries(183):
                     command.update()
+
+                # the feed has no timestamp of its own,
+                # so the newest vehicle location timestamp is used
+                self.assertEqual(
+                    str(command.status[-1].timestamp), "2025-12-18 02:47:53+00:00"
+                )
 
                 cassette.rewind()
 
                 # make it think 1 vehicle has moved
                 del command.identifiers["1116"]
 
-                with self.assertNumQueries(4):
+                with self.assertNumQueries(1):
                     command.update()
 
         journey = command.source.vehiclejourney_set.first()
@@ -61,6 +78,9 @@ class EdinburghImportTest(TestCase):
         self.assertEqual("NovWedAL23907804", journey.code)
         self.assertEqual("Surgeons' Hall", journey.destination)
         self.assertEqual(self.service, journey.service)
+
+        self.assertEqual(self.trip, journey.trip)
+        self.assertEqual("2025-12-17", str(journey.date))
 
         self.assertTrue(journey.service.tracking)
         response = self.client.get(journey.service.get_absolute_url())
@@ -72,4 +92,5 @@ class EdinburghImportTest(TestCase):
         self.assertContains(response, '/map">Map</a>')
         self.assertContains(response, '/vehicles">Vehicles</a>')
 
-        self.assertContains(response, "background: #0C1436;")
+        self.assertContains(response, "background: #0C1436;")  # N14
+        self.assertContains(response, "background: #002C4D;")  # 100

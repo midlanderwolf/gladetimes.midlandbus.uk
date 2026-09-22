@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from django.test import TestCase
 
 from busstops.models import DataSource, Service
 from vehicles.models import VehicleJourney
+
 from .models import Calendar, Route, Trip
 
 
@@ -63,7 +64,7 @@ class GetTripTest(TestCase):
         journey = VehicleJourney(
             service=self.service,
             code="1111",
-            datetime=datetime(2025, 7, 12, 1, 0, 0, tzinfo=timezone.utc),  # 2am BST
+            datetime=datetime(2025, 7, 12, 1, 0, 0, tzinfo=UTC),  # 2am BST
         )
         trip = journey.get_trip()
         self.assertFalse(trip.calendar.thu)
@@ -71,14 +72,14 @@ class GetTripTest(TestCase):
         self.assertFalse(trip.calendar.sat)
 
         # Friday mornihg
-        journey.datetime = datetime(2025, 7, 11, 1, 0, 0, tzinfo=timezone.utc)
+        journey.datetime = datetime(2025, 7, 11, 1, 0, 0, tzinfo=UTC)
         trip = journey.get_trip()
         self.assertTrue(trip.calendar.thu)
         self.assertFalse(trip.calendar.fri)
         self.assertFalse(trip.calendar.sat)
 
         # Sunday mornihg
-        journey.datetime = datetime(2025, 7, 13, 1, 0, 0, tzinfo=timezone.utc)
+        journey.datetime = datetime(2025, 7, 13, 1, 0, 0, tzinfo=UTC)
         trip = journey.get_trip()
         self.assertFalse(trip.calendar.thu)
         self.assertFalse(trip.calendar.fri)

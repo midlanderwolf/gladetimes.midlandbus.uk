@@ -18,10 +18,6 @@
     {% elif operator.region %}in <a href="{{ object.region.get_absolute_url }}">{{ object.region.the }}</a>{% endif %}
 </p>
 
-<div class="ad-wrapper">
-    <div id="AFM_inContentTop_ad"></div>
-</div>
-
 {% include 'situations.html' %}
 
 <ul class="tabs">
@@ -32,7 +28,7 @@
         <li><a href="{{ object.get_absolute_url }}/map">Map</a></li>
     {% endif %}
     {% if tickets_link %}
-        <li><a href="{{ tickets_link }}">Tickets</a></li>
+        <li><a href="{{ tickets_link }}">Tickets{% if "//" in tickets_link %} (ad){% endif %}</a></li>
     {% endif %}
     {% if vehicles %}
         <li><a href="{{ object.get_absolute_url }}/vehicles">Vehicles</a></li>
@@ -44,6 +40,8 @@
 {% if ad_hoc_services %}
     <h2>Other routes</h2>
 
+    <p>⚠️ We don’t have timetables for these, and they might not be normal bus services</p>
+
     {% include 'services.html' with services=ad_hoc_services %}
 {% endif %}
 
@@ -52,9 +50,9 @@
 {% if perms.busstops.change_operator %}
     <ul class="horizontal">
         <li><a href="{% url 'admin:busstops_operator_change' object.noc %}">✎ operator</a></li>
-        <li><a href="{% url 'admin:busstops_service_changelist' %}{% querystring operator__noc__exact=object.noc current__exact=1 %}">✎ services</a></li>
-        <li><a href="{% url 'admin:vehicles_vehicle_changelist' %}{% querystring operator__noc__exact=object.noc %}">✎ vehicles</a></li>
-        <li><a href="{% url 'admin:bustimes_timetabledatasource_changelist' %}{% querystring operators__exact=object.noc %}">✎ timetable data sources</a></li>
+        <li><a href="{% url 'admin:busstops_service_changelist' %}?operator__noc__exact={{ object.noc }}&amp;current__exact=1">✎ services</a></li>
+        <li><a href="{% url 'admin:vehicles_vehicle_changelist' %}?operator__noc__exact={{ object.noc }}">✎ vehicles</a></li>
+        <li><a href="{% url 'admin:bustimes_timetabledatasource_changelist' %}?operators__exact={{ object.noc }}">✎ timetable data sources</a></li>
     </ul>
 {% endif %}
 

@@ -7,14 +7,15 @@ import stopMarker from "data-url:../stop-marker.png";
 import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import { captureException, ErrorBoundary } from "@sentry/react";
 import type {
+  FilterSpecification,
   Map as MapLibreMap,
-  MapStyleImageMissingEvent,
 } from "maplibre-gl";
 import React, { createContext, memo, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import MapGL, {
   AttributionControl,
   GeolocateControl,
+  type LayerProps,
   type LngLat,
   type MapLayerMouseEvent,
   type MapProps,
@@ -30,11 +31,29 @@ const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
   "stop-marker-circle": stopMarkerCircle,
   "route-stop-marker": routeStopMarker,
-  "route-stop-marker-circle": routeStopMarkerCircle,
   "route-stop-marker-dark": routeStopMarkerDark,
-  "route-stop-marker-dark-circle": routeStopMarkerDarkCircle,
   "history-arrow": arrow,
 };
+
+export const hasBearing: FilterSpecification = [
+  "!=",
+  ["get", "bearing"],
+  ["literal", null],
+];
+
+// stops with no bearing to point in get a plain circle,
+// instead of a rotated "route-stop-marker" image
+export const routeStopCircleStyle = (darkMode: boolean): LayerProps => ({
+  id: "stops-circle",
+  type: "circle",
+  filter: ["!", hasBearing],
+  paint: {
+    "circle-radius": 3,
+    "circle-color": darkMode ? "#424242" : "#fff",
+    "circle-stroke-width": 2.25,
+    "circle-stroke-color": darkMode ? "#d6d6d6" : "#666",
+  },
+});
 
 const mapStyles: { [key: string]: string } = {
   light: "Light",
@@ -110,24 +129,21 @@ function MapChild({ onInit }: { onInit?: (map: MapLibreMap) => void }) {
         onInit(_map);
       }
 
-      const onStyleImageMissing = (e: MapStyleImageMissingEvent) => {
-        if (e.id in imagesByName) {
+      _map.setMissingStyleImageResolver(async (id) => {
+        if (id in imagesByName) {
           const image = new Image();
-          image.src = imagesByName[e.id];
-          image.onload = () => {
-            if (!map.hasImage(e.id)) {
-              map.addImage(e.id, image, {
-                pixelRatio: 2,
-              });
-            }
-          };
+          image.src = imagesByName[id];
+          await image.decode();
+          if (!_map.hasImage(id)) {
+            _map.addImage(id, image, {
+              pixelRatio: 2,
+            });
+          }
         }
-      };
-
-      map.on("styleimagemissing", onStyleImageMissing);
+      });
 
       return () => {
-        map.off("styleimagemissing", onStyleImageMissing);
+        _map.setMissingStyleImageResolver(null);
       };
     }
   });
@@ -230,7 +246,7 @@ export default function BusTimesMap(
           mapStyle={mapStyleURL}
           RTLTextPlugin={""}
           attributionControl={false}
-          // onError={(e) => captureException(e)}
+          onError={(e) => captureException(e)}
           onContextMenu={onContextMenu}
         >
           <NavigationControl showCompass={false} />

@@ -6,7 +6,6 @@ from django.db.models import Q
 from google.protobuf import json_format
 
 from busstops.models import DataSource
-from bustimes.models import Trip
 
 from ...models import Vehicle, VehicleJourney
 from .import_gtfsr_ie import Command as GTFSRCommand
@@ -15,12 +14,12 @@ from .import_gtfsr_ie import Command as GTFSRCommand
 class Command(GTFSRCommand):
     source_name = "Ember"
     vehicle_code_scheme = "Ember"
-    wait = 12
+    wait = 17
 
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/London")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-        self.url = "https://api.ember.to/v1/gtfs/realtime/"
+        self.url = "https://api.ember.to/v1/gtfs/realtime/vehicle-positions/"
         return self
 
     def get_items(self):
@@ -30,7 +29,7 @@ class Command(GTFSRCommand):
 
         trip_updates = {
             entity["tripUpdate"]["trip"]["tripId"]: entity["tripUpdate"]
-            for entity in json_format.MessageToDict(feed)["entity"]
+            for entity in json_format.MessageToDict(feed).get("entity", ())
             if "tripUpdate" in entity and "tripId" in entity["tripUpdate"]["trip"]
         }
         cache.set("ember_trip_updates", trip_updates, 300)
@@ -58,11 +57,7 @@ class Command(GTFSRCommand):
         )
         journey.date = start_date.date()
 
-        try:
-            trip = Trip.objects.get(operator="EMBR", vehicle_journey_code=journey.code)
-        except Trip.DoesNotExist:
-            pass
-        else:
+        if trip := self.trips.get(journey.code):
             journey.trip = trip
 
             journey.datetime = (

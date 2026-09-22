@@ -2,12 +2,13 @@ from pathlib import Path
 from unittest import mock
 
 import fakeredis
-import vcr
 import time_machine
-from django.test import TestCase
+import vcr
 from django.core.management import call_command
+from django.test import TestCase
 
 from busstops.models import DataSource, Operator, Region, Service
+
 from ...models import VehicleJourney
 
 
@@ -17,7 +18,7 @@ class SignalRTest(TestCase):
         DataSource.objects.create(name="signalr", url="https://example.com/hub")
         s = DataSource.objects.create(name="IM")
         r = Region.objects.create(name="Isle of Man", id="IM")
-        o = Operator.objects.create(noc="bus-vannin")
+        o = Operator.objects.create(noc="BVAN")
         s = Service.objects.create(current=True, region=r, line_name="47B", source=s)
         s.operator.add(o)
 

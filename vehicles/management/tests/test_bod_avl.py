@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -33,6 +34,10 @@ def patch_redis_client(redis_client=None):
 
 
 class CapturingChannelLayer:
+    """Stands in for the real (Redis-backed) channel layer, so a test can
+    inspect what ImportLiveVehiclesCommand.save() sent it, without a real
+    distribute_vehicle_locations worker process around to consume it."""
+
     def __init__(self):
         self.sent = []
 
@@ -155,43 +160,40 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         # should ignore operator with id 'UNIB' in favour of one with OperatorCode:
         self.assertEqual(command.get_operator("UNIB").get().noc, "UNOE")
 
-        self.assertEqual(
-            list(command.get_operator("FOO").values("noc")),
+        self.assertCountEqual(
+            command.get_operator("FOO").values("noc"),
             [{"noc": "WHIP"}, {"noc": "TGTC"}],
         )
 
-    def test_get_destination_name(self):
-        import_bod_avl.get_destination_name.cache_clear()
-
-        self.assertEqual(
-            import_bod_avl.get_destination_name("390071066"),
-            "Southwold, Kings Head",
-        )
-        self.assertEqual(
-            import_bod_avl.get_destination_name("390071067"),
-            "Southwold, Bus Station",
-        )
-        self.assertEqual(
-            import_bod_avl.get_destination_name("390071068"),
-            "Shudehill Interchange",
-        )
-
-    def test_get_service_with_short_destination_ref(self):
+    @time_machine.travel("2020-05-01T00:00:11+00:00", tick=False)
+    def test_not_modified(self):
+        # each cycle is a new object, so a 304 means the redirect still points
+        # at the archive we already have - don't download it again
         command = import_bod_avl.Command()
         command.source = self.source
-        service = Service.objects.create(line_name="1", current=True)
-        command.services = Service.objects.filter(id=service.id)
-        item = {
-            "RecordedAtTime": "2026-05-19T10:00:00+00:00",
-            "MonitoredVehicleJourney": {
-                "LineRef": "1",
-                "OperatorRef": "NOPE",
-                "DestinationRef": "0",
-                "VehicleLocation": {"Latitude": "52.0", "Longitude": "-1.0"},
-            },
-        }
+        command.source.datetime = datetime(2020, 5, 1, tzinfo=UTC)
+        command.last_modified = datetime(2020, 5, 1, tzinfo=UTC)
 
-        self.assertIsNone(command.get_service(Operator.objects.none(), item, "1", ""))
+        response = mock.Mock(status_code=304, content=b"")
+        with mock.patch.object(command.session, "get", return_value=response) as get:
+            self.assertIsNone(command.get_items())
+
+        self.assertTrue(command.not_modified)
+        self.assertEqual(
+            get.call_args.kwargs["headers"]["if-modified-since"],
+            "Fri, 01 May 2020 00:00:00 GMT",
+        )
+        # unchanged, so the next wait is still calculated from it
+        self.assertEqual(command.last_modified, datetime(2020, 5, 1, tzinfo=UTC))
+
+        # 11s since it was published - check again shortly, don't wait it out
+        with mock.patch.object(command.session, "get", return_value=response):
+            self.assertEqual(command.update(), 0.5)
+
+        # but if BODS has stalled, fall back to the 10 second grid
+        command.last_modified = datetime(2020, 4, 30, 23, 59, 36, tzinfo=UTC)
+        with mock.patch.object(command.session, "get", return_value=response):
+            self.assertEqual(command.update(), 5.5)
 
     @time_machine.travel("2020-05-01", tick=False)
     def test_new_bod_avl_a(self):
@@ -230,22 +232,22 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             """
             <tr>
                 <td>00:00:00</td>
-                <td>15:14:46</td>
-                <td>-85 days, 8:45:13.738726</td>
+                <td>11:50:58</td>
+                <td>-7300258.0</td>
                 <td>50</td>
                 <td>50</td>
-                <td>0.0</td>
+                <td>0.00</td>
             </tr>
 """
             + "        "
             + """
             <tr>
                 <td>00:00:00</td>
-                <td>15:14:46</td>
-                <td>-85 days, 8:45:13.738726</td>
+                <td>11:50:58</td>
+                <td>-7300258.0</td>
                 <td>50</td>
                 <td>0</td>
-                <td>0.0</td>
+                <td>0.00</td>
             </tr>""",
         )
 
@@ -260,6 +262,11 @@ class BusOpenDataVehicleLocationsTest(TestCase):
     )
     @time_machine.travel("2020-10-17T08:34:09", tick=False)
     def test_new_bod_avl_b(self):
+        # vehicles with implausibly future timestamps
+        self.enterContext(
+            self.assertLogs("vehicles.management.import_live_vehicles", "WARNING")
+        )
+
         items = [
             {
                 "RecordedAtTime": "2020-10-17T08:34:00+00:00",
@@ -341,11 +348,21 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         command.get_operator.cache_clear()
         import_bod_avl.get_destination_name.cache_clear()
 
+        server = fakeredis.FakeServer()
+        async_redis_client = fakeredis.FakeAsyncRedis(server=server, version=7)
+        channel_layer = CapturingChannelLayer()
+
         with (
-            patch_redis_client() as redis_client,
+            patch_redis_client(
+                fakeredis.FakeStrictRedis(server=server, version=7)
+            ) as redis_client,
             mock.patch(
                 "vehicles.management.commands.import_bod_avl.Command.get_items",
                 return_value=items,
+            ),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=channel_layer,
             ),
         ):
             with self.assertNumQueries(42):
@@ -357,13 +374,15 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             self.assertEqual(11, wait)
 
             items[0]["RecordedAtTime"] = "2020-10-30T05:09:00+00:00"
-            with self.assertNumQueries(3):
+            with self.assertNumQueries(1):
                 command.update()
 
             items[0]["RecordedAtTime"] = "2020-10-30T05:10:00+00:00"
             items[0]["OriginAimedDepartureTime"] = "2020-10-30T09:00:00+00:00"
             with self.assertNumQueries(1):
                 wait = command.update()
+
+        distribute(channel_layer, async_redis_client)
 
         journeys = VehicleJourney.objects.all()
 
@@ -397,7 +416,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                         "url": "/vehicles/hams-dw18-ham",
                         "name": "T2-1 - DW18 HAM",
                     },
-                    "heading": 92.0,
+                    "heading": 92,
                     "datetime": "2020-10-15T08:46:08+01:00",
                     "destination": "",
                     "service_id": self.service_c.id,
@@ -483,7 +502,19 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         command = import_bod_avl.Command()
         command.source = self.source
 
-        with patch_redis_client() as redis_client:
+        server = fakeredis.FakeServer()
+        async_redis_client = fakeredis.FakeAsyncRedis(server=server, version=7)
+        channel_layer = CapturingChannelLayer()
+
+        with (
+            patch_redis_client(
+                fakeredis.FakeStrictRedis(server=server, version=7)
+            ) as redis_client,
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=channel_layer,
+            ),
+        ):
             command.handle_item(
                 {
                     "Extensions": {
@@ -531,40 +562,46 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             )
             command.save()
 
+        distribute(channel_layer, async_redis_client)
+
         journey = VehicleJourney.objects.get()
         self.assertEqual(journey.direction, "inbound")
         self.assertEqual(journey.destination, "Southwold, Kings Head")
 
         with mock.patch("vehicles.views.redis_client", redis_client):
-            response = self.client.get(f"/journeys/{journey.id}.json")
+            response = self.client.get(f"/api/vehiclejourneys/{journey.id}/details/")
         self.maxDiff = None
         self.assertEqual(
             response.json(),
             {
-                "code": "146_20201128_12_58",
-                "current": True,
+                "id": journey.id,
                 "datetime": "2020-11-28T12:58:25Z",
-                "destination": "Southwold, Kings Head",
-                "direction": "inbound",
+                "date": "2020-11-28",
+                "vehicle": {
+                    "id": journey.vehicle_id,
+                    "slug": "none-bb62-bus",
+                    "fleet_code": "104",
+                    "reg": "BB62BUS",
+                },
                 "route_name": "146",
-                "service_id": None,
+                "time_aware_polyline": "iifIokk~Hsxrhw~A",
+                "destination": "Southwold",
                 "trip_id": None,
-                "vehicle_id": journey.vehicle_id,
-                "locations": [
+                "live": [
                     {
-                        "id": 1606568305,
-                        "coordinates": [1.296442985534668, 52.62268829345703],
-                        "datetime": "2020-11-28T12:58:25Z",
-                        "delta": None,
-                        "direction": None,
-                    },
-                    {
-                        "id": 1606576026,
-                        "coordinates": [1.675892949104309, 52.328399658203125],
-                        "datetime": "2020-11-28T15:07:06Z",
-                        "delta": None,
-                        "direction": 142,
-                    },
+                        "id": journey.vehicle_id,
+                        "journey_id": journey.id,
+                        "coordinates": [1.675893, 52.328398],
+                        "datetime": "2020-11-28T15:07:06+00:00",
+                        "destination": "Southwold",
+                        "heading": 142,
+                        "block": "2",
+                        "service": {"line_name": "146"},
+                        "vehicle": {
+                            "name": "104 - BB62 BUS",
+                            "url": "/vehicles/none-bb62-bus",
+                        },
+                    }
                 ],
             },
         )
@@ -609,8 +646,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                             "name": "104 - BB62 BUS",
                         },
                         "heading": 142,
-                        "datetime": "2020-11-28T15:07:06Z",
-                        "destination": "Southwold, Kings Head",
+                        "datetime": "2020-11-28T15:07:06+00:00",
+                        "destination": "Southwold",
                         "service": {"line_name": "146"},
                     }
                 ],
@@ -631,8 +668,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                             "name": "104 - BB62 BUS",
                         },
                         "heading": 142,
-                        "datetime": "2020-11-28T15:07:06Z",
-                        "destination": "Southwold, Kings Head",
+                        "datetime": "2020-11-28T15:07:06+00:00",
+                        "destination": "Southwold",
                         "service": {"line_name": "146"},
                     }
                 ],
@@ -759,8 +796,8 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                         "url": "/vehicles/none-626",
                         "name": "626",
                     },
-                    "heading": 189.0,
-                    "datetime": "2021-03-05T14:26:43Z",
+                    "heading": 189,
+                    "datetime": "2021-03-05T14:26:43+00:00",
                     "destination": "",
                     "service": {"line_name": "42"},
                     "seats": "27 free",
@@ -1165,8 +1202,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
     def test_debugger_error(self):
         response = self.client.post("/vehicles/debug", {"data": "trdgserawse/"})
         self.assertIn(
-            "Expecting value: line 1 column 1 (char 0)",
-            str(response.context["form"].errors),
+            "that isn&#x27;t valid JSON", str(response.context["form"].errors)
         )
 
     def test_zipfile(self):
@@ -1179,9 +1215,12 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.assertEqual(items, [])
 
         self.source.url = "https://bustimes.org/404"
-        with use_cassette(str(self.vcr_path / "bod_avl_error.yaml")):
+        with (
+            use_cassette(str(self.vcr_path / "bod_avl_error.yaml")),
+            self.assertLogs("vehicles.management.commands.import_bod_avl", "WARNING"),
+        ):
             items = command.get_items()
-            self.assertEqual(items, [])
+        self.assertIsNone(items)
 
     def test_tfw_bods_coexistence(self):
         tfw = DataSource.objects.create(name="Transport for Wales")

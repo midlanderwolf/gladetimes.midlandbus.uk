@@ -1,5 +1,5 @@
 import hashlib
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from difflib import Differ
 from itertools import pairwise
 
@@ -8,13 +8,13 @@ from django.db.models import (
     DateTimeField,
     ExpressionWrapper,
     F,
+    IntegerField,
+    OuterRef,
     Q,
     Value,
     When,
-    OuterRef,
-    IntegerField,
 )
-from django.db.models.functions import Abs
+from django.db.models.functions import Abs, Least
 from django.utils import timezone
 from sql_util.utils import Exists
 
@@ -22,9 +22,9 @@ from .models import (
     Calendar,
     CalendarBankHoliday,
     CalendarDate,
+    Route,
     StopTime,
     Trip,
-    Route,
     Version,
 )
 
@@ -44,10 +44,10 @@ class log_time_taken:
         self.logger = logger
 
     def __enter__(self):
-        self.start = datetime.now()
+        self.start = datetime.now(UTC)
 
     def __exit__(self, _, __, ___):
-        self.logger.info(f"  ⏱️ {datetime.now() - self.start}")
+        self.logger.info(f"  ⏱️ {datetime.now(UTC) - self.start}")
 
 
 def get_routes(routes, when):
@@ -178,6 +178,14 @@ def get_calendars(when: date | datetime, calendar_ids=None, scotland=None):
     )
 
 
+def get_calendar_ids(when: date, routes, scotland=None) -> list:
+    return list(
+        get_calendars(when, scotland=scotland)
+        .filter(id__in=Trip.objects.filter(route__in=routes).values("calendar_id"))
+        .values_list("id", flat=True)
+    )
+
+
 def get_other_trips_in_block(trip, date):
     if not trip.route_id:
         return Trip.objects.none()
@@ -228,12 +236,9 @@ def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=No
 
         scotland = stop.pk[:1] == "6" and ":" not in stop.pk and stop.pk[:4].isdigit()
 
-        if not routes:
-            times = times.none()
-
         times = times.filter(
             trip__route__in=routes,
-            trip__calendar__in=get_calendars(date, scotland=scotland),
+            trip__calendar__in=get_calendar_ids(date, routes, scotland=scotland),
         )
 
         if time is not None:
@@ -246,7 +251,7 @@ def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=No
                     F("departure") + midnight.timestamp(),
                     output_field=DateTimeField(),
                 )
-            ).order_by("departure_time")
+            ).order_by("departure_time", "id")
         else:
             times = times.filter(departure__isnull=False)
 
@@ -441,37 +446,55 @@ def get_trip(
     if approximate_datetime:
         start_time = timezone.localtime(datetime)
         start_time = timedelta(hours=start_time.hour, minutes=start_time.minute)
-        start_range = (
-            start_time - timedelta(minutes=10),
-            start_time + timedelta(minutes=30),
-        )
-        if next_stop:
-            condition = Q(
-                Exists(
-                    "stoptime",
-                    filter=Q(
-                        stop__naptan_code=next_stop,
-                        departure__range=start_range,
-                    ),
-                ),
-                start__range=start_range,
-            )
+
+        if start_time < timedelta(hours=6):
+            # might be timetabled as part of the previous day
+            start_times = (start_time, start_time + timedelta(days=1))
         else:
-            condition = Q(start__range=start_range)
-        score = ExpressionWrapper(
-            -Abs(int(start_time.total_seconds()) - F("start")),
-            output_field=IntegerField(),
-        )
+            start_times = (start_time,)
+
+        if next_stop:
+            if next_stop[3:4] == "0":
+                stop_q = Q(stop=next_stop)  # translink
+            else:
+                stop_q = Q(stop__naptan_code=next_stop)  # lothian
+        else:
+            stop_q = None
+
+        condition = Q()
+        score = None
+        for start_time in start_times:
+            start_range = (
+                start_time - timedelta(minutes=10),
+                start_time + timedelta(minutes=5),
+            )
+            start_condition = Q(start__range=start_range)
+            if stop_q:
+                start_condition &= Q(
+                    Exists(
+                        "stoptime",
+                        filter=Q(
+                            stop_q,
+                            departure__range=start_range,
+                        ),
+                    )
+                )
+            condition |= start_condition
+
+            distance = Abs(int(start_time.total_seconds()) - F("start"))
+            score = distance if score is None else Least(score, distance)
+
+        score = ExpressionWrapper(-score, output_field=IntegerField())
     else:
         condition = code | start
-
-    if direction:
-        condition &= destination | direction
 
     trips = trips.filter(condition).annotate(score=score).order_by("-score")
 
     if trips:
-        if trips[0].start >= timedelta(days=1):
+        if (
+            trips[0].start >= timedelta(days=1)
+            and timezone.localtime(departure_time or datetime).hour < 12
+        ):
             date -= timedelta(days=1)
         if len(trips) > 1 and trips[0].score == trips[1].score:
             filtered_trips = trips.filter(calendar__in=get_calendars(date))
@@ -492,7 +515,7 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
                 return [stop for stop in stoptimes if stop.trip_id == trip_id]
             else:
                 # merge a and b - they describe the same stop
-                a.departure_time = b.departure_time
+                a.departure = b.departure
                 a.pick_up = b.pick_up
                 stoptimes_list.remove(b)
 
@@ -500,134 +523,95 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
     return stoptimes_list
 
 
-def get_route_link(
-    session, url, profile, service, from_atco, from_point, to_atco, to_point
-):
-    from bustimes.models import RouteLink
-    from django.contrib.gis.geos import LineString
+def get_trips(trip, date=None) -> list:
+    """Get other parts of this trip (if the service has been split into parts)
 
-    try:
-        response = session.get(
-            f"{url}{profile}/{from_point.x},{from_point.y};{to_point.x},{to_point.y}",
-            params={"overview": "full", "geometries": "geojson"},
-            timeout=10,
+    counterpart to merge_split_trips
+    """
+
+    if trip.ticket_machine_code and trip.route and trip.route.service_id:
+        code_filter = Q(ticket_machine_code=trip.ticket_machine_code)
+        if trip.vehicle_journey_code:
+            code_filter |= Q(vehicle_journey_code=trip.vehicle_journey_code)
+
+        # don't match a superseded version of the timetable
+        route_filter = Q(
+            route__service=trip.route.service_id, route__source=trip.route.source_id
         )
-        data = response.json()
-    except Exception:
-        return None
-
-    if data.get("code") != "Ok" or not data.get("routes"):
-        return None
-
-    geometry = data["routes"][0]["geometry"]
-    distance = data["routes"][0]["distance"]
-
-    coords = geometry["coordinates"]
-    line_geometry = LineString(coords, srid=4326)
-
-    return RouteLink(
-        service=service,
-        from_stop_id=from_atco,
-        to_stop_id=to_atco,
-        distance_metres=int(distance),
-        geometry=line_geometry,
-    )
-
-
-def generate_route_links_for_service(service):
-    import requests
-
-    from bustimes.models import RouteLink
-
-    mode = service.mode or "bus"
-    if mode in ("bus", "coach"):
-        profile = "bus"
-    else:
-        profile = "driving"
-
-    route_links = []
-    session = requests.Session()
-    url = "http://router.project-osrm.org/route/v1/"
-
-    stops = list(
-        service.stopusage_set.select_related("stop")
-        .order_by("order")
-        .values_list("stop__atco_code", "stop__latlong")
-    )
-
-    if len(stops) < 2:
-        return False
-
-    for i in range(len(stops) - 1):
-        from_atco, from_point = stops[i]
-        to_atco, to_point = stops[i + 1]
-
-        if not from_point or not to_point:
-            continue
-
-        route_links.append(
-            get_route_link(
-                session,
-                url,
-                profile,
-                service,
-                from_atco,
-                from_point,
-                to_atco,
-                to_point,
+        if trip.route.version_id:
+            route_filter &= Q(route__version=trip.route.version_id)
+        if date:
+            route_ids = list(
+                get_routes(
+                    Route.objects.filter(service=trip.route.service_id), date
+                ).values_list("id", flat=True)
             )
-        )
-
-    if len(stops) > 1:
-        from_atco, from_point = stops[-1]
-        to_atco, to_point = stops[0]
-        if from_point and to_point:
-            route_links.append(
-                get_route_link(
-                    session,
-                    url,
-                    profile,
-                    service,
-                    from_atco,
-                    from_point,
-                    to_atco,
-                    to_point,
+            route_filter &= Q(route__in=route_ids)
+        else:
+            # no date, so just exclude routes with a higher revision number
+            route_filter &= ~Q(
+                Exists(
+                    Route.objects.filter(
+                        service__isnull=False,
+                        source=OuterRef("route__source"),
+                        service_code=OuterRef("route__service_code"),
+                        revision_number_context=OuterRef(
+                            "route__revision_number_context"
+                        ),
+                        revision_number__gt=OuterRef("route__revision_number"),
+                    )
                 )
             )
 
-    route_links = [rl for rl in route_links if rl is not None]
+        calendar_filter = Q(calendar=trip.calendar_id)
+        # annoyingly, sometimes different parts have different calendar ids
+        # (cos school day variations etc)
+        if date:
+            calendar_filter |= Q(calendar__in=get_calendar_ids(date, route_ids))
+        elif trip.calendar:
+            overlap = Q(calendar__end_date__gte=trip.calendar.start_date) | Q(
+                calendar__end_date=None
+            )
+            if trip.calendar.end_date:
+                overlap &= Q(calendar__start_date__lte=trip.calendar.end_date)
+            days = Q()
+            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+                if getattr(trip.calendar, day):
+                    days |= Q(**{f"calendar__{day}": True})
+            calendar_filter |= overlap & days
 
-    seen = set()
-    unique_route_links = []
-    for rl in route_links:
-        key = (rl.from_stop_id, rl.to_stop_id)
-        if key not in seen:
-            seen.add(key)
-            unique_route_links.append(rl)
-    route_links = unique_route_links
-
-    if route_links:
-        RouteLink.objects.bulk_create(
-            route_links,
-            update_conflicts=True,
-            update_fields=["geometry", "distance_metres"],
-            unique_fields=["service", "from_stop", "to_stop"],
+        trips = (
+            Trip.objects.filter(
+                Q(id=trip.id)
+                | Q(
+                    code_filter,
+                    calendar_filter,
+                    route_filter,
+                    Q(start__gte=trip.end) | Q(end__lte=trip.start),
+                    ~Q(destination_id=trip.destination_id),
+                    block=trip.block,
+                    inbound=trip.inbound,
+                    operator_id=trip.operator_id,
+                )
+            )
+            .order_by("start")
+            .distinct("start")
         )
-
-        from django.contrib.gis.geos import MultiLineString
-
-        geometries = list(
-            RouteLink.objects.filter(service=service).values_list("geometry", flat=True)
-        )
-        if geometries:
-            service.geometry = MultiLineString(geometries, srid=4326)
-            service.save(update_fields=["geometry"])
-        else:
-            service.update_geometry()
-
-        return True
-
-    return False
+        no_minutes = timedelta()
+        fifteen_minutes = timedelta(minutes=15)
+        trips_list = []
+        for trip_a, trip_b in pairwise(trips):
+            if no_minutes <= trip_b.start - trip_a.end < fifteen_minutes:
+                if not trips_list:
+                    trips_list.append(trip_a)
+                trips_list.append(trip_b)
+            elif trip in trips_list:
+                return trips_list
+            else:
+                trips_list = []
+        if trip in trips_list:
+            return trips_list
+    return [trip]
 
 
 def get_route_link_valhalla(

@@ -1,5 +1,6 @@
+import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import requests
 from django.core.cache import cache
@@ -8,6 +9,8 @@ from requests_toolbelt.adapters.source import SourceAddressAdapter
 from xmltodict import unparse
 
 from ...models import SiriSubscription
+
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -29,13 +32,13 @@ class Command(BaseCommand):
         subscription = SiriSubscription.objects.get(name=subscription_name)
         assert subscription.producer_url
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if not terminate:
             if stats := cache.get(subscription.get_status_key()):
                 if (now - stats[-1][0]) < timedelta(minutes=5):
                     return
             else:
-                print(f"no {subscription} history, subscribing")
+                logger.info("no %s history, subscribing", subscription)
 
         if subscription.username and subscription.password:
             auth = requests.auth.HTTPBasicAuth(
@@ -64,15 +67,14 @@ class Command(BaseCommand):
                     }
                 }
             )
-            print(data)
+            logger.info(data)
             res = session.post(
                 subscription.producer_url,
                 data=data,
                 headers={"content-type": "text/xml"},
                 auth=auth,
             )
-            print(res)
-            print(res.text)
+            logger.info("%s %s", res, res.text)
             return
 
         consumer_address = f"{consumer_address}/siri/{subscription.uuid}"
@@ -107,12 +109,11 @@ class Command(BaseCommand):
             }
         )
 
-        print(data)
+        logger.info(data)
         res = session.post(
             subscription.producer_url,
             data=data,
             headers={"content-type": "text/xml"},
             auth=auth,
         )
-        print(res)
-        print(res.text)
+        logger.info("%s %s", res, res.text)

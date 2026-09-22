@@ -1,22 +1,25 @@
 import logging
-from django_filters.rest_framework import DjangoFilterBackend
 from datetime import datetime, timedelta
+from math import atan2, cos, degrees, radians, sin
+
+import numpy as np
+from django.contrib.postgres.aggregates import ArrayAgg
+from django.db.models import Prefetch, Q
+from django.db.models.functions import Coalesce
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
+from haversine import Unit, haversine_vector
+from redis.exceptions import ResponseError
 from rest_framework import pagination, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException
 from rest_framework.response import Response
-from django.contrib.postgres.aggregates import ArrayAgg
-from django.db.models import Q
-from django.db.models.functions import Coalesce
-from django.utils import timezone
+from sql_util.utils import Exists
 
-import numpy as np
-
-from vehicles.time_aware_polyline import encode_time_aware_polyline
-
-from busstops.models import Operator, Service, StopPoint
+from busstops.models import Locality, Operator, Service, StopPoint
 from bustimes.models import StopTime, Trip
-from bustimes.utils import contiguous_stoptimes_only
+from bustimes.utils import contiguous_stoptimes_only, get_trips
+from tfl.models import Journey, JourneyDriveTime, JourneyWaitTime, Stop, StopInPattern
 from vehicles.models import (
     Livery,
     Vehicle,
@@ -24,13 +27,26 @@ from vehicles.models import (
     VehicleLocation,
     VehicleType,
 )
+from vehicles.time_aware_polyline import (
+    decode_time_aware_polyline,
+    encode_time_aware_polyline,
+)
 from vehicles.utils import redis_client
 from vehicles.views import get_vehicle_locations
 
-from sql_util.utils import Exists
-from haversine import Unit, haversine_vector
-
 from . import filters, serializers
+
+logger = logging.getLogger(__name__)
+
+
+def calculate_bearing(a, b):
+    """Bearing in degrees from point a to point b, each [longitude, latitude]"""
+    lng1, lat1 = radians(a[0]), radians(a[1])
+    lng2, lat2 = radians(b[0]), radians(b[1])
+    delta_lng = lng2 - lng1
+    y = sin(delta_lng) * cos(lat2)
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta_lng)
+    return (degrees(atan2(y, x)) + 360) % 360
 
 
 class BadException(APIException):
@@ -54,12 +70,14 @@ class VehicleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
         Vehicle.objects.select_related("vehicle_type", "livery", "operator", "garage")
         .annotate(
-            special_features=ArrayAgg("features__name", filter=~Q(features=None)),
+            special_features=ArrayAgg(
+                "features__name", filter=~Q(features=None), order_by="name"
+            ),
         )
         .order_by("id")
     )
     serializer_class = serializers.VehicleSerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.VehicleFilter
     pagination_class = LimitOffsetPagination
 
@@ -67,14 +85,14 @@ class VehicleViewSet(viewsets.ReadOnlyModelViewSet):
 class LiveryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Livery.objects.order_by("id")
     serializer_class = serializers.LiverySerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.LiveryFilter
 
 
 class VehicleTypeViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = serializers.VehicleTypeSerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.VehicleTypeFilter
 
 
@@ -88,14 +106,14 @@ class OperatorViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = serializers.OperatorSerializer
     pagination_class = CursorPagination
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.OperatorFilter
 
 
 class ServiceViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Service.objects.filter(current=True).prefetch_related("operator")
     serializer_class = serializers.ServiceSerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.ServiceFilter
 
 
@@ -114,13 +132,13 @@ class StopViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = serializers.StopSerializer
     pagination_class = CursorPagination
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.StopFilter
 
 
 class TripViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
-        Trip.objects.select_related("route__service", "operator")
+        Trip.objects.select_related("route__service", "operator", "calendar")
         .prefetch_related("notes")
         .annotate(
             destination_name=Coalesce(
@@ -130,21 +148,25 @@ class TripViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = serializers.TripSerializer
     pagination_class = CursorPagination
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.TripFilter
 
     @staticmethod
-    def get_stops(obj):
-        trips = obj.get_trips()
-        stops = (
-            StopTime.objects.filter(trip__in=trips)
-            .select_related("stop__locality")
-            .defer(
-                "stop__search_vector",
-                "stop__locality__search_vector",
-                "stop__locality__latlong",
+    def get_stops(obj, date=None):
+        trips = get_trips(obj, date)
+        multiple_trips = len(trips) > 1
+        if multiple_trips:
+            stops = StopTime.objects.filter(trip__in=trips).order_by(
+                "trip__start", "id"
             )
-            .order_by("trip__start", "id")
+        else:
+            stops = trips[0].stoptime_set.order_by("id")
+        stops = (
+            stops.select_related("stop")
+            .defer("stop__search_vector")
+            .prefetch_related(
+                Prefetch("stop__locality", queryset=Locality.objects.only("name"))
+            )
             # .annotate(
             #     call_condition=Subquery(
             #         Call.objects.filter(
@@ -157,7 +179,7 @@ class TripViewSet(viewsets.ReadOnlyModelViewSet):
         )
         if obj.notes.all():
             stops = stops.annotate(note_codes=ArrayAgg("notes__code"))
-        if len(trips) > 1:
+        if multiple_trips:
             stops = contiguous_stoptimes_only(stops, obj.id)
         return stops
 
@@ -171,7 +193,7 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = VehicleJourney.objects.select_related("vehicle")
     serializer_class = serializers.VehicleJourneySerializer
     pagination_class = CursorPaginationWithSmallerPageSize
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = (DjangoFilterBackend,)
     filterset_class = filters.VehicleJourneyFilter
 
     def get_queryset(self):
@@ -181,7 +203,7 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
     @staticmethod
-    def set_actual_departure_times(stop_times, locations):
+    def set_actual_times(stop_times, locations):
         stops = [st for st in stop_times if st.stop and st.stop.latlong]
         if not stops:
             return
@@ -201,8 +223,8 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             haversine_vector_results = haversine_vector(
                 stop_coords, vehicle_coords, Unit.METERS, comb=True
             )
-        except ValueError as e:
-            logging.exception(e)
+        except ValueError:
+            logger.exception("error calculating vehicle headings")
             return
 
         for distances, location in zip(haversine_vector_results, locations):
@@ -220,9 +242,18 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
                 idx = int(np.argmin(distances))
 
             if distances[idx] < 100:
-                stops[idx].actual_departure_time = location["datetime"]
+                stop = stops[idx]
+                if (
+                    stop.arrival is not None
+                    and stop.departure is not None
+                    and stop.arrival != stop.departure
+                    and not getattr(stop, "actual_arrival_time", None)
+                ):
+                    stop.actual_arrival_time = location["datetime"]
+                stop.actual_departure_time = location["datetime"]
 
-    def trip_from_siri(self, instance, locations):
+    @staticmethod
+    def trip_from_siri(instance):
         try:
             mvj = instance.vehicle.latest_journey_data["MonitoredVehicleJourney"]
             origin_ref = mvj["OriginRef"].upper()
@@ -253,6 +284,89 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
         ]
         return trip
 
+    @staticmethod
+    def trip_from_tfl(instance):
+        # only the latest base_version's data is kept around (older ones get
+        # pruned), so pin every subsequent lookup to whichever base_version
+        # this journey actually belongs to - "idx" columns aren't unique
+        # across base_versions, only within one
+        journey = (
+            Journey.objects.filter(idx=instance.code).order_by("-base_version").first()
+        )
+        if not journey:
+            return
+
+        base_version_id = journey.base_version_id
+
+        stops_in_pattern = list(
+            StopInPattern.objects.filter(
+                base_version_id=base_version_id, pattern_idx=journey.pattern_idx
+            ).order_by("sequence_no")
+        )
+        if not stops_in_pattern:
+            return
+
+        drive_times = {
+            (dt.stop_in_pattern_from_idx, dt.stop_in_pattern_to_idx): dt.drive_time
+            for dt in JourneyDriveTime.objects.filter(
+                base_version_id=base_version_id, journey_idx=journey.idx
+            )
+        }
+        wait_times = {
+            wt.stop_in_pattern_idx: wt.wait_time
+            for wt in JourneyWaitTime.objects.filter(
+                base_version_id=base_version_id, journey_idx=journey.idx
+            )
+        }
+        # tfl.Stop.naptan_code actually lines up with StopPoint.atco_code,
+        # not StopPoint.naptan_code (see tfl.models.Stop docstring)
+        tfl_stops = {
+            stop.idx: stop
+            for stop in Stop.objects.filter(
+                base_version_id=base_version_id,
+                idx__in=[sip.stop_idx for sip in stops_in_pattern],
+            )
+        }
+        stops = {
+            stop.atco_code: stop
+            for stop in StopPoint.objects.filter(
+                atco_code__in=[
+                    s.naptan_code for s in tfl_stops.values() if s.naptan_code
+                ]
+            )
+        }
+
+        trip = Trip(start=journey.start_time)
+
+        trip.stops = []
+        time = journey.start_time
+        previous_idx = None
+        for sip in stops_in_pattern:
+            if previous_idx is not None:
+                time += drive_times.get((previous_idx, sip.idx), timedelta())
+            arrival = time
+            time += wait_times.get(sip.idx, timedelta())
+            tfl_stop = tfl_stops.get(sip.stop_idx)
+            atco_code = tfl_stop and tfl_stop.naptan_code
+            stop = stops.get(atco_code)
+            if not stop:
+                stop = StopPoint(
+                    common_name=tfl_stop.name if tfl_stop else "",
+                    latlong=tfl_stop.latlong if tfl_stop else None,
+                )
+            trip.stops.append(
+                StopTime(
+                    stop=stop,
+                    arrival=arrival,
+                    departure=time,
+                    sequence=sip.sequence_no,
+                    timing_point=bool(sip.timing_point_code),
+                )
+            )
+            previous_idx = sip.idx
+
+        return trip
+
     @action(detail=True)
     def details(self, request, pk=None, **kwargs):
         instance = self.get_object()
@@ -266,11 +380,40 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
 
         locations = []
         if redis_client:
-            raw_locations = redis_client.lrange(instance.get_redis_key(), 0, -1)
-            locations = [
-                VehicleLocation.decode_appendage(loc, tzinfo) for loc in raw_locations
-            ]
-            locations.sort(key=lambda loc: loc["datetime"])
+            polyline = None
+            try:
+                if polyline := redis_client.get(instance.get_redis_key()):
+                    polyline = polyline.decode()
+                    locations = [
+                        {
+                            "id": timestamp,
+                            "coordinates": [x, y],
+                            "datetime": datetime.fromtimestamp(
+                                timestamp, tzinfo or timezone.get_current_timezone()
+                            ),
+                        }
+                        for x, y, timestamp in decode_time_aware_polyline(polyline)
+                    ]
+                    for i, location in enumerate(locations):
+                        previous = (
+                            locations[i - 1]["coordinates"]
+                            if i > 0
+                            else location["coordinates"]
+                        )
+                        following = (
+                            locations[i + 1]["coordinates"]
+                            if i + 1 < len(locations)
+                            else location["coordinates"]
+                        )
+                        location["direction"] = calculate_bearing(previous, following)
+            except ResponseError:
+                # old 'list' type
+                raw_locations = redis_client.lrange(instance.get_redis_key(), 0, -1)
+                locations = [
+                    VehicleLocation.decode_appendage(loc, tzinfo)
+                    for loc in raw_locations
+                ]
+                locations.sort(key=lambda loc: loc["datetime"])
 
             filtered = []
             stationary = False
@@ -294,16 +437,18 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
                 filtered.append(location)
             locations = filtered
 
-            polyline = encode_time_aware_polyline(
-                [
+            if not polyline:
+                polyline = encode_time_aware_polyline(
                     [
-                        loc["coordinates"][0],
-                        loc["coordinates"][1],
-                        int(loc["datetime"].timestamp()),
+                        [
+                            loc["coordinates"][0],
+                            loc["coordinates"][1],
+                            int(loc["datetime"].timestamp()),
+                        ]
+                        for loc in locations
                     ]
-                    for loc in locations
-                ]
-            )
+                )
+
             extra_data["time_aware_polyline"] = polyline
 
         if instance.service_id:
@@ -315,22 +460,41 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
         current_trip = (
             instance.vehicle_id and instance.id == instance.vehicle.latest_journey_id
         )
-        if locations and current_trip:
-            if not instance.trip:
-                instance.trip = self.trip_from_siri(instance, locations)
+
+        if not instance.trip and instance.code.isdigit():
+            try:
+                if (
+                    instance.vehicle.latest_journey_data["MonitoredVehicleJourney"][
+                        "OperatorRef"
+                    ]
+                    == "TFLO"
+                ):
+                    instance.trip = self.trip_from_tfl(instance)
+            except (AttributeError, TypeError, KeyError, ValueError):
+                pass
+
+        if current_trip and not instance.trip:
+            instance.trip = self.trip_from_siri(instance)
 
         if instance.trip:
             instance.trip.destination_name = None
             if instance.trip.id:
-                instance.trip.stops = list(TripViewSet.get_stops(instance.trip))
+                instance.trip.stops = list(
+                    TripViewSet.get_stops(instance.trip, instance.date)
+                )
             if locations:
-                self.set_actual_departure_times(instance.trip.stops, locations)
+                self.set_actual_times(instance.trip.stops, locations)
             trip_serializer = serializers.TripSerializer(
-                instance.trip, context={"include_track": False}
+                instance.trip,
+                context={
+                    "date": instance.date,
+                    "tzinfo": tzinfo,
+                },
             )
+
             extra_data["trip"] = trip_serializer.data
 
-        if locations and (current_trip or not instance.vehicle_id):
+        if current_trip or not instance.vehicle_id:
             if instance.service_id:
                 params = {
                     "service_ids": [instance.service_id],
@@ -341,12 +505,28 @@ class VehicleJourneyViewSet(viewsets.ReadOnlyModelViewSet):
             if instance.trip:
                 params["trip_id"] = instance.trip_id
                 params["stop_times"] = instance.trip.stops
-            live = get_vehicle_locations(**params, tzinfo=tzinfo)
-            # check that this journey is actually tracking (not an old journey)
-            if live and any(instance.id == item["journey_id"] for item in live):
-                extra_data["live"] = live
+            this = None
+            if live := get_vehicle_locations(**params, tzinfo=tzinfo):
+                # check that this journey is actually tracking (not an old journey)
+                for item in live:
+                    if instance.id == item["journey_id"]:
+                        this = item
+                        extra_data["live"] = live
+                        break
 
-        if not instance.trip and instance.vehicle.operator:
+            if this and not extra_data.get("time_aware_polyline"):
+                # one-item polyline
+                extra_data["time_aware_polyline"] = encode_time_aware_polyline(
+                    (
+                        (
+                            this["coordinates"][0],
+                            this["coordinates"][1],
+                            int(datetime.fromisoformat(this["datetime"]).timestamp()),
+                        ),
+                    )
+                )
+
+        if not instance.trip and instance.vehicle_id and instance.vehicle.operator:
             extra_data["operator"] = {
                 "noc": instance.vehicle.operator.noc,
                 "slug": instance.vehicle.operator.slug,

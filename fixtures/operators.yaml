@@ -4,6 +4,8 @@
 AVMT:
   name: Axe Valley Mini Travel (AVMT)
   url: https://avmtbustimes.wixsite.com/mysite/timetables
+AMKC:
+  url: https://www.amk.co.uk/
 GRTL:
   name: Rapsons Highland
   phone: ""
@@ -118,15 +120,6 @@ RYCA:
   url: https://ryedalect.org/our-services/local-bus-services/
 STNE:
   url: https://stanley-travel.com/bus-timetables/
-KCTB:
-  # name: Konectbus (Norfolk)
-  address: |
-    Norwich Bus Station
-    Surrey Street
-    Norwich
-    NR1 3NX
-HEDO:
-  name: KonectBuses (formerly Hedingham & Chambers)
 BHBC:
   name: Brighton & Hove
 WNCT:
@@ -220,3 +213,13 @@ MNHT:
   name: Metro Network - Huyton Travel
 MNGN:
   name: Metro Network - Go North West
+KCTB:
+  name: Central Connect (Konectbus)
+  url: https://www.central-connect.co.uk/
+HEDO:
+  name: Central Connect (KonectBuses)
+  url: https://www.central-connect.co.uk/
+GHCT:
+  url: https://www.gatesheadcentraltaxis.com/
+FOWT:
+  url: https://fowlerstravel.co.uk/

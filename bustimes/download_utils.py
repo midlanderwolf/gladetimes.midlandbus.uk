@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http import HTTPStatus
 
 import requests
@@ -8,8 +8,7 @@ from django.utils.http import http_date, parse_http_date
 
 def write_file(path, response):
     with open(path, "wb") as open_file:
-        for chunk in response.iter_content(chunk_size=102400):
-            open_file.write(chunk)
+        open_file.writelines(response.iter_content(chunk_size=102400))
 
 
 def download(path, url, session=None):
@@ -32,9 +31,7 @@ def download_if_modified(path, source, session=None):
     modified = response.status_code != HTTPStatus.NOT_MODIFIED
 
     if last_modified := response.headers.get("last-modified"):
-        last_modified = datetime.fromtimestamp(
-            parse_http_date(last_modified), timezone.utc
-        )
+        last_modified = datetime.fromtimestamp(parse_http_date(last_modified), UTC)
 
     if not response.ok:
         logger = logging.getLogger(__name__)

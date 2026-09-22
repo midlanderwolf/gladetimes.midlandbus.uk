@@ -1,3 +1,4 @@
+import sentry_sdk
 from rest_framework import serializers
 
 from busstops.models import Operator, Service, StopPoint
@@ -21,7 +22,7 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = VehicleType
-        fields = ["id", "name", "style", "fuel", "double_decker", "coach", "electric"]
+        fields = ("id", "name", "style", "fuel", "double_decker", "coach", "electric")
 
 
 class VehicleSerializer(serializers.ModelSerializer):
@@ -51,13 +52,10 @@ class VehicleSerializer(serializers.ModelSerializer):
     def get_previous_reg(self, obj):
         return obj.data_get(key="Previous reg")
 
-    def get_previous_reg(self, obj):
-        return obj.data_get(key="Previous reg")
-
     class Meta:
         model = Vehicle
         depth = 1
-        fields = [
+        fields = (
             "id",
             "slug",
             "fleet_number",
@@ -73,13 +71,13 @@ class VehicleSerializer(serializers.ModelSerializer):
             "notes",
             "withdrawn",
             "special_features",
-        ]
+        )
 
 
 class OperatorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Operator
-        fields = [
+        fields = (
             "noc",
             "slug",
             "name",
@@ -88,13 +86,13 @@ class OperatorSerializer(serializers.ModelSerializer):
             "region_id",
             "url",
             "twitter",
-        ]
+        )
 
 
 class ServiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
-        fields = [
+        fields = (
             "id",
             "slug",
             "line_name",
@@ -103,7 +101,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "mode",
             "operator",
             "modified_at",
-        ]
+        )
 
 
 class StopSerializer(serializers.ModelSerializer):
@@ -124,7 +122,7 @@ class StopSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StopPoint
-        fields = [
+        fields = (
             "atco_code",
             "naptan_code",
             "common_name",
@@ -141,13 +139,13 @@ class StopSerializer(serializers.ModelSerializer):
             "created_at",
             "modified_at",
             "active",
-        ]
+        )
 
 
 class LiverySerializer(serializers.ModelSerializer):
     class Meta:
         model = Livery
-        fields = [
+        fields = (
             "id",
             "name",
             "left_css",
@@ -155,33 +153,39 @@ class LiverySerializer(serializers.ModelSerializer):
             "white_text",
             "text_colour",
             "stroke_colour",
-        ]
+        )
 
 
 class NoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Note
-        fields = [
+        fields = (
             "code",
             "text",
-        ]
+        )
 
 
 class GarageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Garage
-        fields = [
+        fields = (
             "code",
             "name",
-        ]
+        )
 
 
 class TripSerializer(serializers.ModelSerializer):
     service = serializers.SerializerMethodField()
     operator = serializers.SerializerMethodField()
     times = serializers.SerializerMethodField()
-    notes = NoteSerializer(many=True)
+    notes = serializers.SerializerMethodField()
     headsign = serializers.CharField(source="destination_name")
+
+    @staticmethod
+    def get_notes(obj):
+        if obj.pk:
+            return NoteSerializer(obj.notes.all(), many=True).data
+        return []
 
     @staticmethod
     def get_service(obj):
@@ -207,65 +211,76 @@ class TripSerializer(serializers.ModelSerializer):
         if not hasattr(obj, "stops"):
             return
 
-        include_track = self.context.get("include_track", True)
+        date = self.context.get("date")
+        tzinfo = self.context.get("tzinfo")
 
-        if include_track and obj.route and obj.route.service:
+        if obj.route and obj.route.service:
+            stop_ids = {
+                stop_time.stop_id for stop_time in obj.stops if stop_time.stop_id
+            }
             route_links = {
                 (link.from_stop_id, link.to_stop_id): link
-                for link in obj.route.service.routelink_set.all()
+                for link in obj.route.service.routelink_set.filter(
+                    from_stop__in=stop_ids
+                )
             }
         else:
             route_links = {}
         previous_stop_id = None
+        times = []
 
-        for stop_time in obj.stops:
-            route_link = route_links.get((previous_stop_id, stop_time.stop_id))
-            if stop := stop_time.stop:
-                name = stop.get_qualified_name()
-                bearing = stop.get_heading()
-                location = stop.latlong and stop.latlong.coords
-                icon = stop.get_icon()
-            else:
-                name = stop_time.stop_code
-                bearing = None
-                location = None
-                icon = None
-            if hasattr(stop_time, "note_codes"):
-                notes = stop_time.note_codes
-            else:
-                notes = None
-            time = {
-                "id": stop_time.id,
-                "stop": {
-                    "atco_code": stop_time.stop_id,
-                    "name": name,
-                    "location": location,
-                    "bearing": bearing,
-                    "icon": icon,
-                },
-                "aimed_arrival_time": stop_time.arrival_time(),
-                "aimed_departure_time": stop_time.departure_time(),
-                "timing_status": stop_time.timing_status,
-                "pick_up": stop_time.pick_up,
-                "set_down": stop_time.set_down,
-                "expected_arrival_time": getattr(stop_time, "expected_arrival", None),
-                "expected_departure_time": getattr(
-                    stop_time, "expected_departure", None
-                ),
-                "actual_departure_time": getattr(
-                    stop_time, "actual_departure_time", None
-                ),
-                # "call_condition": stop_time.call_condition,
-                "note_codes": notes,
-            }
-            if include_track:
-                time["track"] = route_link and route_link.geometry.coords
-            yield time
-            previous_stop_id = stop_time.stop_id
+        with sentry_sdk.start_span(name="list stop times"):
+            for stop_time in obj.stops:
+                stop = stop_time.stop
+                if hasattr(stop_time, "note_codes"):
+                    notes = stop_time.note_codes
+                else:
+                    notes = None
+                if date:
+                    aimed_arrival = stop_time.arrival_datetime(date, tzinfo)
+                    aimed_departure = stop_time.departure_datetime(date, tzinfo)
+                else:
+                    aimed_arrival = stop_time.arrival_time()
+                    aimed_departure = stop_time.departure_time()
+                time = {
+                    "id": stop_time.id,
+                    "stop": {
+                        "atco_code": stop_time.stop_id,
+                        "name": stop.get_qualified_name(),
+                        "location": stop.latlong and stop.latlong.coords,
+                        "bearing": stop.get_heading(),
+                        "icon": stop.get_icon(),
+                    },
+                    "aimed_arrival_time": aimed_arrival,
+                    "aimed_departure_time": aimed_departure,
+                    "timing_status": stop_time.timing_status(),
+                    "pick_up": stop_time.pick_up,
+                    "set_down": stop_time.set_down,
+                    "expected_arrival_time": getattr(
+                        stop_time, "expected_arrival", None
+                    ),
+                    "expected_departure_time": getattr(
+                        stop_time, "expected_departure", None
+                    ),
+                    "actual_arrival_time": getattr(
+                        stop_time, "actual_arrival_time", None
+                    ),
+                    "actual_departure_time": getattr(
+                        stop_time, "actual_departure_time", None
+                    ),
+                    # "call_condition": stop_time.call_condition,
+                    "note_codes": notes,
+                }
+                if route_link := route_links.get((previous_stop_id, stop_time.stop_id)):
+                    time["track"] = route_link.geometry.coords
+                times.append(time)
+                previous_stop_id = stop_time.stop_id
+
+        return times
 
     class Meta:
         model = Trip
-        fields = [
+        fields = (
             "id",
             "vehicle_journey_code",
             "ticket_machine_code",
@@ -277,7 +292,7 @@ class TripSerializer(serializers.ModelSerializer):
             "operator",
             "notes",
             "times",
-        ]
+        )
 
 
 class VehicleJourneySerializer(serializers.ModelSerializer):
@@ -294,7 +309,7 @@ class VehicleJourneySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = VehicleJourney
-        fields = [
+        fields = (
             "id",
             "datetime",
             "date",
@@ -302,4 +317,4 @@ class VehicleJourneySerializer(serializers.ModelSerializer):
             "route_name",
             "destination",
             "trip_id",
-        ]
+        )

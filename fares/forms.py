@@ -1,8 +1,8 @@
-from django.db.models import Q, Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 from django.db.utils import OperationalError
-from django.forms import Form, ChoiceField
+from django.forms import ChoiceField, Form
 
-from .models import FareZone, DistanceMatrixElement
+from .models import DistanceMatrixElement, FareZone
 
 
 class FaresForm(Form):

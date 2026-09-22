@@ -35,7 +35,7 @@ class EditVehicleForm(forms.Form):
             },
         )
 
-    field_order = [
+    field_order = (
         "withdrawn",
         "spare_ticket_machine",
         "fleet_number",
@@ -49,7 +49,7 @@ class EditVehicleForm(forms.Form):
         "previous_reg",
         "features",
         "notes",
-    ]
+    )
     spare_ticket_machine = forms.BooleanField(
         required=False,
         help_text="i.e. the ticket machine code is something like SPARE",
@@ -164,7 +164,7 @@ link to a picture to prove it. Be polite.""",
         if vehicle.fleet_code:
             self.fields["fleet_number"].initial = vehicle.fleet_code
         elif vehicle.fleet_number is not None:
-            self.fields["fleet_number"].intial = str(vehicle.fleet_number)
+            self.fields["fleet_number"].initial = str(vehicle.fleet_number)
 
         if vehicle.vehicle_type_id and not vehicle.is_spare_ticket_machine():
             del self.fields["spare_ticket_machine"]
@@ -173,12 +173,11 @@ link to a picture to prove it. Be polite.""",
             self.fields["summary"].required = False
             self.fields["summary"].label = "Summary (optional)"
 
-        if not user.is_superuser:
-            if not (
-                vehicle.notes
-                or vehicle.operator_id in settings.ALLOW_VEHICLE_NOTES_OPERATORS
-            ):
-                del self.fields["notes"]
+        if not user.is_superuser and not (
+            vehicle.notes
+            or vehicle.operator_id in settings.ALLOW_VEHICLE_NOTES_OPERATORS
+        ):
+            del self.fields["notes"]
 
         if vehicle.is_spare_ticket_machine():
             del self.fields["notes"]
@@ -215,3 +214,13 @@ class DateForm(forms.Form):
 
 class RulesForm(forms.Form):
     rules = forms.BooleanField(label="I've read the rules", required=True)
+
+
+class TripUpdatesFeedForm(forms.Form):
+    feed_name = forms.ChoiceField(required=False)
+
+    def __init__(self, data, sources, **kwargs):
+        super().__init__(data, **kwargs)
+        self.fields["feed_name"].choices = [
+            (key, value["source_name"]) for key, value in sources.items()
+        ]
