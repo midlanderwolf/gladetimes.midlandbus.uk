@@ -1,3 +1,4 @@
+import datetime
 import math
 
 import redis.asyncio
@@ -5,7 +6,9 @@ from django.conf import settings
 from django.core.cache import caches
 from django.core.cache.backends.base import InvalidCacheBackendError
 
-from .models import VehicleRevision, VehicleRevisionFeature
+from .models import VehicleJourney, VehicleRevision, VehicleRevisionFeature
+
+MIN_DATETIME = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
 
 try:
     redis_client = caches["redis"]._cache.get_client()
@@ -63,6 +66,55 @@ def calculate_bearing(a, b):
         bearing_degrees += 360
 
     return round(bearing_degrees)
+
+
+def pick_keeper_vehicle(vehicles):
+    """Given several Vehicle records that have turned out to be the same
+    physical vehicle (e.g. sharing a fleet number or code across operators
+    in the same group), pick the one to keep as the survivor of a merge:
+    prefer one that isn't withdrawn, then whichever has tracked the most
+    recently.
+    """
+    return max(
+        vehicles,
+        key=lambda v: (
+            not v.withdrawn,
+            v.latest_journey.datetime if v.latest_journey else MIN_DATETIME,
+        ),
+    )
+
+
+def merge_vehicles(keeper, duplicates):
+    """Merge `duplicates` into `keeper` - reassigning their journey and
+    revision history and combining their features - then delete them, and
+    update `keeper`'s `latest_journey` if a duplicate's turns out to be
+    more recent. Returns how many duplicates were merged in.
+    """
+    best_journey_id = keeper.latest_journey_id
+    best_journey_data = keeper.latest_journey_data
+    best_datetime = keeper.latest_journey.datetime if keeper.latest_journey else None
+
+    for duplicate in duplicates:
+        VehicleJourney.objects.filter(vehicle=duplicate).update(vehicle=keeper)
+        duplicate.vehiclerevision_set.update(vehicle=keeper)
+        for feature in duplicate.features.all():
+            keeper.features.add(feature)
+
+        if duplicate.latest_journey_id and (
+            best_datetime is None or duplicate.latest_journey.datetime > best_datetime
+        ):
+            best_journey_id = duplicate.latest_journey_id
+            best_journey_data = duplicate.latest_journey_data
+            best_datetime = duplicate.latest_journey.datetime
+
+        duplicate.delete()
+
+    if best_journey_id != keeper.latest_journey_id:
+        keeper.latest_journey_id = best_journey_id
+        keeper.latest_journey_data = best_journey_data
+        keeper.save(update_fields=["latest_journey", "latest_journey_data"])
+
+    return len(duplicates)
 
 
 def get_revision(vehicle, data):

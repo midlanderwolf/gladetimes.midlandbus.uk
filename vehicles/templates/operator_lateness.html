@@ -1,0 +1,96 @@
+{% extends 'page.html' %}
+
+{% block title %}Lateness – {{ object }} – bustimes.org{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/liveries.{{ liveries_css_version }}.css">
+    <meta http-equiv="refresh" content="10">
+{% endblock head %}
+
+{% block bodyclass %}{% endblock %}
+
+{% block content %}
+
+<h1>{{ object }}</h1>
+
+<ul class="tabs">
+    <li><a href="{{ object.get_absolute_url }}">Routes</a></li>
+    <li><a href="{{ object.get_absolute_url }}/vehicles">Vehicles</a></li>
+    <li>Lateness</li>
+</ul>
+
+<p>How late or early each of {{ object }}'s vehicles currently tracking on a scheduled journey are running.</p>
+
+<style>
+    .lateness.late {
+        color: #b30000;
+    }
+    .lateness.early {
+        color: #006600;
+    }
+</style>
+
+{% if rows %}
+    <p class="sort-links">
+        Sort by:
+        {% if ascending %}
+            <a href="?">most late first</a> | most early/on time first
+        {% else %}
+            most late first | <a href="?sort=earliest">most early/on time first</a>
+        {% endif %}
+    </p>
+
+    {% load tz %}
+    {% timezone object.timezone|default:"Europe/London" %}
+    <div class="table-wrapper">
+    <table class="fleet compact">
+        <thead>
+            <tr>
+                <th scope="col" colspan="2"></th>
+                <th scope="col">Route</th>
+                <th scope="col">Block</th>
+                <th scope="col">Livery</th>
+                <th scope="col">Lateness</th>
+                <th scope="col">Last pinged</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}{% with vehicle=row.vehicle url=row.vehicle.get_absolute_url %}
+                <tr id="{{ vehicle.slug }}">
+                    <td class="tabular"{% if not vehicle.reg %} colspan="2"{% endif %}>
+                        <a href="{{ url }}">
+                            {% if vehicle.fleet_code or vehicle.fleet_number %}
+                                {% firstof vehicle.fleet_code vehicle.fleet_number %}
+                            {% elif not vehicle.reg %}
+                                {{ vehicle.code }}
+                            {% endif %}
+                        </a>
+                    </td>
+                    {% if vehicle.reg %}
+                        <td>
+                            <a href="{{ url }}" class="reg">
+                                {{ vehicle.get_reg }}
+                            </a>
+                        </td>
+                    {% endif %}
+                    <td>{{ row.route_name }}{% if row.route_name and row.destination %} – {% endif %}{{ row.destination }}</td>
+                    <td>{{ row.block }}</td>
+                    <td{% if vehicle.colours or vehicle.livery_id %} class="livery-cell"{% endif %}>
+                        {% if vehicle.colours or vehicle.livery_id %}<div class="livery{% if vehicle.livery_id %} livery-{{ vehicle.livery_id }}{% else %}" style="background:{{ vehicle.get_livery }}{% endif %}"></div>{% endif %}
+                        {% if vehicle.livery_name %}{{ vehicle.livery_name }}{% else %}{{ vehicle.branding }}{% endif %}
+                    </td>
+                    <td class="lateness{% if row.delay > 45 %} late{% elif row.delay < -45 %} early{% endif %}">
+                        {{ row.delay_label }}
+                    </td>
+                    <td class="last-seen">{{ row.last_seen|time:"H:i:s" }}</td>
+                </tr>
+            {% endwith %}{% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endtimezone %}
+{% else %}
+    <p>None of {{ object }}'s vehicles are currently tracking on a scheduled trip.</p>
+{% endif %}
+
+{% endblock content %}

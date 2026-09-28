@@ -1,6 +1,7 @@
 import datetime
 import logging
 import subprocess
+from collections import defaultdict
 from http import HTTPStatus
 from itertools import groupby, pairwise
 from urllib.parse import unquote
@@ -54,7 +55,7 @@ from busstops.models import (
     Service,
 )
 from busstops.utils import get_bounding_box
-from bustimes.models import Garage, Route
+from bustimes.models import Garage, Route, StopTime, Trip
 from bustimes.utils import get_other_trips_in_block
 from photos.forms import PhotoForm
 from photos.utils import WrongLicense, add_flickr_photo, add_uploaded_photo
@@ -336,6 +337,112 @@ def operator_map(request, slug):
             "breadcrumb": [operator.region, operator],
         },
     )
+
+
+def operator_lateness(request, slug):
+    """report of how late/early an operator's currently tracking vehicles are running"""
+
+    operator = get_object_or_404(
+        Operator.objects.select_related("region", "group"), slug=slug
+    )
+
+    vehicles = (
+        operator.vehicle_set.filter(
+            withdrawn=False, latest_journey__trip__isnull=False
+        )
+        .select_related("livery", "latest_journey", "latest_journey__trip")
+        .annotate(
+            livery_name=Case(When(livery__show_name=True, then="livery__name")),
+        )
+    )
+
+    vehicle_ids = [vehicle.id for vehicle in vehicles]
+    vehicles_by_id = {vehicle.id: vehicle for vehicle in vehicles}
+
+    rows = []
+    if vehicle_ids:
+        redis_items = redis_client.mget(
+            [f"vehicle{vehicle_id}" for vehicle_id in vehicle_ids]
+        )
+
+        # parse the items and work out which trips we need schedule data for,
+        # so it can all be fetched in a couple of bulk queries below,
+        # instead of querying Trip/StopTime once per vehicle
+        items_by_vehicle_id = {}
+        trip_ids = set()
+        for vehicle_id, item in zip(vehicle_ids, redis_items):
+            if not item:
+                continue
+            item = loads(item)
+            trip_id = item.get("trip_id")
+            if not trip_id:
+                continue
+            items_by_vehicle_id[vehicle_id] = item
+            trip_ids.add(trip_id)
+
+        trips_by_id = (
+            Trip.objects.filter(id__in=trip_ids).select_related("route").in_bulk()
+        )
+
+        stop_times_by_trip_id = defaultdict(list)
+        for stop_time in (
+            StopTime.objects.filter(trip_id__in=trip_ids)
+            .filter(stop__latlong__isnull=False)
+            .select_related("stop")
+            .only("arrival", "departure", "stop__latlong", "trip_id")
+            .order_by("trip_id", "id")
+        ):
+            stop_times_by_trip_id[stop_time.trip_id].append(stop_time)
+
+        for vehicle_id, item in items_by_vehicle_id.items():
+            trip = trips_by_id.get(item["trip_id"])
+            stop_times = stop_times_by_trip_id.get(item["trip_id"])
+            if not trip or not stop_times:
+                continue
+
+            add_progress_and_delay(
+                item,
+                stop_times=stop_times,
+                tzinfo=trip.route.timezone if trip.route_id else None,
+            )
+            delay = item.get("delay")
+            if delay is None:
+                continue
+
+            vehicle = vehicles_by_id[vehicle_id]
+            journey = vehicle.latest_journey
+
+            abs_delay = abs(delay)
+            minutes = round(abs_delay / 60)
+            if abs_delay < 45:
+                delay_label = "On time"
+            else:
+                delay_label = f"{minutes} minute{'s' if minutes != 1 else ''} "
+                delay_label += "late" if delay > 0 else "early"
+
+            rows.append(
+                {
+                    "vehicle": vehicle,
+                    "route_name": journey.route_name,
+                    "destination": journey.destination,
+                    "block": journey.trip.block or "",
+                    "delay": delay,
+                    "delay_label": delay_label,
+                    "last_seen": datetime.datetime.fromisoformat(item["datetime"]),
+                }
+            )
+
+    ascending = request.GET.get("sort") == "earliest"
+    rows.sort(key=lambda row: row["delay"], reverse=not ascending)
+
+    context = {
+        "object": operator,
+        "breadcrumb": [operator.group or operator.region, operator],
+        "rows": rows,
+        "ascending": ascending,
+    }
+
+    return render(request, "operator_lateness.html", context)
 
 
 def operator_debug(request, slug):

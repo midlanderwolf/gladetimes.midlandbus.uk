@@ -33,6 +33,9 @@
     {% if vehicles %}
         <li><a href="{{ object.get_absolute_url }}/vehicles">Vehicles</a></li>
     {% endif %}
+    {% if map %}
+        <li><a href="{{ object.get_absolute_url }}/vehicles/lateness">Lateness</a></li>
+    {% endif %}
 </ul>
 
 {% include 'services.html' with services=services %}
