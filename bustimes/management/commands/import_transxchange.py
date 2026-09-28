@@ -725,8 +725,6 @@ class Command(BaseCommand):
 
         self.source.save(update_fields=["datetime"])
 
-        self.source.save_to_archive(archive_path)
-
         self.finish_task()
 
     def finish_services(self):
