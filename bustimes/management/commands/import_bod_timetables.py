@@ -129,9 +129,6 @@ def handle_file(command, path, qualify_filename=False):
 
     command.finish_task()
 
-    if not qualify_filename:
-        command.source.save_to_archive(full_path)
-
 
 def get_bus_open_data_paramses(sources, api_key):
     # e.g. 'noc=TMTL&adminArea=092'

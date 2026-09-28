@@ -85,7 +85,7 @@ class ImportLiveVehiclesCommand(BaseCommand):
         self.max_datetime = None  # newest item timestamp in the current update
 
     @staticmethod
-    def get_datetime():
+    def get_datetime(item):
         return
 
     @retry(

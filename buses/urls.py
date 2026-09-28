@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.views import shortcut
+from django.http import Http404
 from django.urls import include, path
 
 from api import api
