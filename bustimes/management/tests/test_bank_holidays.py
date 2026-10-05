@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from django.test import TestCase
 from django.core.management import call_command
+from django.test import TestCase
 from vcr import use_cassette
 
 from ...models import (
@@ -10,7 +10,7 @@ from ...models import (
 )
 
 
-class ImportTransXChangeTest(TestCase):
+class BankHolidaysTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         bhs = BankHoliday.objects.bulk_create(
@@ -52,11 +52,23 @@ class ImportTransXChangeTest(TestCase):
         with (
             use_cassette(str(fixtures_dir / "bank_holidays.yaml")) as cassette,
             self.assertNumQueries(6),
-            self.assertLogs("bustimes.management.commands.bank_holidays", "WARNING"),
+            self.assertLogs(
+                "bustimes.management.commands.bank_holidays", "WARNING"
+            ) as cm,
         ):
             call_command("bank_holidays")
             cassette.rewind()
             call_command("bank_holidays")  # test for idempotence
+
+        # it should warn about special bank holidays it doesn't know what to do with
+        self.assertIn(
+            "WARNING:bustimes.management.commands.bank_holidays:WorldCupbankholiday",
+            cm.output,
+        )
+        self.assertIn(
+            "WARNING:bustimes.management.commands.bank_holidays:BankHolidayfortheStateFuneralofQueenElizabethII",
+            cm.output,
+        )
 
         # Christmas Eve and NYE are not really bank holidays,
         # only they are the world of TransXChange,
@@ -69,11 +81,11 @@ class ImportTransXChangeTest(TestCase):
         )
 
         self.assertEqual(
-            6, BankHolidayDate.objects.filter(bank_holiday__name="ChristmasDay").count()
+            7, BankHolidayDate.objects.filter(bank_holiday__name="ChristmasDay").count()
         )
 
         self.assertEqual(
-            93,
+            103,
             BankHolidayDate.objects.filter(
                 bank_holiday__name="Northern Ireland bank holidays"
             ).count(),

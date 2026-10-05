@@ -1,12 +1,12 @@
-from time import sleep
 from itertools import pairwise
+from time import sleep
 
 import requests
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand
-from shapely.geometry import Point
 from shapely import wkt
+from shapely.geometry import Point
 from shapely.ops import substring
 
 from bustimes.models import RouteLink

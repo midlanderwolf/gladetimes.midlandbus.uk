@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from ...models import AdminArea, Locality, Region, StopPoint, DataSource
+from ...models import AdminArea, DataSource, Locality, Region, StopPoint
 
 
 class ImportIrelandTest(TestCase):

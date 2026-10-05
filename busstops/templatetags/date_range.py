@@ -17,7 +17,6 @@ def date_range(date_range=None, lower=None, upper=None):
             if lower.year == upper.year:
                 if lower.month == upper.month:
                     from_format = "%A %-d"
-                    lower = lower
                     if lower.day == upper.day:
                         return to
                 else:

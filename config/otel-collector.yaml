@@ -1,0 +1,43 @@
+# Collects granian's prometheus metrics from the web containers and re-exposes
+# them on a single stable port, for prometheus (on another server) to scrape.
+#
+# The web containers can't publish port 9090 themselves: kamal boots the new
+# container before stopping the old one, so they'd fight over the host port.
+# This runs as an accessory instead - accessories aren't recreated on deploy -
+# and finds whichever container is current via docker service discovery.
+
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: granian
+          scrape_interval: 15s
+          docker_sd_configs:
+            - host: unix:///var/run/docker.sock
+          relabel_configs:
+            - source_labels: [__meta_docker_container_label_service]
+              regex: bustimes
+              action: keep
+            - source_labels: [__meta_docker_container_label_role]
+              regex: web
+              action: keep
+            # each container exposes 8000 and 9090 - only scrape the metrics one
+            - source_labels: [__address__]
+              regex: .+:9090
+              action: keep
+            # tell the two containers apart while a deploy is in progress
+            - source_labels: [__meta_docker_container_label_version]
+              target_label: version
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:9394
+    # keep granian's metric names and labels exactly as they are
+    translation_strategy: UnderscoreEscapingWithoutSuffixes
+    without_scope_info: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      exporters: [prometheus]

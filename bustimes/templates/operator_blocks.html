@@ -1,0 +1,69 @@
+{% extends 'page.html' %}
+
+{% block title %}Blocks – {{ object }} – bustimes.org{% endblock %}
+
+{% block bodyclass %}{% endblock %}
+
+{% block content %}
+
+<h1>{{ object }}</h1>
+
+<form>
+    <input type="date" name="date" aria-label="Date" value="{{ date.isoformat }}" required>
+    <input type="submit" value="Go">
+</form>
+
+<h2>{{ date }}</h2>
+
+<style>
+    .blocks-wrapper {
+        overflow: auto;
+    }
+
+    .blocks {
+        width: 100%;
+    }
+
+    .block {
+        border-top: 1px solid var(--border-color);
+        padding: .5em 0;
+        position: relative;
+
+    }
+
+    .trips {
+        position: absolute;
+        left: 3em;
+        top: 0;
+    }
+
+    .trip {
+        position: absolute;
+        outline: 1px solid var(--border-color);
+    }
+
+    .trip a {
+        display: block;
+        padding: .5em;
+    }
+
+</style>
+
+<div class="blocks-wrapper">
+<div class="blocks">
+    {% for block, trips in blocks.items %}
+        <div class="block">
+            <a href="{{ trips.0.get_absolute_url }}/block">{{ block }}</a>
+            <div class="trips">
+                {% for trip in trips %}
+                    <div class="trip" style="left: {{ trip.left }}px; width: {{ trip.width }}px">
+                        <a href="{{ trip.get_absolute_url }}">{{ trip.route.line_name }}</a>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    {% endfor %}
+</div>
+</div>
+
+{% endblock content %}

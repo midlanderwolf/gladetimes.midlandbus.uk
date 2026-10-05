@@ -4,7 +4,6 @@
 <div class="situations">
 {% for situation in situations %}
     {% if situation.summary != 'Does not stop here' %}
-
         {% if situation.summary and situation.show_summary %}
             <details class="situation"{% if forloop.first and forloop.last and situation.text|length < 100 %} open{% endif %}>
             <summary>
@@ -19,7 +18,7 @@
             {{ situation.text|linebreaks|urlise }}
         {% endif %}
         {% for consequence in situation.consequences %}
-            {% ifchanged consequence.text %}{% if consequence.text and consequence.text != situation.text %}
+            {% ifchanged consequence.text %}{% if consequence.text and consequence.text not in situation.text %}
                 {{ consequence.text|linebreaks|urlise }}
             {% endif %}{% endifchanged %}
         {% endfor %}

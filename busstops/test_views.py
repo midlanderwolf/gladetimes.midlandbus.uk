@@ -416,11 +416,11 @@ class ViewsTests(TestCase):
 
     def test_operator_not_found(self):
         """An operator with no services, or that doesn't exist, should should return a 404 response"""
-        with self.assertNumQueries(8):
+        with self.assertNumQueries(9):
             response = self.client.get("/operators/VENT")  # noc
             self.assertContains(response, "Nu-Venture", status_code=404)
 
-        with self.assertNumQueries(8):
+        with self.assertNumQueries(9):
             response = self.client.get("/operators/nu-venture")  # slug
             self.assertContains(response, "Nu-Venture", status_code=404)
 
@@ -461,13 +461,13 @@ class ViewsTests(TestCase):
         self.assertEqual(
             response.context_data["links"][0],
             {
-                "text": "Buy tickets at National Express",
+                "text": "(ad) Buy tickets at National Express",
                 "url": "https://nationalexpress.prf.hn/click/camref:1011ljPYw/pubref:45C",
             },
         )
 
         response = self.client.get(self.chariots.get_absolute_url())
-        self.assertContains(response, ">Tickets<")
+        self.assertContains(response, ">Tickets (ad)<")
         self.assertContains(
             response, "https://nationalexpress.prf.hn/click/camref:1011ljPYw", 2
         )
@@ -498,8 +498,8 @@ class ViewsTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_service_map_data(self):
-        # normal service
-        with self.assertNumQueries(4):
+        # normal service (no trips, so no route links are fetched)
+        with self.assertNumQueries(3):
             response = self.client.get(f"/services/{self.service.id}.json")
         self.assertEqual(response["Content-Type"], "application/json")
         self.assertEqual(response.status_code, 200)

@@ -1,14 +1,13 @@
 from datetime import datetime
 
 import requests
-
 from django.contrib.gis.geos import GEOSGeometry
-from django.utils import timezone
 from django.db.models import Q
+from django.utils import timezone
 
 from busstops.models import Service
 
-from ...models import VehicleJourney, VehicleLocation, Operator
+from ...models import Operator, VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
 from .import_bod_avl import get_line_name_query
 
@@ -72,7 +71,7 @@ class Command(ImportLiveVehiclesCommand):
         defaults = {
             "fleet_number": fleet_number,
             "source": self.source,
-            "operator": operators[0],
+            "operator": operators[0] if operators else None,
             "code": code,
         }
 

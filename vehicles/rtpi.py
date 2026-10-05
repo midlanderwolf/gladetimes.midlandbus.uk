@@ -2,16 +2,52 @@
 
 import datetime
 import logging
+import math
 from itertools import pairwise
-from django.contrib.gis.geos import LineString, Point
+
+import sentry_sdk
 from django.contrib.gis.db.models.functions import Distance, LineLocatePoint
+from django.contrib.gis.geos import LineString, Point
 
 from bustimes.models import RouteLink, StopTime, Trip
-from bustimes.utils import contiguous_stoptimes_only
+from bustimes.utils import contiguous_stoptimes_only, get_trips
 from vehicles.utils import calculate_bearing
 
-
 logger = logging.getLogger(__name__)
+
+EARTH_RADIUS = 6371008.8  # mean radius - the sphere ST_DistanceSphere uses
+
+# how close (in metres) a bus has to be to count as between a pair of stops.
+# a route link follows the road, so a bus on it is only as far away as its GPS
+# is wrong. a straight line between the stops can be much further from the road
+# the bus is actually on - 10% of real route links stray more than 190 metres
+NEARBY_ROUTE_LINK = 300
+NEARBY_STRAIGHT_LINE = 600
+
+
+def local_metres(point: Point, cos_latitude: float) -> tuple[float, float]:
+    """project a WGS84 point to metres near a reference latitude.
+
+    an equirectangular projection - only good over a few km, but that's all
+    we measure, and unlike EPSG:3857 the units are actual metres, comparable
+    with the ST_DistanceSphere distances that route links come back with
+    """
+    return (
+        math.radians(point.x) * EARTH_RADIUS * cos_latitude,
+        math.radians(point.y) * EARTH_RADIUS,
+    )
+
+
+def distance_to_segment(px, py, ax, ay, bx, by) -> float:
+    """distance from a point to a line segment (all in the same projection)"""
+    dx, dy = bx - ax, by - ay
+    length_squared = dx * dx + dy * dy
+    if length_squared:
+        # how far along the segment the closest point is, from 0 to 1
+        along = ((px - ax) * dx + (py - ay) * dy) / length_squared
+        along = min(1, max(0, along))
+        ax, ay = ax + along * dx, ay + along * dy
+    return math.hypot(px - ax, py - ay)
 
 
 def get_route_bearing(geometry: LineString, progress: float):
@@ -22,9 +58,9 @@ def get_route_bearing(geometry: LineString, progress: float):
     return calculate_bearing(p1, p2)
 
 
-def get_stop_times(item):
+def get_stop_times(item, date):
     trip = Trip.objects.select_related("calendar", "route").get(pk=item["trip_id"])
-    trips = trip.get_trips()
+    trips = get_trips(trip, date)
 
     stop_times = (
         StopTime.objects.filter(trip__in=trips)
@@ -96,7 +132,8 @@ def get_progress(
     date = datetime.date.fromisoformat(item["date"])
 
     point = Point(*item["coordinates"], srid=4326)
-    point_3857 = point.transform(3857, clone=True)
+    cos_latitude = math.cos(math.radians(point.y))
+    point_x, point_y = local_metres(point, cos_latitude)
 
     if stop_times is not None:
         stop_times = [st for st in stop_times if st.stop_id and st.stop.latlong]
@@ -108,16 +145,15 @@ def get_progress(
         ]
     else:
         try:
-            trip, stop_times = get_stop_times(item)
+            trip, stop_times = get_stop_times(item, date)
         except Trip.DoesNotExist:
             return
         stop_times = list(stop_times)
         if tzinfo is None and trip.route:
             tzinfo = trip.route.timezone
 
-    start_time = stop_times[0].departure_datetime(date, tzinfo)
-    if start_time is None:
-        start_time = stop_times[0].arrival_datetime(date, tzinfo)
+    if not stop_times:
+        return
 
     route_links = {}
     if "service_id" in item:
@@ -131,75 +167,91 @@ def get_progress(
             rl.distance = rl.distance.m  # convert to meters
             route_links[(rl.from_stop_id, rl.to_stop_id)] = rl
 
-    nearby_pairs = []
-    for a, b in pairwise(stop_times):
-        key = (a.stop_id, b.stop_id)
-        if key in route_links:
-            rl = route_links[key]
-            if rl.distance < 1000:  # within ~1km
-                nearby_pairs.append((a, b, rl))
-        else:
-            geometry = LineString([a.stop.latlong, b.stop.latlong], srid=4326)
-            geometry_3857 = geometry.transform(3857, clone=True)
-            distance = geometry_3857.distance(point_3857)  # in meters
-            if distance < 1000:  # within ~1km
+    with sentry_sdk.start_span(name="nearby pairs"):
+        # each stop is in two pairs, and the same stops recur between calls
+        coordinates = {}
+
+        nearby_pairs = []
+        for a, b in pairwise(stop_times):
+            key = (a.stop_id, b.stop_id)
+            if key in route_links:
+                rl = route_links[key]
+                if rl.distance < NEARBY_ROUTE_LINK:
+                    nearby_pairs.append((a, b, rl))
+                continue
+
+            if (a_xy := coordinates.get(a.stop_id)) is None:
+                a_xy = coordinates[a.stop_id] = local_metres(
+                    a.stop.latlong, cos_latitude
+                )
+            if (b_xy := coordinates.get(b.stop_id)) is None:
+                b_xy = coordinates[b.stop_id] = local_metres(
+                    b.stop.latlong, cos_latitude
+                )
+
+            distance = distance_to_segment(point_x, point_y, *a_xy, *b_xy)  # in metres
+
+            if distance < NEARBY_STRAIGHT_LINE:
+                # only now is it worth building an actual geometry
+                geometry = LineString([a.stop.latlong, b.stop.latlong], srid=4326)
                 rl = RouteLink(from_stop=a.stop, to_stop=b.stop, geometry=geometry)
                 rl.distance = distance
                 rl.progress = geometry.project_normalized(point)
                 nearby_pairs.append((a, b, rl))
 
-    if not nearby_pairs:
-        return
+        if not nearby_pairs:
+            return
 
-    nearby_pairs.sort(key=lambda p: p[2].distance)
+        nearby_pairs.sort(key=lambda p: p[2].distance)
 
-    closest = nearby_pairs[0]
-    next_closest = nearby_pairs[1] if len(nearby_pairs) > 1 else None
+    with sentry_sdk.start_span(name="closest pairs"):
+        closest = nearby_pairs[0]
+        next_closest = nearby_pairs[1] if len(nearby_pairs) > 1 else None
 
-    if next_closest and item["heading"] is not None:
-        vehicle_heading = int(item["heading"])
+        if next_closest and item["heading"] is not None:
+            vehicle_heading = int(item["heading"])
 
-        route_bearing = get_route_bearing(closest[2].geometry, closest[2].progress)
-
-        difference = (vehicle_heading - route_bearing + 180) % 360 - 180
-
-        if not (abs(difference) < 90) and next_closest[2].distance < 100:
-            # bus seems to be heading the wrong way - does the bus go both ways on this road?
-            # try the next closest pair of stops:
-            route_bearing = get_route_bearing(
-                next_closest[2].geometry, next_closest[2].progress
-            )
+            route_bearing = get_route_bearing(closest[2].geometry, closest[2].progress)
 
             difference = (vehicle_heading - route_bearing + 180) % 360 - 180
-            if abs(difference) < 90:
-                closest = next_closest
-                distance = next_closest[2].distance
 
-    progress = Progress(
-        stop_times, closest[0], closest[1], closest[2].progress, closest[2].distance
-    )
-    progress.delay = get_delay(progress, date, when, tzinfo)
+            if not (abs(difference) < 90) and next_closest[2].distance < 100:
+                # bus seems to be heading the wrong way - does the bus go both ways on this road?
+                # try the next closest pair of stops:
+                route_bearing = get_route_bearing(
+                    next_closest[2].geometry, next_closest[2].progress
+                )
 
-    # if closest and next_closest involve the same stop
-    # (e.g. it's a circular route),
-    # choose the one with the smaller delay
-    if next_closest and (
-        closest[0].stop_id == next_closest[1].stop_id
-        or closest[1].stop_id == next_closest[0].stop_id
-    ):
-        alt = Progress(
-            stop_times,
-            next_closest[0],
-            next_closest[1],
-            next_closest[2].progress,
-            next_closest[2].distance,
+                difference = (vehicle_heading - route_bearing + 180) % 360 - 180
+                if abs(difference) < 90:
+                    closest = next_closest
+
+    with sentry_sdk.start_span(name="delay"):
+        progress = Progress(
+            stop_times, closest[0], closest[1], closest[2].progress, closest[2].distance
         )
-        alt.delay = get_delay(alt, date, when, tzinfo)
-        if abs(alt.delay) < abs(progress.delay):
-            progress = alt
+        progress.delay = get_delay(progress, date, when, tzinfo)
 
-    if abs(progress.delay) > 43200:  # more than 12 hours
-        logger.warning("%s delay is %s", item, progress.delay)
+        # if closest and next_closest involve the same stop
+        # (e.g. it's a circular route),
+        # choose the one with the smaller delay
+        if next_closest and (
+            closest[0].stop_id == next_closest[1].stop_id
+            or closest[1].stop_id == next_closest[0].stop_id
+        ):
+            alt = Progress(
+                stop_times,
+                next_closest[0],
+                next_closest[1],
+                next_closest[2].progress,
+                next_closest[2].distance,
+            )
+            alt.delay = get_delay(alt, date, when, tzinfo)
+            if abs(alt.delay) < abs(progress.delay):
+                progress = alt
+
+        if abs(progress.delay) > 43200:  # more than 12 hours
+            logger.warning("%s delay is %s", item, progress.delay)
 
     return progress
 

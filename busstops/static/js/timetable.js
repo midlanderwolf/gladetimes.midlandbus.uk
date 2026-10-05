@@ -38,9 +38,18 @@
                 var formData = new FormData(timetableForm);
                 var newSearch = '?' + new URLSearchParams(formData).toString();
                 reqwest('/services/' + SERVICE_ID + '/timetable' + newSearch, function(response) {
-                    timetableWrapper.className = '';
-                    timetableWrapper.innerHTML = response;
-                    doStuff();
+                    function update() {
+                        timetableWrapper.className = '';
+                        timetableWrapper.innerHTML = response;
+                        doStuff();
+                    }
+
+                    if (document.startViewTransition) {
+                        document.startViewTransition(update);
+                    } else {
+                        update();
+                    }
+
                     search = newSearch;
                     history.pushState(null, "", newSearch);
                 });
@@ -63,9 +72,17 @@
             }
             timetableWrapper.className = 'loading';
             reqwest(url, function(response) {
-                timetableWrapper.className = '';
-                timetableWrapper.innerHTML = response;
-                doStuff();
+                function update() {
+                    timetableWrapper.className = '';
+                    timetableWrapper.innerHTML = response;
+                    doStuff();
+                }
+
+                if (document.startViewTransition) {
+                    document.startViewTransition(update);
+                } else {
+                    update();
+                }
             });
         }
     });

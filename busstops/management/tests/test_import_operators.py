@@ -3,6 +3,9 @@ from unittest.mock import patch
 
 import time_machine
 import vcr
+import yaml
+from django.conf import settings
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -40,6 +43,25 @@ class ImportOperatorsTest(TestCase):
             discs=0,
             authorised_discs=0,
         )  # Arriva Yorkshire
+
+    def test_operators_yaml(self):
+        with open(settings.BASE_DIR / "fixtures" / "operators.yaml") as open_file:
+            overrides = yaml.safe_load(open_file)
+
+        self.assertIsInstance(overrides, dict)
+        for noc, override_data in overrides.items():
+            self.assertIsInstance(noc, str)
+            self.assertIsInstance(override_data, dict, f"{noc} should map to a dict")
+            for key, value in override_data.items():
+                self.assertIsInstance(value, str, f"{noc}.{key} should be a string")
+                try:
+                    field = Operator._meta.get_field(key)
+                except FieldDoesNotExist:
+                    self.fail(f"{noc}.{key} is not a field on Operator")
+                try:
+                    field.clean(value, None)
+                except ValidationError as e:
+                    self.fail(f"{noc}.{key} = {value!r} is invalid: {e}")
 
     def test_import_noc(self):
         FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"

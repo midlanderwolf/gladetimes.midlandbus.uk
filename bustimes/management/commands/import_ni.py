@@ -1,5 +1,5 @@
 import pprint
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -9,14 +9,14 @@ from django.core.management.base import BaseCommand
 from busstops.models import DataSource
 
 from ...download_utils import download
-from .import_atco_cif import Command as ImportAtcoCif
+from .import_bod_timetables import get_command, handle_file
 
 
 class Command(BaseCommand):
     """
     Check the Open Data NI (Northern Ireland) website CKAN API for any new
     Translink Metro and Ulsterbus data,
-    and download it and call the import_atco_cif command if necessary
+    and download and import it if necessary
     """
 
     def handle(self, *args, **options):
@@ -34,7 +34,7 @@ class Command(BaseCommand):
 
             for resource in data["result"]["resources"]:
                 dt = resource["last_modified"] or resource["created"]
-                dt = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
+                dt = datetime.fromisoformat(dt).replace(tzinfo=UTC)
 
                 if source.datetime is None or dt > source.datetime:
                     # new data, lorks a lordy!
@@ -42,11 +42,20 @@ class Command(BaseCommand):
                     pprint.pprint(resource)
 
                     url = resource["url"]
-                    path = Path(settings.DATA_DIR) / f"{source.id}.zip"
+                    path = Path(settings.DATA_DIR) / f"{source.name}"
                     download(path, url)
 
-                    command = ImportAtcoCif()
+                    command = get_command()
                     command.source = source
                     command.source.datetime = dt
+                    command.region_id = "NI"
+                    command.service_ids = set()
+                    command.route_ids = set()
 
-                    command.handle_archive(path)
+                    handle_file(command, path)
+
+                    command.mark_old_services_as_not_current()
+
+                    command.finish_services()
+
+                    command.source.save()

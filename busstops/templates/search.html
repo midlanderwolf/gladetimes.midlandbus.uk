@@ -17,19 +17,13 @@
 </form>
 
 {% if form.is_valid %}
-    {% if localities or operators or services %}
-        <div class="ad-wrapper">
-            <div id="AFM_inContentTop_ad"></div>
-        </div>
-    {% endif %}
-
     {% if postcode %}
         <section>
             <header>
                 <h2>Places near {{ postcode.postcode }}</h2>
                 <a href="/map#16/{{ postcode.latlong.y|floatformat:4 }}/{{ postcode.latlong.x|floatformat:4 }}">Map</a>
             </header>
-            <ul>
+            <ul class="long">
                 {% for locality in postcode.localities %}
                     <li><a href="{{ locality.get_absolute_url }}">{{ locality.get_qualified_name }}</a></li>
                 {% endfor %}
@@ -40,7 +34,7 @@
     {% if localities %}
         <h2 id="places">{{ localities.paginator.count }} place{{ localities.paginator.count|pluralize }}</h2>
 
-        <ul>
+        <ul class="long">
             {% for result in localities %}
                 <li><a href="{{ result.get_absolute_url }}">{{ result.headline|safe }}{% if result.qualifier_name %}, {{ result.qualifier_name }}{% endif %}</a></li>
             {% endfor %}
@@ -52,7 +46,7 @@
     {% if operators %}
         <h2 id="operators">{{ operators.paginator.count }} operator{{ operators.paginator.count|pluralize }}</h2>
 
-        <ul>
+        <ul class="long">
             {% for result in operators %}
                 <li><a href="{{ result.get_absolute_url }}">{{ result.headline|safe }}</a></li>
             {% endfor %}

@@ -1,8 +1,9 @@
 import logging
+
 from django.core.management.base import BaseCommand
 from govuk_bank_holidays.bank_holidays import BankHolidays
-from bustimes.models import BankHoliday, BankHolidayDate
 
+from bustimes.models import BankHoliday, BankHolidayDate
 
 logger = logging.getLogger(__name__)
 

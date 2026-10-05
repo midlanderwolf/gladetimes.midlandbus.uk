@@ -7,7 +7,11 @@ import {
   Source,
 } from "react-map-gl/maplibre";
 
-import BusTimesMap, { ThemeContext } from "./Map";
+import BusTimesMap, {
+  ThemeContext,
+  hasBearing,
+  routeStopCircleStyle,
+} from "./Map";
 import StopPopup, { type Stop } from "./StopPopup";
 import VehicleMarker, {
   type Vehicle,
@@ -58,14 +62,10 @@ function Stops({ stops }: { stops: GeoJSON.FeatureCollection }) {
   const stopsStyle: LayerProps = {
     id: "stops",
     type: "symbol",
+    filter: hasBearing,
     layout: {
       "icon-rotate": ["+", 45, ["get", "bearing"]],
-      "icon-image": [
-        "case",
-        ["==", ["get", "bearing"], ["literal", null]],
-        darkMode ? "route-stop-marker-dark-circle" : "route-stop-marker-circle",
-        darkMode ? "route-stop-marker-dark" : "route-stop-marker",
-      ],
+      "icon-image": darkMode ? "route-stop-marker-dark" : "route-stop-marker",
       "icon-allow-overlap": true,
       "icon-ignore-placement": true,
     },
@@ -74,6 +74,7 @@ function Stops({ stops }: { stops: GeoJSON.FeatureCollection }) {
   if (stops) {
     return (
       <Source type="geojson" data={stops}>
+        <Layer {...routeStopCircleStyle(darkMode)} />
         <Layer {...stopsStyle} />
       </Source>
     );
@@ -198,7 +199,7 @@ export default function ServiceMapMap({
       onMouseLeave={onMouseLeave}
       onClick={handleMapClick}
       // onLoad={handleMapLoad}
-      interactiveLayerIds={["stops"]}
+      interactiveLayerIds={["stops", "stops-circle"]}
     >
       {vehicles
         ? vehicles.map((item) => {

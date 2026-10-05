@@ -1,109 +1,78 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 import fakeredis
 import vcr
 from django.test import TestCase
-from django.core.management import call_command
-from django.db import IntegrityError
 
-from busstops.models import DataSource, Operator, Service
+from busstops.models import DataSource, Operator, Route, Service
+
 from ..commands.import_first import Command
-from ...models import VehicleJourney
 
 
 class FirstTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.source = DataSource.objects.create(
-            name="First", url="https://example.com/socket_information"
+            name="First",
+            url="https://example.com/socket_information",
+            datetime=datetime(2026, 9, 21, 7, 2, 50, tzinfo=UTC),
         )
         o = Operator.objects.create(noc="BDGR", name="Badgerline")
-        s = Service.objects.create(
-            current=True,
-            geometry="POLYGON ((1.2 52.6, 1.2 52.7, 1.3 52.7, 1.3 52.6, 1.2 52.6))",
-        )
+        s = Service.objects.create(current=True, line_name="B")
+        Route.objects.create(service=s, line_name="B", source=cls.source)
         s.operator.add(o)
 
     def test_sock_it(self):
+        cmd = Command()
+        cmd.do_source()
+
         with (
             vcr.use_cassette(
                 str(Path(__file__).resolve().parent / "vcr" / "first.yaml")
             ),
-            mock.patch(
-                "vehicles.management.commands.import_first.connect"
-            ) as websocket_connect,
-            self.assertNumQueries(3),
-            self.assertRaises(IntegrityError),
+            self.assertRaises(KeyError),
         ):
-            websocket_connect.return_value.__aenter__.return_value.recv.side_effect = [
-                "",
-                """{"member": [{
-                    "dir": "outbound",
-                    "line": "B",
-                    "status": {
-                        "bearing": 61,
-                        "location": {
-                        "type": "Point",
-                            "coordinates": [1.267833, 52.614746]
-                        },
-                        "vehicle_id": "BDGR-outbound-2025-09-21-0615-11111-B",
-                        "recorded_at_time": "2025-09-21T07:02:17+01:00"
-                    },
-                    "operator": "BDGR",
-                    "line_name": "B",
-                    "description": "",
-                    "operator_name": "Badgerline"
-                }]}""",
-            ]
+            cmd.get_items()
 
-            call_command("import_first", "BDGR")
-
-        self.assertEqual(VehicleJourney.objects.count(), 0)
-
-    async def test_handle_data(self):
+    def test_handle_data(self):
         cmd = Command()
         cmd.source = self.source
-        cmd.cache = {}
-        cmd.to_save = []
 
         redis_client = fakeredis.FakeStrictRedis(version=7)
 
         with mock.patch(
             "vehicles.management.import_live_vehicles.redis_client", redis_client
         ):
-            await cmd.handle_data(
+            location, vehicle = cmd.handle_item(
                 {
-                    "member": [
+                    "dir": "outbound",
+                    "line": "B",
+                    "status": {
+                        "bearing": 61,
+                        "location": {
+                            "type": "Point",
+                            "coordinates": [1.267833, 52.614746],
+                        },
+                        "vehicle_id": "BDGR-outbound-2025-09-21-0615-11111-B",
+                        "recorded_at_time": "2025-09-21T07:02:17+01:00",
+                    },
+                    "stops": [
                         {
-                            "dir": "outbound",
-                            "line": "B",
-                            "status": {
-                                "bearing": 61,
-                                "location": {
-                                    "type": "Point",
-                                    "coordinates": [1.267833, 52.614746],
-                                },
-                                "vehicle_id": "BDGR-outbound-2025-09-21-0615-11111-B",
-                                "recorded_at_time": "2025-09-21T07:02:17+01:00",
-                            },
-                            "stops": [
-                                {
-                                    "date": "2025-09-21",
-                                    "time": "06:15",
-                                    "locality": "Woody Knoll",
-                                    "atcocode": "",
-                                }
-                            ],
-                            "operator": "BDGR",
-                            "line_name": "B",
-                            "description": "",
-                            "operator_name": "Badgerline",
+                            "date": "2025-09-21",
+                            "time": "06:15",
+                            "locality": "Woody Knoll",
+                            "atcocode": "",
                         }
-                    ]
+                    ],
+                    "operator": "BDGR",
+                    "line_name": "B",
+                    "description": "",
+                    "operator_name": "Badgerline",
                 }
             )
 
-        v = await VehicleJourney.objects.aget()
-        self.assertEqual(v.route_name, "B")
-        self.assertEqual(v.code, "0615")
+        self.assertEqual(str(vehicle), "11111")
+        self.assertEqual(location.journey.route_name, "B")
+        self.assertEqual(location.journey.code, "0615")

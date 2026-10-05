@@ -1,9 +1,12 @@
 from datetime import datetime
+
 from django.contrib.gis.geos import Point
 from django.utils.timezone import make_aware
+
 from busstops.models import Service
+
+from ...models import VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
-from ...models import VehicleLocation, VehicleJourney
 
 
 class Command(ImportLiveVehiclesCommand):

@@ -10,6 +10,28 @@ from .models import Consequence, Situation, ValidityPeriod
 
 logger = logging.getLogger(__name__)
 
+# arrivauk.arcticapi.com identifies operators by its own short internal
+# codes, not real NOCs (e.g. "AKE" for Arriva Herts and Essex) - these
+# don't match any local Operator.noc on their own, so results are empty
+# and no service ever gets a disruption attached. Verified against actual
+# route data (each arcticapi operator's alerts only ever mention line
+# numbers that exist under the local operator listed here).
+ARRIVA_REMAP = {
+    "ANW": "ANWE",  # Arriva North West
+    "AM": "AMSY",  # Arriva Merseyside
+    "ATSE": "ARBB",  # Arriva Beds and Bucks (formerly "The Shires")
+    "AMD": "AMID",  # Arriva Midlands
+    "AML": "ADER",  # Arriva Derby
+    "NMS": "ANUM",  # Arriva Northumbria
+    "AKE": "ARHE",  # Arriva Herts and Essex
+    "AKT": "AMTM",  # Arriva Kent Thameside
+    "AKS": "AKSS",  # Arriva Kent and Surrey
+    "ACY": "ACYM",  # Arriva Wales
+    "AYK": "WRAY",  # Arriva Yorkshire
+    "AMN": "AMNO",  # Arriva Midlands North
+    "DC": "ANEA",  # Arriva Durham County, folded into Arriva North East
+}
+
 
 def handle_alert(alert: dict, source: DataSource, operators: dict, services):
     situation_number = alert["id"]
@@ -123,7 +145,11 @@ def arrivauk_disruptions():
             if operator_id:
                 operator_ids.add(operator_id)
 
-    operators = {o.noc: o for o in Operator.objects.filter(noc__in=operator_ids)}
+    local_nocs = {ARRIVA_REMAP.get(oid, oid) for oid in operator_ids}
+    operators_by_noc = {o.noc: o for o in Operator.objects.filter(noc__in=local_nocs)}
+    operators = {
+        oid: operators_by_noc.get(ARRIVA_REMAP.get(oid, oid)) for oid in operator_ids
+    }
 
     services = Service.objects.filter(current=True).only("id", "line_name")
 

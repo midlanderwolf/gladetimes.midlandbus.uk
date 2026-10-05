@@ -1792,7 +1792,7 @@ interactions:
             <NOCTable>
                 <NOCTableRecord>
                     <NOCCODE>=CC</NOCCODE>
-                    <OperatorPublicName>c2c</OperatorPublicName>
+                    <OperatorPublicName> c2c </OperatorPublicName>
                     <VOSA_PSVLicenseName>National Express Group</VOSA_PSVLicenseName>
                     <OpId>138258</OpId>
                     <PubNmId>93532</PubNmId>
@@ -2915,7 +2915,7 @@ interactions:
                 </PublicNameRecord>
                 <PublicNameRecord>
                     <PubNmId>93532</PubNmId>
-                    <OperatorPublicName>c2c</OperatorPublicName>
+                    <OperatorPublicName> c2c </OperatorPublicName>
                     <PubNmQual/><TTRteEnq>contact@c2crail.co.uk</TTRteEnq>
                     <FareEnq>03457444422</FareEnq>
                     <LostPropEnq/><DisruptEnq/><ComplEnq>FREEPOST ADM3968, Southend SS1 1ZS</ComplEnq>

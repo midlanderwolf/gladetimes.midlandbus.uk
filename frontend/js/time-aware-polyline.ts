@@ -6,10 +6,12 @@ function getDecodedDimensionFromPolyline(polyline: string, index: number) {
   while (b >= 0x1f) {
     b = polyline.charCodeAt(index) - 64;
     index += 1;
-    result += b << shift;
+    // use multiplication rather than `<<`, which truncates to 32 bits and
+    // corrupts large values like the timestamp field
+    result += b * 2 ** shift;
     shift += 5;
   }
-  return [index, (result & 1) !== 0 ? ~result >> 1 : result >> 1];
+  return [index, result % 2 !== 0 ? -(result + 1) / 2 : result / 2];
 }
 
 export function decodeTimeAwarePolyline(

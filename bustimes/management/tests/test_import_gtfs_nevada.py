@@ -33,6 +33,11 @@ class NevadaTest(TestCase):
 
     @time_machine.travel("2026-08-04", tick=False)
     def test_import_gtfs_nevada(self):
+        # a vehicle with an implausibly future timestamp
+        self.enterContext(
+            self.assertLogs("vehicles.management.import_live_vehicles", "WARNING")
+        )
+
         with patch(
             "bustimes.management.commands.import_gtfs_nevada.download_if_modified",
             return_value=(

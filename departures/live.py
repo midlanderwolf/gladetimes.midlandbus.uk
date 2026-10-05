@@ -2,7 +2,7 @@
 
 import datetime
 
-from django.db.models import Prefetch, prefetch_related_objects, Q
+from django.db.models import Prefetch, Q, prefetch_related_objects
 from django.utils import timezone
 
 from busstops.models import Service, SIRISource, StopPoint
@@ -37,13 +37,12 @@ def can_sort(departure):
 
 
 def rows_match(a, b):
-    if services_match(a["service"], b["service"]):
-        if a["time"] and b["time"]:
-            if a.get("arrival") and b.get("arrival"):
-                key = "arrival"
-            else:
-                key = "time"
-            return abs(a[key] - b[key]) <= datetime.timedelta(minutes=2)
+    if services_match(a["service"], b["service"]) and a["time"] and b["time"]:
+        if a.get("arrival") and b.get("arrival"):
+            key = "arrival"
+        else:
+            key = "time"
+        return abs(a[key] - b[key]) <= datetime.timedelta(minutes=2)
 
 
 def blend(departures, live_rows, stop=None):
@@ -212,8 +211,7 @@ def get_departures(stop, services, when) -> dict:
                         journey_ids
                     )
                     for departure in departures:
-                        if "journey_id" in departure:
-                            journey = journeys.get(departure["journey_id"])
+                        if journey := journeys.get(departure.get("journey_id")):
                             departure["vehicle"] = journey.vehicle
 
                 # filter out departures that have already happened

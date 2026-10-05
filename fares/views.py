@@ -5,7 +5,7 @@ from django.views.generic.detail import DetailView
 from busstops.models import Service
 
 from .forms import FaresForm
-from .models import DataSet, FareTable, Tariff, FareRule
+from .models import DataSet, FareRule, FareTable, Tariff
 
 
 def index(request):

@@ -1,12 +1,13 @@
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from unittest.mock import patch
 
 import fakeredis
 import time_machine
-from datetime import datetime
-from django.contrib.gis.geos import Point
 from django.contrib.auth.models import Permission
-from django.test import TestCase, override_settings
+from django.contrib.gis.geos import Point
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import User
 from busstops.models import DataSource, Operator, OperatorGroup, Region, Service
@@ -21,6 +22,7 @@ from .models import (
     VehicleRevisionFeature,
     VehicleType,
 )
+from .utils import calculate_bearing
 
 
 @patch(
@@ -205,7 +207,7 @@ class VehiclesTests(TestCase):
         self.assertEqual(vehicle.get_next().code, "G_2434")
         self.assertEqual(vehicle.get_previous().code, "50")
 
-        # last seen today - should only show time, should link to map
+        # last seen today - should only show time
         with (
             time_machine.travel("2020-10-20 12:00+01:00"),
             self.assertNumQueries(3),
@@ -232,7 +234,7 @@ class VehiclesTests(TestCase):
         self.assertContains(response, "/vehicles/edits?operator=LYNX")
         self.assertContains(response, "/operators/lynx/map")
 
-        with self.assertNumQueries(7):
+        with self.assertNumQueries(8):
             response = self.client.get("/operators/lynx")
         self.assertContains(response, "/operators/lynx/vehicles")
         self.assertNotContains(response, "/operators/lynx/map")
@@ -242,6 +244,16 @@ class VehiclesTests(TestCase):
             response = self.client.get("/operators/lynx/vehicles")
         self.assertContains(response, "20 Oct")
         self.assertNotContains(response, "/operators/lynx/map")
+
+    def test_next_previous_same_fleet_number(self):
+        # vehicles with the same fleet number shouldn't be skipped over
+        a = Vehicle.objects.create(code="50a", fleet_number=50, operator=self.lynx)
+        b = Vehicle.objects.create(code="50b", fleet_number=50, operator=self.lynx)
+
+        self.assertEqual(self.vehicle_2.get_next(), a)
+        self.assertEqual(a.get_next(), b)
+        self.assertEqual(b.get_previous(), a)
+        self.assertEqual(a.get_previous(), self.vehicle_2)
 
     def test_vehicle_views(self):
         with self.assertNumQueries(7):
@@ -263,28 +275,31 @@ class VehiclesTests(TestCase):
             self.assertNumQueries(4),
         ):
             response = self.client.get(
-                f"/vehicles/{self.vehicle_1.id}/journeys/{self.journey.id}.json"
+                f"/api/vehiclejourneys/{self.journey.id}/details/"
             )
         self.assertEqual(
             {
-                "code": "",
-                "current": True,
+                "id": self.journey.id,
                 "datetime": "2020-10-20T00:47:00+01:00",
-                "destination": "",
-                "direction": "",
-                "next": {
-                    "datetime": "2020-10-20T13:00:00+01:00",
-                    "id": self.journey.id + 2,
+                "date": "2020-10-20",
+                "vehicle": {
+                    "id": self.journey.vehicle_id,
+                    "slug": "lynx-2",
+                    "fleet_code": "1",
+                    "reg": "FD54JYA",
                 },
-                # "previous": {
-                #     "datetime": "2020-10-16T13:00:00+01:00",
-                #     "id": self.journey.id + 1,
-                # },
                 "route_name": "2",
-                "service_id": self.journey.service_id,
+                "destination": "",
                 "trip_id": None,
-                "vehicle_id": self.journey.vehicle_id,
-                "stops": [],
+                "service": {
+                    "id": self.journey.service_id,
+                    "slug": "spixworth-hunworth-happisburgh",
+                },
+                "operator": {"noc": "LYNX", "slug": "lynx", "name": "Lynx"},
+                "next": {
+                    "id": self.journey.id + 2,
+                    "datetime": "2020-10-20T13:00:00+01:00",
+                },
             },
             response.json(),
         )
@@ -472,7 +487,7 @@ class VehiclesTests(TestCase):
             follow=True,
         )
         self.assertEqual(
-            list(response.context["messages"])[0].message,
+            next(iter(response.context["messages"])).message,
             "You can only merge liveries that are the same",
         )
 
@@ -492,7 +507,7 @@ class VehiclesTests(TestCase):
             },
             follow=True,
         )
-        self.assertEqual(list(response.context["messages"])[0].message, "Merged")
+        self.assertEqual(next(iter(response.context["messages"])).message, "Merged")
 
     def test_vehicle_type_admin(self):
         self.client.force_login(self.staff_user)
@@ -680,12 +695,12 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
         # add and remove a feature, change type
         initial["features"] = self.usb.id
         initial["vehicle_type"] = self.vehicle_2.vehicle_type_id
-        with self.assertNumQueries(25):
+        with self.assertNumQueries(26):
             response = self.client.post(url, initial)
         revision = response.context["revision"]
         self.assertFalse(revision.pending)
 
-        features = VehicleRevisionFeature.objects.all()
+        features = VehicleRevisionFeature.objects.order_by("id")
         self.assertEqual(str(features[0]), "<del>Wi-Fi</del>")
         self.assertEqual(str(features[1]), "<ins>USB</ins>")
 
@@ -1001,10 +1016,6 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
         response = self.client.get("/map", headers={"CF-IPCountry": "IE"})
         self.assertContains(response, "latitude: 53.45,")
 
-        response = self.client.get("/map/old")
-        self.assertNotContains(response, "/bigmap.")
-        self.assertContains(response, "/bigmap-classic.")
-
     def test_vehicles(self):
         with self.assertNumQueries(3):
             self.client.get("/vehicles")
@@ -1026,6 +1037,29 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
             # '<option selected value="2020-10-20">Tuesday 20 October 2020</option>'
         )
         self.assertContains(response, "1 - FD54 JYA")
+
+    def test_ad_hoc_service(self):
+        journey = VehicleJourney.objects.create(
+            vehicle=self.vehicle_1,
+            datetime=timezone.now() - timedelta(days=1),
+            date=timezone.localdate() - timedelta(days=1),
+            source=self.journey.source,
+            route_name="55",
+            destination="Avignon",
+        )
+        self.vehicle_1.latest_journey = journey
+        self.vehicle_1.save(update_fields=["latest_journey"])
+
+        response = self.client.get("/operators/LYNX")
+        self.assertContains(response, "/services/LYNX:55/vehicles")
+        self.assertContains(response, "Avignon")
+
+        response = self.client.get("/services/LYNX:55/vehicles")
+        self.assertContains(response, "1 - FD54 JYA")
+
+        # no journeys with this route name - 404
+        response = self.client.get("/services/LYNX:56/vehicles")
+        self.assertEqual(response.status_code, 404)
 
     def test_api(self):
         with self.assertNumQueries(2):
@@ -1137,3 +1171,24 @@ https://www.flickr.com/photos/goodwinjoshua/51046126023/ blah""",
             response = self.client.get("/vehicles.json?id=1,2")
         self.assertEqual(response.json(), [])
         self.assertEqual(response.headers["ETag"], '"d751713988987e9331980363e24189ce"')
+
+
+class CalculateBearingTest(SimpleTestCase):
+    def test_cardinal_directions(self):
+        origin = Point(-0.1, 51.5)
+        for expected, point in (
+            (0, Point(-0.1, 52.5)),
+            (90, Point(0.4, 51.5)),
+            (180, Point(-0.1, 50.5)),
+            (270, Point(-0.6, 51.5)),
+        ):
+            with self.subTest(expected=expected):
+                self.assertEqual(calculate_bearing(origin, point), expected)
+
+    def test_great_circle(self):
+        # far enough apart that the longitude difference matters
+        self.assertEqual(calculate_bearing(Point(-0.1, 51.5), Point(29.9, 51.5)), 78)
+        self.assertEqual(calculate_bearing(Point(29.9, 51.5), Point(-0.1, 51.5)), 282)
+
+    def test_same_point(self):
+        self.assertEqual(calculate_bearing(Point(-0.1, 51.5), Point(-0.1, 51.5)), 0)

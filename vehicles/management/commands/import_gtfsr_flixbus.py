@@ -5,17 +5,18 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
+from asgiref.sync import async_to_sync
+from channels.exceptions import ChannelFull
+from channels.layers import get_channel_layer
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
-from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.dateparse import parse_duration
 from google.protobuf import json_format
 
 from busstops.models import DataSource
-from bustimes.models import Trip
 
 from ...models import Livery, VehicleJourney
-from ...utils import calculate_bearing
+from ...utils import VEHICLE_POSITIONS_CHANNEL, calculate_bearing
 from .. import import_live_vehicles
 from .import_gtfsr_ie import Command as GTFSRCommand
 
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 class Command(GTFSRCommand):
     source_name = "FlixBus"
+    trip_id_field = "vehicle_journey_code"
+    trip_select_related = ("route__service", "destination__locality")
 
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/London")
@@ -124,15 +127,13 @@ class Command(GTFSRCommand):
             tzinfo=self.tzinfo
         )
 
-        try:
-            trip = Trip.objects.get(operator="FLIX", vehicle_journey_code=trip_id)
-        except Trip.DoesNotExist:
-            journey.datetime = noon - timedelta(hours=12) + parse_duration(start_time)
-        else:
+        if trip := self.trips.get(trip_id):
             journey.trip = trip
             journey.datetime = noon - timedelta(hours=12) + trip.start
             journey.service = trip.route.service
             journey.destination = str(trip.destination.locality or trip.destination)
+        else:
+            journey.datetime = noon - timedelta(hours=12) + parse_duration(start_time)
 
         if journey.datetime - self.source.datetime > timedelta(hours=12):
             # `start_date` is today but the trip's operational day is yesterday
@@ -173,7 +174,9 @@ class Command(GTFSRCommand):
 
         redis_client = import_live_vehicles.redis_client
 
-        latest = redis_client.get(f"vehicle{journey.id}")
+        vehicle_or_journey_id = journey.vehicle_id or journey.id
+
+        latest = redis_client.get(f"vehicle{vehicle_or_journey_id}")
         if latest:
             latest = json.loads(latest)
             if datetime.fromisoformat(latest["datetime"]) >= updated_at:
@@ -182,7 +185,7 @@ class Command(GTFSRCommand):
         location = self.create_vehicle_location(item)
         location.datetime = updated_at
         location.journey = journey
-        location.id = journey.id  # (in lieu of a vehicle id)
+        location.id = vehicle_or_journey_id
 
         if latest and location.heading is None:
             latest_latlong = Point(*latest["coordinates"])
@@ -192,21 +195,44 @@ class Command(GTFSRCommand):
                 location.heading = calculate_bearing(latest_latlong, location.latlong)
 
         redis_json = location.get_redis_json(tz=self.tzinfo)
-        redis_json["vehicle"] = {"name": item.vehicle.vehicle.license_plate}
-        if self.livery:
-            redis_json["vehicle"]["livery"] = self.livery.id
-            redis_json["vehicle"]["colour"] = self.livery.colour
+        if self.livery and not journey.vehicle_id:
+            redis_json["vehicle"] = {
+                "name": item.vehicle.vehicle.license_plate or "FlixBus",
+                "livery": self.livery.id,
+                "colour": self.livery.colour,
+            }
         if journey.service_id and "service" in redis_json:
             redis_json["service"]["url"] = journey.service.get_absolute_url()
 
         pipeline = redis_client.pipeline(transaction=False)
-        pipeline.rpush(*location.get_appendage())
         pipeline.geoadd(
             "vehicle_location_locations",
-            [location.latlong.x, location.latlong.y, journey.id],
+            [location.latlong.x, location.latlong.y, location.id],
         )
         if journey.service_id:
-            pipeline.sadd(f"service{journey.service_id}vehicles", journey.id)
-        pipeline.sadd("operatorFLIXvehicles", journey.id)
-        pipeline.set(f"vehicle{journey.id}", json.dumps(redis_json, cls=DjangoJSONEncoder), ex=900)
+            pipeline.sadd(f"service{journey.service_id}vehicles", location.id)
+        pipeline.sadd("operatorFLIXvehicles", location.id)
+        pipeline.set(f"vehicle{location.id}", json.dumps(redis_json), ex=900)
         pipeline.execute()
+
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            try:
+                async_to_sync(channel_layer.send)(
+                    VEHICLE_POSITIONS_CHANNEL,
+                    {
+                        "type": "move_vehicles",
+                        "items": [
+                            (
+                                journey.get_redis_key(),
+                                int(location.datetime.timestamp()),
+                                location.latlong.x,
+                                location.latlong.y,
+                            )
+                        ],
+                    },
+                )
+            except ChannelFull as e:
+                # distribute_vehicle_locations worker isn't keeping up (or is down) -
+                # drop this update rather than blocking the importer
+                logger.error(e)

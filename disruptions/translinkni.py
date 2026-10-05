@@ -1,14 +1,13 @@
 import logging
+
+import requests
+from bs4 import BeautifulSoup
 from django.db.backends.postgresql.psycopg_any import DateTimeTZRange
 from django.db.models import Q
 
-from bs4 import BeautifulSoup
-
-import requests
-
 from busstops.models import DataSource, Service
-from .models import Consequence, Situation, ValidityPeriod
 
+from .models import Consequence, Situation, ValidityPeriod
 
 logger = logging.getLogger(__name__)
 

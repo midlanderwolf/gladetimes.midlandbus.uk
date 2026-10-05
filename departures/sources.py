@@ -6,15 +6,22 @@ import requests
 import xmltodict
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Prefetch, prefetch_related_objects, IntegerField
+from django.db.models import (
+    Exists,
+    ExpressionWrapper,
+    F,
+    IntegerField,
+    OuterRef,
+    Prefetch,
+    prefetch_related_objects,
+)
 from django.db.models.functions import Coalesce
-from django.db.models import F, ExpressionWrapper
 from django.utils import timezone
 from xmltodict import unparse
 
 from bustimes.utils import get_stop_times
+from disruptions.models import Call
 from vehicles.models import VehicleJourney
-
 
 TIMEZONE = ZoneInfo("Europe/London")
 
@@ -64,11 +71,9 @@ class RemoteDepartures(Departures):
 
     def get_request_params(self):
         """Return a dictionary of HTTP GET parameters"""
-        pass
 
     def get_request_headers(self):
         """Return a dictionary of HTTP headers"""
-        pass
 
     def get_request_kwargs(self):
         return {
@@ -84,11 +89,9 @@ class RemoteDepartures(Departures):
         if line_name:
             # try to find matching service (case-insensitively)
             line_name_lower = line_name.lower()
-            if service := self.services_by_name.get(line_name_lower):
-                return service
-
-            # FlixBus
-            elif service := self.services_by_name.get(f"uk{line_name_lower}"):
+            if (service := self.services_by_name.get(line_name_lower)) or (
+                service := self.services_by_name.get(f"uk{line_name_lower}")
+            ):
                 return service
 
         # fallback
@@ -119,10 +122,10 @@ class RemoteDepartures(Departures):
             except requests.exceptions.ReadTimeout:
                 self.set_poorly(60)  # back off for 1 minute
                 return
-            except requests.exceptions.RequestException as e:
+            except requests.exceptions.RequestException:
                 self.set_poorly(60)  # back off for 1 minute
                 logger = logging.getLogger(__name__)
-                logger.exception(e)
+                logger.exception("error getting departures")
                 return
 
             if response.ok:
@@ -195,7 +198,7 @@ class TimetableDepartures(Departures):
             "destination": stop_time.destination,
             "link": trip.get_absolute_url(),
             "stop_time": stop_time,
-            # "cancelled": stop_time.cancelled,
+            "cancelled": stop_time.cancelled,
         }
 
     def get_times(self, date, time=None, trips=None, day_shift=0):
@@ -211,14 +214,15 @@ class TimetableDepartures(Departures):
                 order=ExpressionWrapper(
                     F("departure") + day_shift * 86400, output_field=IntegerField()
                 ),
-                # cancelled=Exists(
-                #     Call.objects.filter(
-                #         journey__situation__current=True,
-                #         journey__trip=OuterRef("trip"),
-                #         stop_time=OuterRef("id"),
-                #         condition="notStopping",
-                #     )
-                # ),
+                cancelled=Exists(
+                    Call.objects.filter(
+                        journey__date=date,
+                        journey__situation__current=True,
+                        journey__trip=OuterRef("trip"),
+                        stop_time=OuterRef("id"),
+                        condition="notStopping",
+                    )
+                ),
             )
         ).order_by("departure")
 
@@ -231,9 +235,13 @@ class TimetableDepartures(Departures):
         yesterday_date = (self.now - one_day).date()
         yesterday_time = time_since_midnight + one_day
 
+        branch_limit = self.per_page + 8
         all_today_times = (
-            self.get_times(yesterday_date, yesterday_time)
-            .union(self.get_times(date, time_since_midnight, day_shift=1), all=True)
+            self.get_times(yesterday_date, yesterday_time)[:branch_limit]
+            .union(
+                self.get_times(date, time_since_midnight, day_shift=1)[:branch_limit],
+                all=True,
+            )
             .order_by("order", "id")
         )
         today_times = list(all_today_times[: self.per_page])
@@ -360,7 +368,7 @@ class SiriSmDepartures(RemoteDepartures):
         return [self.get_row(data)]
 
     def get_response(self):
-        now = datetime.datetime.utcnow().isoformat()
+        now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
         request_xml = unparse(
             {
                 "Siri": {

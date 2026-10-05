@@ -15,7 +15,7 @@ class MyTripTest(TestCase):
             noc="MDCL", name="Midland Classic"
         )
         # so MyTrip tab will show on operator page:
-        service = Service.objects.create(current=True)
+        service = Service.objects.create(current=True, slug="service")
 
         source = DataSource.objects.create(name="National Operator Codes")
         operator = Operator.objects.create(noc="NIBS", name="Nibs")

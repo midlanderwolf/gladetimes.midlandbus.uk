@@ -3,11 +3,11 @@ import io
 import logging
 import re
 import zipfile
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 import requests
 import sentry_sdk
-from lxml import etree
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.cache import cache
@@ -15,6 +15,8 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_duration
+from django.utils.http import http_date, parse_http_date_safe
+from lxml import etree
 
 from busstops.models import (
     Operator,
@@ -27,7 +29,6 @@ from bustimes.models import Route, Trip
 
 from ...models import Vehicle, VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand, Status
-
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +149,14 @@ class Command(ImportLiveVehiclesCommand):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.hist = {}
+        self.last_modified = None
+        self.not_modified = False
 
     @staticmethod
     def get_datetime(item):
         return datetime.fromisoformat(item["RecordedAtTime"])
 
-    @functools.cache
+    @functools.cache  # noqa: B019 - one Command instance per process run
     def get_operator(self, operator_ref):
         # all operators with a matching OperatorCode,
         # or (if no such OperatorCode) the one with a matching id
@@ -240,12 +242,15 @@ class Command(ImportLiveVehiclesCommand):
                 defaults["fleet_number"] = fleet_number
                 reg = reg.replace("_", "")
                 defaults["reg"] = reg
-        if "fleet_number" not in defaults and vehicle_unique_id:
-            # VehicleUniqueId
-            if len(vehicle_unique_id) < len(vehicle_ref):
-                defaults["fleet_code"] = vehicle_unique_id
-                if vehicle_unique_id.isdigit():
-                    defaults["fleet_number"] = vehicle_unique_id
+        # VehicleUniqueId
+        if (
+            "fleet_number" not in defaults
+            and vehicle_unique_id
+            and len(vehicle_unique_id) < len(vehicle_ref)
+        ):
+            defaults["fleet_code"] = vehicle_unique_id
+            if vehicle_unique_id.isdigit():
+                defaults["fleet_number"] = vehicle_unique_id
 
         vehicles = vehicles.filter(condition)
 
@@ -573,10 +578,6 @@ class Command(ImportLiveVehiclesCommand):
                 ):
                     journey.trip = trip
 
-                    if block_ref and trip.block != block_ref and (not trip.block or operator_ref in ("SKIL",)):
-                        trip.block = block_ref
-                        trip.save(update_fields=["block"])
-
                     if (
                         not (destination_ref and journey.destination)
                         and trip.destination_id
@@ -645,11 +646,28 @@ class Command(ImportLiveVehiclesCommand):
         return location
 
     def get_items(self):
-        response = self.session.get(self.source.url, timeout=61)
+        headers = {}
+        if self.last_modified:
+            headers["if-modified-since"] = http_date(self.last_modified.timestamp())
+
+        response = self.session.get(self.source.url, headers=headers, timeout=61)
+        fetched_at = timezone.now()
+
+        self.not_modified = response.status_code == HTTPStatus.NOT_MODIFIED
+        if self.not_modified:
+            return
 
         if not response.ok:
-            print(response.headers, response.content, response)
-            return []
+            logger.warning("%s %s %s", response, response.headers, response.content)
+            return
+
+        # when this archive was published - a steadier guide to when to poll
+        # next than the ResponseTimestamp inside it, which lags it by a
+        # variable amount depending on which cycle the archiver caught
+        if last_modified := parse_http_date_safe(
+            response.headers.get("last-modified", "")
+        ):
+            self.last_modified = datetime.fromtimestamp(last_modified, UTC)
 
         if response.headers["content-type"] == "application/zip":
             with (
@@ -674,9 +692,24 @@ class Command(ImportLiveVehiclesCommand):
 
         previous_time = self.source.datetime
 
-        self.source.datetime = datetime.fromisoformat(
-            service_delivery.findtext(f"{{{ns}}}ResponseTimestamp")
+        response_timestamp = service_delivery.findtext(f"{{{ns}}}ResponseTimestamp")
+        self.source.datetime = (
+            datetime.fromisoformat(response_timestamp) if response_timestamp else None
         )
+
+        items = None
+        if not self.source.datetime or self.source.datetime > fetched_at:
+            # ResponseTimestamp is missing, or implausibly fresh -
+            # fall back to the newest RecordedAtTime
+            items = [
+                _elem_to_dict(a)
+                for a in service_delivery.find(
+                    f"{{{ns}}}VehicleMonitoringDelivery"
+                ).findall(f"{{{ns}}}VehicleActivity")
+            ]
+            recorded_times = [self.get_datetime(item) for item in items]
+            if recorded_times:
+                self.source.datetime = max(recorded_times)
 
         if (
             self.source.datetime
@@ -685,8 +718,13 @@ class Command(ImportLiveVehiclesCommand):
         ):
             return  # don't return old data
 
-        delivery = service_delivery.find(f"{{{ns}}}VehicleMonitoringDelivery")
-        return [_elem_to_dict(a) for a in delivery.findall(f"{{{ns}}}VehicleActivity")]
+        if items is None:
+            delivery = service_delivery.find(f"{{{ns}}}VehicleMonitoringDelivery")
+            items = [
+                _elem_to_dict(a) for a in delivery.findall(f"{{{ns}}}VehicleActivity")
+            ]
+
+        return items
 
     @staticmethod
     def get_vehicle_identity(item):
@@ -737,17 +775,23 @@ class Command(ImportLiveVehiclesCommand):
                         changed_journey_identities,
                         total_items,
                     ) = self.get_changed_items()
-                except requests.exceptions.RequestException as e:
-                    logger.exception(e)
+                except requests.exceptions.RequestException:
+                    logger.exception("error getting changed items")
                     self.session.close()
                     self.session = requests.Session()
                     return 30
 
+            if self.not_modified:
+                # nothing new published yet, and the 304 cost us nothing,
+                # so try again shortly rather than waiting out the cycle
+                since = (timezone.now() - self.last_modified).total_seconds()
+                if since < 20:
+                    return 0.5
+                return 10 - (since % 10) + 0.5
+
             age = int((now - self.source.datetime).total_seconds())
             if age > 0:
-                self.hist[now.second % 10] = age
-                print(self.hist)
-                print(
+                logger.info(
                     f"{now.second=} {age=}  {total_items=}  {len(changed_items)=}  {len(changed_journey_items)=}"
                 )
 
@@ -775,26 +819,25 @@ class Command(ImportLiveVehiclesCommand):
             bod_status = bod_status[-50:]
             cache.set("bod_avl_status", bod_status, 800)
 
-            print(f"{time_taken=}")
+            sentry_sdk.metrics.count(
+                "vehicle_locations",
+                bod_status[-1].changed_items,
+                attributes={"source": self.source_name},
+            )
 
-            if time_taken > 11:
-                return 0
+            logger.info(f"{time_taken=}")
 
-            # bods updates "every 10 seconds",
-            # it's usually worth waiting 0-9 seconds
-            # before the next fetch
-            # for maximum freshness:
+            # BODS `create_siri_zip` runs every 10 seconds
+            # - aim for just after the next run
+            if self.last_modified:
+                since = (timezone.now() - self.last_modified).total_seconds()
+                wait = 10 - (since % 10) + 0.5
+                logger.info(
+                    f"last-modified={self.last_modified:%H:%M:%S} "
+                    f"ResponseTimestamp={self.source.datetime:%H:%M:%S} "
+                    f"age={bod_status[-1].age.total_seconds():.1f} "
+                    f"{since=:.1f} {wait=:.1f}"
+                )
+                return wait
 
-            if age > 1:
-                witching_hour = min(self.hist, key=self.hist.get)
-                worst_hour = max(self.hist, key=self.hist.get)
-                now = timezone.now().second % 10
-                wait = witching_hour - now
-                if wait <= 0:
-                    wait += 10
-                diff = worst_hour - witching_hour
-                print(f"{witching_hour=} {worst_hour=} {diff=} {now=} {wait=}\n")
-                if diff % 10 == 9:
-                    return wait
-
-            return max(11 - time_taken, 0)
+            return max(0, 11 - time_taken)

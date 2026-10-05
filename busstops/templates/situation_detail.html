@@ -1,0 +1,51 @@
+{% extends "page.html" %}
+
+{% block content %}
+
+{% include "situations.html" %}
+
+{% if situation %}
+    {% for aj in situation.affectedjourney_set.all %}
+
+        {{ situation.publication_window.lower }}–{{ situation.publication_window.upper|time }}
+
+        <p><a href="{{ aj.trip.get_absolute_url }}">{{ aj.trip }}</a> {{ aj.condition }}</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">stop</th>
+                    <th scope="col">arr</th>
+                    <th scope="col">dep</th>
+                    <th scope="col">condition</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for call in aj.call_set.all %}
+                    <tr>
+                        <td><a href="/stops/{{ call.stop_time.stop_id }}?date={{ call.arrival_time.date.isoformat }}&amp;time={{ call.arrival_time|time:"H:i" }}">{{ call.stop_time.stop_id }}</a></td>
+                        <td>{{ call.arrival_time|time:"H:i" }}</td>
+                        <td>{{ call.departure_time|time:"H:i" }}</td>
+                        <td>{{ call.condition }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endfor %}
+
+    <h2>Affected stops</h2>
+
+    {% include 'list.html' with list=stops %}
+
+    <h2>Affected services</h2>
+
+    {% include 'service_list.html' with services=services class="has-smalls" %}
+
+    {% if xml %}
+       <style>{{ css }}</style>
+
+        <h2>XML</h2>
+        <p><code>{{ xml }}</code></p>
+    {% endif %}
+{% endif %}
+
+{% endblock content %}

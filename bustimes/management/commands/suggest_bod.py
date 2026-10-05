@@ -1,12 +1,15 @@
-import requests
 import json
-from datetime import datetime
+from datetime import UTC, datetime
+from time import sleep
+
+import requests
 from django.core.management.base import BaseCommand
 from pygments import highlight
 from pygments.formatters import TerminalFormatter
 from pygments.lexers import JsonLexer
-from time import sleep
+
 from busstops.models import Service
+
 from .import_transxchange import get_open_data_operators
 
 
@@ -18,7 +21,7 @@ class Command(BaseCommand):
     def handle(self, api_key, **options):
         assert len(api_key) == 40
 
-        open_data_operators, incomplete_operators = get_open_data_operators()
+        open_data_operators, _incomplete_operators = get_open_data_operators()
 
         session = requests.Session()
 
@@ -30,10 +33,10 @@ class Command(BaseCommand):
             "status": ["published"],
             "limit": 100,
             "modifiedDate": "2023-01-01T00:00:00",
-            "endDateStart": datetime.now().isoformat(),
+            "endDateStart": datetime.now(UTC).isoformat(),
         }
         while url:
-            response = session.get(url, params=params)
+            response = session.get(url, params=params, timeout=61)
             print(response.url)
             data = response.json()
             for item in data["results"]:

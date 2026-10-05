@@ -1,0 +1,102 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, zstd
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.34.2
+    method: GET
+    uri: https://www.swordsexpress.com/app/themes/swordsexpress/resources/assets/scripts/latlong.php
+  response:
+    body:
+      string: '[ ["05D7790","hidden"], ["09CN826","hidden"], ["09D124952","hidden"],
+        ["11D17273","hidden"], ["11D19768","hidden"], ["12D9545","hidden"], ["131D19062","hidden"],
+        ["131D19069","hidden"], ["132D19067","hidden"], ["132D19068","hidden"], ["141D28034","hidden"],
+        ["141D8924","hidden"], ["141D8925","hidden"], ["142D21312","hidden"], ["142D21313","hidden"],
+        ["142D21431","hidden"], ["142D21432","hidden"], ["152D518","hidden"], ["152D545","hidden"],
+        ["161D38289","hidden"], ["161D38291","hidden"], ["161D39016","hidden"], ["161D39018","hidden"],
+        ["161D39021","hidden"], ["161D39025","hidden"], ["161D69845","hidden"], ["161D71413","hidden"],
+        ["161D71414","hidden"], ["161D7806","hidden"], ["171D35698","hidden"], ["171D65464","hidden"],
+        ["171D65581","hidden"], ["171D66254","hidden"] ]'
+    headers:
+      Connection:
+      - Upgrade, Keep-Alive
+      Content-Encoding:
+      - gzip
+      Content-Length:
+      - '202'
+      Content-Type:
+      - text/html; charset=UTF-8
+      Date:
+      - Sun, 28 Jun 2026 07:18:26 GMT
+      Keep-Alive:
+      - timeout=5, max=100
+      Server:
+      - Apache
+      Upgrade:
+      - h2,h2c
+      Vary:
+      - Accept-Encoding
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - sameorigin
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, zstd
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.34.2
+    method: GET
+    uri: https://www.swordsexpress.com/app/themes/swordsexpress/resources/assets/scripts/latlong.php
+  response:
+    body:
+      string: '[ ["05D7790","hidden"], ["09CN826","hidden"], ["09D124952","hidden"],
+        ["11D17273","hidden"], ["11D19768","hidden"], ["12D9545","hidden"], ["131D19062","hidden"],
+        ["131D19069","hidden"], ["132D19067","hidden"], ["132D19068","hidden"], ["141D28034","hidden"],
+        ["141D8924","hidden"], ["141D8925","hidden"], ["142D21312","hidden"], ["142D21313","hidden"],
+        ["142D21431","hidden"], ["142D21432","hidden"], ["152D518","hidden"], ["152D545","hidden"],
+        ["161D38289","hidden"], ["161D38291","hidden"], ["161D39016","hidden"], ["161D39018","hidden"],
+        ["161D39021","hidden"], ["161D39025","hidden"], ["161D69845","hidden"], ["161D71413","hidden"],
+        ["161D71414","hidden"], ["161D7806","hidden"], ["171D35698","hidden"], ["171D65464","hidden"],
+        ["171D65581","hidden"], ["171D66254","hidden"] ]'
+    headers:
+      Connection:
+      - Upgrade, Keep-Alive
+      Content-Encoding:
+      - gzip
+      Content-Length:
+      - '202'
+      Content-Type:
+      - text/html; charset=UTF-8
+      Date:
+      - Sun, 28 Jun 2026 07:18:26 GMT
+      Keep-Alive:
+      - timeout=5, max=100
+      Server:
+      - Apache
+      Upgrade:
+      - h2,h2c
+      Vary:
+      - Accept-Encoding
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - sameorigin
+    status:
+      code: 200
+      message: OK
+version: 1

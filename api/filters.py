@@ -1,20 +1,20 @@
-from django.db.models import Q, F
 from django.contrib.postgres.search import SearchQuery, SearchRank
+from django.db.models import F, Q
 from django.forms import DateInput
 from django.forms.widgets import NumberInput, TextInput
 from django_filters.rest_framework import (
-    ModelChoiceFilter,
     CharFilter,
+    DateFilter,
     DateTimeFilter,
     FilterSet,
+    ModelChoiceFilter,
     OrderingFilter,
-    DateFilter,
 )
 
 from busstops.models import Operator, Service, StopPoint
 from bustimes.models import Trip
 from bustimes.utils import get_calendars
-from vehicles.models import Livery, Vehicle, VehicleType, DataSource
+from vehicles.models import DataSource, Livery, Vehicle, VehicleType
 
 
 class VehicleFilter(FilterSet):
@@ -33,7 +33,7 @@ class VehicleFilter(FilterSet):
 
     class Meta:
         model = Vehicle
-        fields = ["id", "slug", "withdrawn"]
+        fields = ("id", "slug", "withdrawn")
 
 
 class VehicleJourneyFilter(FilterSet):
@@ -105,7 +105,7 @@ class TripFilter(FilterSet):
 
     class Meta:
         model = Trip
-        fields = ["ticket_machine_code", "vehicle_journey_code", "block"]
+        fields = ("ticket_machine_code", "vehicle_journey_code", "block")
 
     def filter_by_date(self, queryset, name, value):
         return queryset.filter(calendar__in=get_calendars(value))

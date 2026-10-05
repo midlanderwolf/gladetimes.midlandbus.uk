@@ -3,7 +3,6 @@
 import os
 import sys
 from pathlib import Path
-from warnings import filterwarnings
 
 import dj_database_url
 
@@ -15,11 +14,9 @@ CSRF_TRUSTED_ORIGINS = os.environ.get(
     "CSRF_TRUSTED_ORIGINS",
     "https://bustimes.org",
 ).split()
-CSRF_FAILURE_VIEW = "busstops.views.csrf_failure"
 
 TEST = "test" in sys.argv or "pytest" in sys.argv[0]
-DEBUG = bool(os.environ.get("DEBUG", False))
-DEBUG = False
+DEBUG = bool(os.environ.get("DEBUG"))
 
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL",
@@ -37,7 +34,8 @@ if TEST:
     EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 INSTALLED_APPS = [
-    # "daphne",
+    "daphne",
+    "channels",
     "accounts",
     "busstops",
     "django.contrib.admin",
@@ -55,9 +53,11 @@ INSTALLED_APPS = [
     "fares",
     "vehicles",
     "vosa",
+    "tfl",
     "email_obfuscator",
     "api",
     "photos",
+    "imagekit",
     "rest_framework",
     "django_filters",
     "simple_history",
@@ -78,7 +78,7 @@ MIDDLEWARE = [
     "busstops.middleware.RateLimitMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
+    "modern_csrf.middleware.ModernCsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
@@ -112,7 +112,6 @@ if DEBUG and not TEST:
         "debug_toolbar_force.middleware.ForceDebugToolbarMiddleware",
     ]
     INTERNAL_IPS = os.environ.get("INTERNAL_IPS", "127.0.0.1").split()
-    DEBUG_TOOLBAR_CONFIG = {"SHOW_TOOLBAR_CALLBACK": "buses.utils.show_toolbar"}
 
 ROOT_URLCONF = "buses.urls"
 
@@ -122,7 +121,6 @@ ASGI_APPLICATION = "buses.asgi.application"
 DATABASES = {
     "default": dj_database_url.config(conn_max_age=60, conn_health_checks=True)
 }
-
 DATABASES["default"]["OPTIONS"] = {
     "application_name": os.environ.get("APPLICATION_NAME") or " ".join(sys.argv)[-63:],
     "connect_timeout": 9,
@@ -138,6 +136,10 @@ LOGIN_REDIRECT_URL = "/vehicles"
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 100,
+    "DEFAULT_RENDERER_CLASSES": [
+        "django_orjson.rest_framework.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
 }
 
 RATELIMIT_USE_CACHE = "default"
@@ -170,10 +172,30 @@ HUEY = {
     },
 }
 
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
+            "CONFIG": {
+                "hosts": [{"address": REDIS_URL, "socket_timeout": 10}],
+            },
+        },
+    }
+
 STATIC_URL = "/static/"
 STATIC_ROOT = os.environ.get("STATIC_ROOT", BASE_DIR / "staticfiles")
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 STORAGES = {
     "default": {
+        "BACKEND": "django.core.files.storage.InMemoryStorage",
+    }
+    if TEST
+    else {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    }
+    if DEBUG
+    else {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {
             "region_name": "auto",
@@ -182,6 +204,25 @@ STORAGES = {
             "default_acl": "public-read",
             "querystring_auth": False,
             "custom_domain": "photos.midlandbus.uk",
+        },
+    },
+    "archive": {
+        "BACKEND": "django.core.files.storage.InMemoryStorage",
+    }
+    if TEST
+    else {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+        "OPTIONS": {
+            "location": BASE_DIR / "archive",
+        },
+    }
+    if DEBUG
+    else {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "region_name": "ams3",
+            "endpoint_url": "https://ams3.digitaloceanspaces.com",
+            "bucket_name": "bustimes-data",
         },
     },
     "staticfiles": {
@@ -194,6 +235,7 @@ WHITENOISE_ROOT = BASE_DIR / "busstops" / "static" / "root"
 WHITENOISE_MIMETYPES = {
     ".webmanifest": "application/manifest+json",
 }
+WHITENOISE_AUTOREFRESH = DEBUG or TEST
 TEMPLATE_MINIFER_STRIP_FUNCTION = "buses.utils.minify"
 TEMPLATES = [
     {
@@ -204,7 +246,6 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "buses.context_processors.ad",
                 "vehicles.context_processors.liveries_css_version",
             ],
             "loaders": [
@@ -247,6 +288,14 @@ if REDIS_URL and not TEST:
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": REDIS_URL,
         "KEY_PREFIX": os.environ.get("CACHE_KEY_PREFIX", ""),
+        "OPTIONS": {
+            "socket_timeout": 3,
+            "socket_connect_timeout": 2,
+            "socket_keepalive": True,
+            "health_check_interval": 30,
+            "retry_on_timeout": True,
+            "max_connections": 40,
+        },
     }
     if "default" not in CACHES:
         CACHES["default"] = CACHES["redis"]
@@ -260,28 +309,20 @@ USE_I18N = False
 LANGUAGE_CODE = "en-gb"
 
 
-# https://adamj.eu/tech/2023/12/07/django-fix-urlfield-assume-scheme-warnings/
-filterwarnings(
-    "ignore", "The FORMS_URLFIELD_ASSUME_HTTPS transitional setting is deprecated."
-)
-FORMS_URLFIELD_ASSUME_HTTPS = True
-
-
 def traces_sampler(context):
     try:
-        url = context["wsgi_environ"]["RAW_URI"]
+        environ = context["wsgi_environ"]
+        if "QUERY_STRING" in environ and "__profile__" in environ["QUERY_STRING"]:
+            return 1
+        url = environ["PATH_INFO"]
     except KeyError:
-        return 0
-    if (
-        url == "/version"
-        or url.startswith("/vehicles.json")
-        or url.startswith("/stops.json")
-        or url.startswith("/static/")
-        or url.startswith("/journeys/")
+        return 0.01
+    if url == "/version" or url.startswith(
+        ("/vehicles.json", "/stops.json", "/static/", "/journeys/")
     ):
         return 0
-    if url.startswith("/stops/") or url.startswith("/services/"):
-        return 0.000005
+    if url.startswith(("/stops/", "/services/")):
+        return 0.00005
     if url.startswith("/vehicles"):
         return 0.000001
     return 0.000003
@@ -290,7 +331,6 @@ def traces_sampler(context):
 if not TEST:  # pragma: nocover
     if "SENTRY_DSN" in os.environ:
         import sentry_sdk
-
         from sentry_sdk.integrations.django import DjangoIntegration
         from sentry_sdk.integrations.huey import HueyIntegration
         from sentry_sdk.integrations.logging import ignore_logger
@@ -329,7 +369,7 @@ NTA_API_KEY = os.environ.get("NTA_API_KEY")  # Ireland
 ALLOW_VEHICLE_NOTES_OPERATORS = (
     "NATX",  # National Express
     "SCLK",  # Scottish Citylink
-    "FLIX",  #Flixbus
+    "FLIX",  # Flixbus
     "ie-526",  # Irish Citylink
     "ie-1178",  # Dublin Express
 )

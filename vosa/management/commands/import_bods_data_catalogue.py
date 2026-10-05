@@ -2,15 +2,15 @@ import csv
 import io
 import logging
 import zipfile
+from datetime import datetime
 
 from django.conf import settings
 from django.core.management import BaseCommand
 
+from busstops.models import DataSource
 from bustimes.download_utils import download_if_modified
 
-from busstops.models import DataSource
 from ...models import Licence, Registration, Variation
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

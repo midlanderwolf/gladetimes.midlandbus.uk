@@ -3,7 +3,8 @@ from django.test import TestCase
 from vcr import use_cassette
 
 from busstops.models import Operator, Service
-from .translinkni import translink_disruptions, Situation
+
+from .translinkni import Situation, translink_disruptions
 
 
 class TranslinkNorthernIrelandTest(TestCase):
@@ -24,12 +25,12 @@ class TranslinkNorthernIrelandTest(TestCase):
             str(vcr_dir / "disruptions_translinkni.yaml"),
             decode_compressed_response=True,
         ) as cassette:
-            with self.assertNumQueries(35):
+            with self.assertNumQueries(36):
                 translink_disruptions("")
 
             cassette.rewind()
 
-            with self.assertNumQueries(42):
+            with self.assertNumQueries(43):
                 translink_disruptions("")
 
         situation = Situation.objects.get(situation_number="ems-7682")

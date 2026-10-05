@@ -155,7 +155,7 @@ class FlixbusTest(TestCase):
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "flixbus_gtfsr.yml")),
         ):
-            with self.assertNumQueries(29):
+            with self.assertNumQueries(17):
                 command.update()
             with self.assertNumQueries(0):
                 command.update()
@@ -213,7 +213,7 @@ class FlixbusTest(TestCase):
             distribute(channel_layer, async_redis_client)
 
             item = json.loads(redis_client.get(f"vehicle{journeys[0].id}"))
-            self.assertEqual(round(item["heading"]), 33)
+            self.assertEqual(item["heading"], 33)
             self.assertEqual(
                 redis_client.get(journeys[0].get_redis_key()),
                 b"t|[abhyH_b~i`eBuq@}n@{O",
@@ -255,9 +255,9 @@ class FlixbusTest(TestCase):
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "ember_gtfsr.yml")),
         ):
-            with self.assertNumQueries(84):
+            with self.assertNumQueries(71):
                 command.update()
-            with self.assertNumQueries(32):
+            with self.assertNumQueries(25):
                 command.update()
 
         response = self.client.get(service.get_absolute_url())

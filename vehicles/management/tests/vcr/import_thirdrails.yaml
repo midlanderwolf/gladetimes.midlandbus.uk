@@ -1,0 +1,41 @@
+interactions:
+- request:
+    body: '{}'
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '2'
+      Content-Type:
+      - application/json
+      User-Agent:
+      - python-requests/2.32.5
+    method: POST
+    uri: https://www.rentor.nl/api/radar/GetRadarData
+  response:
+    body:
+      string: '[{"Name":"Dampf","UniqueName":"fd3cee0f9e35e1f23b3eb924672d777f","Points":"13.560300,51.175132","Speed":"113
+        km/h","Loco":"DB_BR442_T2_C","AnnouncementType":"0","Announcement":"","DriveType":"5","Simulator":"TSW"},{"Name":"Driver","UniqueName":"df70702eda6a5da4d67bbda96015e04f","Points":"-0.197903,51.887791","Speed":"132
+        km/h","Loco":"AP 43 GNER2 (W2)","AnnouncementType":"0","Announcement":"","DriveType":"0","Simulator":"TSC"},{"Name":"GrobE","UniqueName":"1cc6944bdc5c13c533433b06c2762c35","Points":"9.643472,50.028573","Speed":"0
+        km/h","Loco":"DB_BR412_EW2-H_C","AnnouncementType":"0","Announcement":"","DriveType":"5","Simulator":"TSW"}]'
+    headers:
+      Cache-Control:
+      - no-cache
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Wed, 23 Sep 2026 18:27:01 GMT
+      Pragma:
+      - no-cache
+      Server:
+      - Microsoft-IIS/10.0
+      X-Powered-By:
+      - ASP.NET
+    status:
+      code: 200
+      message: OK
+version: 1

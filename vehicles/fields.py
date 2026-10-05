@@ -24,12 +24,12 @@ def validate_css(value):
 
 
 class ColourField(CharField):
-    default_validators = [validate_colour]
+    default_validators = (validate_colour,)
 
 
 class ColoursField(CharField):
-    default_validators = [validate_colours]
+    default_validators = (validate_colours,)
 
 
 class CSSField(CharField):
-    default_validators = [validate_css]
+    default_validators = (validate_css,)

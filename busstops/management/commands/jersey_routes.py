@@ -1,9 +1,9 @@
 import requests
 from django.core.management.base import BaseCommand
 
-
 from vehicles.models import get_text_colour
-from ...models import DataSource, ServiceColour, Service
+
+from ...models import DataSource, Service, ServiceColour
 
 
 class Command(BaseCommand):

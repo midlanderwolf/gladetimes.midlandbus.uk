@@ -1,5 +1,5 @@
 import React, { type ReactElement } from "react";
-import type { StopTime, VehicleJourney } from "./JourneyMap";
+import { formatTime } from "./StopPopup";
 import type { Vehicle } from "./VehicleMarker";
 
 export type TripTime = {
@@ -8,7 +8,6 @@ export type TripTime = {
     name: string;
     atco_code?: string;
     location?: [number, number];
-    icon?: string | null;
     bearing?: number | null;
   };
   track?: [number, number][] | null;
@@ -16,8 +15,8 @@ export type TripTime = {
   aimed_departure_time: string | null;
   expected_arrival_time?: string | null;
   expected_departure_time?: string | null;
+  actual_arrival_time?: string | null;
   actual_departure_time?: string;
-  // actual_arrival_time: string;
   timing_status: string;
   pick_up?: boolean;
   set_down?: boolean;
@@ -62,26 +61,37 @@ function Row({
 }: {
   stop: TripTime;
   onMouseEnter?: (stop: TripTime) => void;
-  vehicle?: Vehicle;
+  vehicle?: Vehicle | null;
   aimedColumn?: boolean;
   highlightedStop?: string;
   first: boolean;
   last: boolean;
 }) {
-  const handleMouseEnter = React.useCallback(() => {
-    if (onMouseEnter) {
-      if (stop.stop.location) {
-        onMouseEnter(stop);
+  const handlePointerEnter = React.useCallback(
+    (event: React.PointerEvent) => {
+      // on touch there's no hover, so a tap on the stop-name link should follow
+      // it rather than open the popup (otherwise iOS treats the first tap as a
+      // hover and you have to tap a second time). tapping elsewhere on the row
+      // still opens the popup
+      if (
+        event.pointerType === "touch" &&
+        event.target instanceof HTMLElement &&
+        event.target.closest("a")
+      ) {
+        return;
       }
-    }
-  }, [stop, onMouseEnter]);
+      if (onMouseEnter) {
+        if (stop.stop.location) {
+          onMouseEnter(stop);
+        }
+      }
+    },
+    [stop, onMouseEnter],
+  );
 
   let className: string | undefined;
 
   let stopName: string | ReactElement = stop.stop.name;
-  if (stop.stop.icon) {
-    stopName = `${stopName} (${stop.stop.icon})`;
-  }
   if (stop.stop.atco_code) {
     const url = `/stops/${stop.stop.atco_code}`;
     if (url === highlightedStop) {
@@ -106,20 +116,31 @@ function Row({
 
   let actual: string | null | ReactElement | undefined;
   let actualRowSpan = rowSpan;
+  let actualDeparture: string | null = null; // shown on the second row, when split
 
-  actual = stop.expected_departure_time || stop.expected_arrival_time; // Irish live departures
+  const liveActual = stop.expected_departure_time || stop.expected_arrival_time; // Irish live departures
 
-  if (!actual) {
-    if (vehicle?.progress && vehicle.progress.id === stop.id) {
-      actual = vehicle.datetime;
-      if (vehicle.progress.progress > 0.1) {
-        actualRowSpan = (actualRowSpan || 1) + 1;
-      }
-    } else if (!vehicle?.progress || vehicle.progress.id + 1 !== stop.id) {
-      actual = stop.actual_departure_time; // vehicle history
+  if (liveActual) {
+    actual = liveActual.slice(11, 16);
+  } else if (vehicle?.progress && vehicle.progress.id === stop.id) {
+    actual = vehicle.datetime.slice(11, 16);
+    if (vehicle.progress.progress > 0.1) {
+      actualRowSpan = (actualRowSpan || 1) + 1;
     }
-    if (actual) {
-      actual = actual.slice(11, 16);
+  } else if (!vehicle?.progress || vehicle.progress.id + 1 !== stop.id) {
+    // vehicle history
+    if (
+      rowSpan === 2 &&
+      stop.actual_arrival_time &&
+      stop.actual_departure_time &&
+      stop.actual_arrival_time !== stop.actual_departure_time
+    ) {
+      actual = stop.actual_arrival_time.slice(11, 16);
+      actualDeparture = stop.actual_departure_time.slice(11, 16);
+      actualRowSpan = 1;
+    } else {
+      const time = stop.actual_departure_time || stop.actual_arrival_time;
+      actual = time ? time.slice(11, 16) : undefined;
     }
   }
   if (actual) {
@@ -145,7 +166,7 @@ function Row({
 
   let aimed: ReactElement | null | string = null;
   if (aimedColumn) {
-    aimed = stop.aimed_arrival_time || stop.aimed_departure_time;
+    aimed = formatTime(stop.aimed_arrival_time || stop.aimed_departure_time);
     aimed = (
       <td>
         {aimed}
@@ -157,7 +178,7 @@ function Row({
 
   return (
     <React.Fragment>
-      <tr className={className} onMouseEnter={handleMouseEnter}>
+      <tr className={className} onPointerEnter={handlePointerEnter}>
         <td className="stop-name" rowSpan={rowSpan}>
           {stopName}
         </td>
@@ -165,34 +186,14 @@ function Row({
         {actual}
       </tr>
       {rowSpan ? (
-        <tr className={className}>
-          <td>{stop.aimed_departure_time}</td>
+        <tr className={className} onPointerEnter={handlePointerEnter}>
+          <td>{formatTime(stop.aimed_departure_time)}</td>
+          {actualDeparture ? <td>{actualDeparture}</td> : null}
         </tr>
       ) : null}
     </React.Fragment>
   );
 }
-
-export const tripFromJourney = (journey: VehicleJourney): Trip | undefined => {
-  if (journey.stops) {
-    return {
-      times: journey.stops.map((stop, i: number) => {
-        return {
-          id: stop.id,
-          stop: {
-            atco_code: stop.atco_code,
-            name: stop.name,
-            location: stop.coordinates || undefined,
-          },
-          timing_status: stop.minor ? "OTH" : "PTP",
-          aimed_arrival_time: stop.aimed_arrival_time,
-          aimed_departure_time: stop.aimed_departure_time,
-          actual_departure_time: stop.actual_departure_time,
-        };
-      }),
-    };
-  }
-};
 
 const TripTimetable = React.memo(function TripTimetable({
   trip,
@@ -202,22 +203,25 @@ const TripTimetable = React.memo(function TripTimetable({
 }: {
   trip: Trip;
   onMouseEnter?: (stop: TripTime) => void;
-  vehicle?: Vehicle;
+  vehicle?: Vehicle | null;
   highlightedStop?: string;
 }) {
   const [showEarlierStops, setShowEarlierStops] = React.useState(false);
 
-  const aimedColumn = trip.times?.some(
+  const aimedColumn: boolean = trip.times?.some(
     (item: TripTime) => item.aimed_arrival_time || item.aimed_departure_time,
   );
-  const actualColumn =
-    vehicle ||
+
+  let actualColumn: string | null = null;
+  if (
     trip.times?.some(
-      (item: TripTime) =>
-        item.actual_departure_time ||
-        item.expected_arrival_time ||
-        item.expected_departure_time,
-    );
+      (item) => item.expected_arrival_time || item.expected_departure_time,
+    )
+  ) {
+    actualColumn = "Ex\u00ADpected";
+  } else if (vehicle || trip.times.some((item) => item.actual_departure_time)) {
+    actualColumn = "Actual";
+  }
 
   let earlierStops = false;
 
@@ -248,7 +252,7 @@ const TripTimetable = React.memo(function TripTimetable({
           <tr>
             <th className="stop-name" />
             {aimedColumn ? <th>Sched&shy;uled</th> : null}
-            {actualColumn ? <th>Actual</th> : null}
+            {actualColumn ? <th>{actualColumn}</th> : null}
           </tr>
         </thead>
         <tbody>

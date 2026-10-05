@@ -6,11 +6,6 @@
 <link rel="canonical" href="https://gladetimes/privacy">
 {% endblock canonical %}
 
-{% block fuse %}
-{% load static %}
-<script src="{% static 'consent.js' %}"></script>
-{% endblock fuse %}
-
 {% block bodyclass %}narrow{% endblock %}
 
 {% block content %}
@@ -35,13 +30,7 @@ This website embeds some content from third parties:
 <ul class="bulleted">
 <li>
 map tiles from <a href="https://stadiamaps.com/privacy/">Stadia Maps</a>
-<li>
-programmatic advertisements under the auspices of <a href="https://adfirstmedia.com/">AdFirst Media</a>, Google, and their partners
 </ul>
-
-<p>You can control how advertisers use cookies and personal information:</p>
-
-<p><button type="button" class="button" onclick="window.__tcfapi('displayConsentUi', 2, function() {} );">Privacy settings</button></p>
 
 <p>This website contains links to other websites. I am not responsible for the content of other websites.</p>
 

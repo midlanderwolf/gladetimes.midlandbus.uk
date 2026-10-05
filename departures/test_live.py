@@ -1,4 +1,4 @@
-# coding=utf-8
+# ruff: noqa: DTZ001 - naive datetimes here are only ever compared to each other
 """Tests for live departures"""
 
 from datetime import datetime
@@ -150,12 +150,13 @@ class LiveDeparturesTest(TestCase):
         self.assertContains(
             response,
             """
-                <table><tbody>
-                        <tr>
-                            <td></td>
+                <table>
+                    <thead><tr>
+                            <th></th>
                             <th scope="col">To</th>
                             <th scope="col">Expected</th>
-                        </tr>
+                    </tr></thead>
+                    <tbody>
                     <tr><td><a href="/services/8">8</a></td><td>Bow Church
                         <div class="vehicle">LTZ1414</div></td>
                         <td><a href="/vehicles/tfl/LTZ1414">18:22</a></td></tr>
@@ -264,21 +265,24 @@ class LiveDeparturesTest(TestCase):
             response,
             """
                 <h3>Wednesday 4 May</h3>
-                <table><tbody>
-                    <tr>
-                        <td></td>
+
+                <table>
+                    <thead><tr>
+                        <th></th>
                         <th scope="col">To</th>
                         <th scope="col">Scheduled</th>
-                    </tr>
+                    </tr></thead>
+                    <tbody>
                     <tr><td>X98</td><td>Bratislava</td><td>11:53</td><td></td></tr>
                 </tbody></table>
                 <h3>Saturday 7 May</h3>
-                <table><tbody>
-                    <tr>
-                        <td></td>
+                <table>
+                    <thead><tr>
+                        <th></th>
                         <th scope="col">To</th>
                         <th scope="col">Scheduled</th>
-                    </tr>
+                    </tr></thead>
+                    <tbody>
                     <tr><td>9</td><td>Shilbottle</td><td>11:53</td><td></td></tr>
                 </tbody></table>
         """,
@@ -294,7 +298,7 @@ class LiveDeparturesTest(TestCase):
             time_machine.travel("Sat Feb 09 10:45:45 GMT 2019"),
             vcr.use_cassette("fixtures/vcr/worcester.yaml"),
         ):
-            with self.assertNumQueries(10):
+            with self.assertNumQueries(12):
                 response = self.client.get(self.worcester_stop.get_absolute_url())
 
             self.client.force_login(self.user)

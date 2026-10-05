@@ -41,12 +41,8 @@
     <div class="pane">
         <h2>Map</h2>
 
-        <p><a href="/map" class="button">Track buses and find bus stops nearby</a></p>
+        <p><a href="/map" id="geolocate-map-link" class="button">Track buses and find bus stops nearby</a></p>
     </div>
-</div>
-
-<div class="ad-wrapper">
-    <div id="AFM_inContentTop_ad"></div>
 </div>
 
 <h2>Regions</h2>
@@ -89,20 +85,13 @@
             <li><a href="/regions/UL">Ulster</a></li>
         </ul>
     {% endif %}
-    <!-- <li><a href="/regions/IM">Isle of Man</a></li>
-    <li><a href="/regions/GG">Guernsey</a></li>
-    <li><a href="/regions/JE">Jersey</a></li>
-    </li> -->
-    <li>Other countries
+    <li><a href="/regions/IM">Isle of Man</a></li>
+    <li><a href="/operators/stagecoach-guernsey">Guernsey</a></li>
+    <li><a href="/operators/liberty-bus">Jersey</a></li>
+    <li>USA
         <ul class="long">
-            <!-- <li><a href="/regions/AU">Australia</a></li> -->
-            <li><a href="/regions/FI">Finland</a></li>
-            <!-- <li><a href="/regions/FR">France</a></li>
-            <li><a href="/regions/DE">Germany</a></li>
-            <li><a href="/regions/NL">Netherlands</a></li>
-            <li><a href="/regions/PL">Poland</a></li>
-            <li><a href="/regions/ES">Spain</a></li> -->
-            <li><a href="/regions/US">United States</a></li>
+            <li><a href="/operators/rtcsnv">Las Vegas</a></li>
+        </ul>
     </li>
 </ul>
 
@@ -113,3 +102,25 @@
 {% endif %}
 
 {% endblock content %}
+
+{% block foot %}
+<script>
+(function () {
+    var link = document.getElementById("geolocate-map-link");
+    if (!link || !navigator.geolocation) {
+        return;
+    }
+    link.addEventListener("click", function (event) {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+            return;  // let the browser handle it as normal, eg open in a new tab
+        }
+        event.preventDefault();
+        navigator.geolocation.getCurrentPosition(function (position) {
+            window.location = "/map#13/" + position.coords.latitude + "/" + position.coords.longitude;
+        }, function () {
+            window.location = link.href;  // geolocation failed or was denied
+        });
+    });
+})();
+</script>
+{% endblock foot %}

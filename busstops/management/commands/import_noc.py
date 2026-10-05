@@ -1,10 +1,11 @@
+import logging
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 import requests
 import yaml
-import logging
-from datetime import datetime
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.management import BaseCommand
 from django.db import transaction
 from django.utils.text import slugify
@@ -12,6 +13,8 @@ from django.utils.text import slugify
 from vosa.models import Licence
 
 from ...models import DataSource, Operator, OperatorCode
+
+logger = logging.getLogger(__name__)
 
 
 def get_region_id(region_id):
@@ -95,7 +98,7 @@ class Command(BaseCommand):
         noc_source = code_sources[0][1]
 
         url = "https://www.travelinedata.org.uk/noc/api/1.0/nocrecords.xml"
-        response = requests.get(url)
+        response = requests.get(url, timeout=61)
         element = ET.fromstring(response.text)
 
         generation_date = datetime.fromisoformat(element.attrib["generationDate"])
@@ -145,10 +148,7 @@ class Command(BaseCommand):
         for e in element.find("NOCTable"):
             noc = e.findtext("NOCCODE").removeprefix("=")
 
-            if noc in noc_lines:
-                noc_line = noc_lines[noc]
-            else:
-                # print(noc)
+            if (noc_line := noc_lines.get(noc)) is None:
                 continue
 
             # another operator has that code as sort of an alias - bail
@@ -162,7 +162,7 @@ class Command(BaseCommand):
             # op = operators_by_id[e.findtext("OpId")]
             public_name = public_names[e.findtext("PubNmId")]
 
-            name = public_name.findtext("OperatorPublicName")
+            name = public_name.findtext("OperatorPublicName").strip()
 
             url = public_name.findtext("Website")
             if url:
@@ -174,14 +174,12 @@ class Command(BaseCommand):
 
                 if "url" in override_data:
                     if url == override_data["url"]:
-                        logging.warning(
-                            "%s url %s no longer needs overriding", noc, url
-                        )
+                        logger.warning("%s url %s no longer needs overriding", noc, url)
                     url = override_data["url"]
 
                 if "name" in override_data:
                     if name == override_data["name"]:
-                        logging.warning(
+                        logger.warning(
                             "%s name %s no longer needs overriding", noc, name
                         )
                     name = override_data["name"]
@@ -234,29 +232,19 @@ class Command(BaseCommand):
                         operator, noc_line, licences_by_number
                     )
 
+            operator.source = noc_source
             operator.modified_at = generation_date
 
             try:
-                operator.clean_fields(exclude=["noc", "slug", "region"])
-            except Exception as e:
+                operator.clean_fields(exclude=["noc", "slug", "region", "source"])
+            except ValidationError as e:
                 if "url" in e.message_dict:
                     # print(e, operator.url)
                     operator.url = ""
                 else:
                     print(noc, e)
 
-        Operator.objects.bulk_create(
-            to_create,
-            update_fields=(
-                "url",
-                "name",
-                "vehicle_mode",
-                "slug",
-                "region_id",
-                "vehicle_mode",
-                "modified_at",
-            ),
-        )
+        Operator.objects.bulk_create(to_create)
         Operator.objects.bulk_update(
             to_update, ("url", "name", "vehicle_mode", "modified_at")
         )

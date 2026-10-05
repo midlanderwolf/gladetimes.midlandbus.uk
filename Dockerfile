@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:24-slim
 
 WORKDIR /app/
 
@@ -10,12 +10,13 @@ COPY .parcelrc tsconfig.json /app/
 RUN npm run lint && npm run build
 
 
-FROM ghcr.io/jclgoodwin/bustimes.org/bustimes-base:3.14
+FROM ghcr.io/bustimes/bustimes.org/bustimes-base:3.14
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app/
 
+# Install dependencies
 COPY uv.lock pyproject.toml /app/
 RUN uv sync --frozen
 
@@ -27,7 +28,7 @@ COPY --from=0 /app/busstops/static /app/busstops/static
 COPY . /app/
 
 ENV PORT=8000 STATIC_ROOT=/staticfiles
-RUN ./manage.py collectstatic --noinput
+RUN ./manage.py check --tag urls && ./manage.py collectstatic --noinput
 
-EXPOSE 8000
-CMD ["gunicorn", "buses.wsgi"]
+EXPOSE 8000 9090
+CMD ["granian", "--host", "0.0.0.0", "--interface", "wsgi", "--respawn-failed-workers", "--metrics", "--metrics-address", "0.0.0.0", "buses.wsgi:application"]

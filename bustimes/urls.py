@@ -3,6 +3,11 @@ from django.urls import path, re_path
 from . import views
 
 urlpatterns = [
+    path(
+        "operators/<slug:slug>/blocks",
+        views.operator_blocks,
+        name="operator_blocks",
+    ),
     path("services/<slug>/debug", views.ServiceDebugView.as_view()),
     path("sources", views.SourceListView.as_view()),
     path("sources/<int:pk>", views.SourceDetailView.as_view(), name="source_detail"),
@@ -23,4 +28,5 @@ urlpatterns = [
         views.route_link_view,
         name="routelink_detail",
     ),
+    path("upload", views.upload_gtfs),
 ]

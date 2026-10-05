@@ -23,7 +23,9 @@ class DataSet(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(blank=True)
     description = models.CharField(max_length=255, blank=True)
-    operators = models.ManyToManyField("busstops.Operator", blank=True)
+    operators = models.ManyToManyField(
+        "busstops.Operator", blank=True, through="DataSetOperator"
+    )
     datetime = models.DateTimeField(null=True, blank=True)
     published = models.BooleanField(default=False)
 
@@ -49,6 +51,19 @@ class DataSet(models.Model):
             text = f"{text}, {self.datetime:%-d %B %Y}"
 
         return mark_safe(f'<p class="credit">Fares data from {text}</p>')
+
+
+class DataSetOperator(models.Model):
+    dataset = models.ForeignKey(
+        DataSet, models.DB_CASCADE, related_name="datasetoperator+"
+    )
+    operator = models.ForeignKey(
+        "busstops.Operator", models.DB_CASCADE, related_name="datasetoperator+"
+    )
+
+    class Meta:
+        db_table = "fares_dataset_operators"
+        unique_together = ("dataset", "operator")
 
 
 class TimeInterval(models.Model):
@@ -105,15 +120,15 @@ class Tariff(models.Model):
     code = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
     services = models.ManyToManyField("busstops.Service", blank=True)
-    operators = models.ManyToManyField("busstops.Operator", blank=True)
+    operators = models.ManyToManyField(
+        "busstops.Operator", blank=True, through="TariffOperator"
+    )
     source = models.ForeignKey(DataSet, models.CASCADE)
     filename = models.CharField(max_length=255)
     user_profile = models.ForeignKey(UserProfile, models.CASCADE, null=True, blank=True)
     trip_type = models.CharField(max_length=255, blank=True)
     valid_between = DateTimeRangeField(null=True, blank=True)
-    type_of_tariff = models.CharField(
-        max_length=19, choices=TypeOfTariff.choices, blank=True
-    )
+    type_of_tariff = models.CharField(max_length=19, choices=TypeOfTariff, blank=True)
     access_zones = models.ManyToManyField("FareZone", blank=True)
 
     def __str__(self):
@@ -124,6 +139,20 @@ class Tariff(models.Model):
 
     class Meta:
         unique_together = ("source", "filename", "code")
+
+
+class TariffOperator(models.Model):
+    # Tariff is deleted by Python; the ON DELETE CASCADE comes from the migration
+    tariff = models.ForeignKey(
+        Tariff, models.DO_NOTHING, related_name="tariffoperator+"
+    )
+    operator = models.ForeignKey(
+        "busstops.Operator", models.DB_CASCADE, related_name="tariffoperator+"
+    )
+
+    class Meta:
+        db_table = "fares_tariff_operators"
+        unique_together = ("tariff", "operator")
 
 
 class Price(models.Model):
@@ -167,9 +196,8 @@ class FareTable(models.Model):
         cols = [col.name for col in self.column_set.all()]
         rows = [row.name for row in self.row_set.all()]
         rows.reverse()
-        if len(cols) == len(rows):
-            if cols[1:] == rows[:-1]:
-                return True
+        if len(cols) == len(rows) and cols[1:] == rows[:-1]:
+            return True
 
     def columns(self):
         return self.column_set.all()
@@ -182,9 +210,7 @@ class FareTable(models.Model):
             for cell in row.cell_set.all():
                 cell.column = cols[cell.column_id]
         if self.is_triangular:
-            i = 0
-            for row in rows:
-                i += 1
+            for i, row in enumerate(rows, start=1):
                 row.colspan = i
             rows.reverse()
 
@@ -228,6 +254,9 @@ class Column(models.Model):
     name = models.CharField(max_length=255)
     order = models.PositiveSmallIntegerField(null=True, blank=True)
 
+    class Meta:
+        ordering = ("order",)
+
     def __str__(self):
         return self.name
 
@@ -237,6 +266,9 @@ class Row(models.Model):
     code = models.CharField(max_length=255, blank=True)
     name = models.CharField(max_length=255)
     order = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("order",)
 
     def cells(self):
         prev_order = 0

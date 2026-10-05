@@ -1,14 +1,36 @@
+import logging
+import tempfile
 from enum import IntEnum
 from itertools import pairwise
 
 import gtfs_kit
+import pandas as pd
 import shapely.ops as so
+from django.contrib.gis.geos import GEOSGeometry
+from django.db import connection, transaction
+from django.db.models import Min, OuterRef, Subquery
+from django.utils.dateparse import parse_duration
+from shapely.errors import EmptyPartError
 
-from .models import Calendar, CalendarDate, RouteLink
+from busstops.models import DataSource, Operator, Service, StopPoint
+
+from .models import (
+    Calendar,
+    CalendarDate,
+    Note,
+    Route,
+    RouteLink,
+    StopTime,
+    Trip,
+    TripNote,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class RouteType(IntEnum):
     tram = 0
+    metro = 1
     rail = 2
     bus = 3
     ferry = 4
@@ -19,6 +41,7 @@ class RouteType(IntEnum):
 
 MODES = {
     RouteType.tram: "tram",
+    RouteType.metro: "metro",
     RouteType.rail: "rail",
     RouteType.bus: "bus",
     RouteType.ferry: "ferry",
@@ -58,6 +81,7 @@ def get_calendars(feed, source) -> dict:
             if (calendar := calendars.get(row.service_id)) is None:
                 calendar = Calendar(
                     start_date=row.date,  # dummy date
+                    source=source,
                 )
                 calendars[row.service_id] = calendar
             calendar_dates.append(
@@ -74,6 +98,135 @@ def get_calendars(feed, source) -> dict:
     CalendarDate.objects.bulk_create(calendar_dates)
 
     return calendars
+
+
+def get_first_and_last_stop_times(
+    stop_times: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    sorted_stop_times = stop_times.sort_values(["trip_id", "stop_sequence"])
+    first_stop_times = sorted_stop_times.drop_duplicates(
+        "trip_id", keep="first"
+    ).set_index("trip_id")
+    last_stop_times = sorted_stop_times.drop_duplicates(
+        "trip_id", keep="last"
+    ).set_index("trip_id")
+    return sorted_stop_times, first_stop_times, last_stop_times
+
+
+def get_arrival_and_departure(arrival, departure, is_last: bool):
+    """Mirror import_transxchange.py: only store an arrival time if it
+    differs from the departure time, and don't store a departure time for a
+    trip's last stop, since it doesn't depart from there.
+    """
+    if arrival == departure:
+        arrival = None
+    if is_last and arrival is None:
+        arrival = departure
+        departure = None
+    return arrival, departure
+
+    """An optional GTFS column may be missing entirely, or be NaN for a row"""
+
+
+def get_str(row, attr: str, default=""):
+    value = getattr(row, attr, None)
+    if type(value) is str and value:
+        return value
+    return default
+
+
+def get_seconds(time) -> int | None:
+    return int(parse_duration(time).total_seconds()) if time is not None else None
+
+
+def set_stop_time_defaults(feed: gtfs_kit.feed.Feed) -> None:
+    defaults = {"pickup_type": 0, "drop_off_type": 0, "timepoint": 1}
+    for column, default in defaults.items():
+        if column not in feed.stop_times.columns:
+            feed.stop_times[column] = default
+    feed.stop_times = feed.stop_times.fillna(defaults)
+
+
+def get_pick_up_and_set_down(row) -> tuple:
+    pick_up = None
+    match row.pickup_type:
+        case 0:  # Regularly scheduled pickup
+            pick_up = True
+        case 1:  # "No pickup available"
+            pick_up = False
+
+    set_down = None
+    match row.drop_off_type:
+        case 0:  # Regularly scheduled drop off
+            set_down = True
+        case 1:  # "No drop off available"
+            set_down = False
+
+    return pick_up, set_down
+
+
+def set_trip_times(
+    trips: dict,
+    first_stop_times: pd.DataFrame,
+    last_stop_times: pd.DataFrame,
+    stops: dict,
+) -> list:
+    """For each trip, work out its start time (the first stop's departure
+    time), end time (the last stop's arrival time) and destination, using
+    stop_times.txt. Trips with no stop times are set to None, and their ids
+    are returned so callers can log a warning with their own logger.
+    """
+    missing_trip_ids = []
+    for trip_id, trip in trips.items():
+        start = first_stop_times.departure_time.get(trip_id)
+        end = last_stop_times.arrival_time.get(trip_id)
+        if pd.isna(start) or pd.isna(end):
+            trips[trip_id] = None
+            missing_trip_ids.append(trip_id)
+        else:
+            trip.start = start
+            trip.end = end
+            trip.destination = stops.get(last_stop_times.stop_id.get(trip_id))
+    return missing_trip_ids
+
+
+def copy_stop_times(
+    feed: gtfs_kit.feed.Feed, trips: dict, last_stop_times: pd.DataFrame
+) -> None:
+    set_stop_time_defaults(feed)
+
+    with (
+        connection.cursor() as cursor,
+        cursor.copy(
+            "COPY bustimes_stoptime (stop_id, arrival, departure, sequence, trip_id, timing_point, pick_up, set_down) FROM STDIN"
+        ) as copy,
+    ):
+        for row in feed.stop_times.itertuples():
+            trip = trips[row.trip_id]
+            if trip is None:
+                continue
+
+            pick_up, set_down = get_pick_up_and_set_down(row)
+
+            is_last = row.stop_sequence == last_stop_times.stop_sequence.get(
+                row.trip_id
+            )
+            arrival, departure = get_arrival_and_departure(
+                row.arrival_time, row.departure_time, is_last
+            )
+
+            copy.write_row(
+                (
+                    row.stop_id,
+                    get_seconds(arrival),
+                    get_seconds(departure),
+                    row.stop_sequence,
+                    trip.pk,
+                    bool(row.timepoint),
+                    pick_up,
+                    set_down,
+                )
+            )
 
 
 def do_route_links(
@@ -158,3 +311,290 @@ def do_route_links(
         [rl for rl in route_links.values() if rl.id], fields=["geometry"]
     )
     RouteLink.objects.bulk_create([rl for rl in route_links.values() if not rl.id])
+
+
+def do_stops(feed: gtfs_kit.feed.Feed, source) -> dict:
+    stops = {
+        row.stop_id: StopPoint(
+            atco_code=row.stop_id,
+            naptan_code=get_str(row, "stop_code", default=None),
+            common_name=row.stop_name[:48],
+            latlong=GEOSGeometry(f"POINT({row.stop_lon} {row.stop_lat})"),
+            active=True,
+            source=source,
+        )
+        for row in feed.stops.itertuples()
+    }
+
+    existing_stops = StopPoint.objects.in_bulk(stops)
+    stops_to_create = [
+        stop for stop_id, stop in stops.items() if stop_id not in existing_stops
+    ]
+    StopPoint.objects.bulk_create(stops_to_create)
+
+    return StopPoint.objects.in_bulk(stops)
+
+
+def get_operators(feed: gtfs_kit.feed.Feed) -> dict:
+    operators = {}
+    for row in feed.agency.itertuples():
+        operator, _ = Operator.objects.get_or_create(
+            noc=get_str(row, "agency_noc", default=row.agency_id),
+            defaults={
+                "name": row.agency_name,
+                "url": get_str(row, "agency_url"),
+                "phone": get_str(row, "agency_phone"),
+                "email": get_str(row, "agency_email"),
+            },
+        )
+        operators[row.agency_id] = operator
+    return operators
+
+
+def save_trips(trip_objs: list, fields: list, batch_size: int = 1000) -> list:
+    """Bulk create new Trips (those with no id) and bulk update existing ones
+    (reused from a previous import, so foreign keys elsewhere don't get
+    orphaned by every reimport). Returns the existing ones, so callers can
+    clear out their now-stale StopTimes before recreating them.
+    """
+    new_trips = [trip for trip in trip_objs if trip.id is None]
+    existing_trips = [trip for trip in trip_objs if trip.id is not None]
+
+    Trip.objects.bulk_create(new_trips, batch_size=batch_size)
+    Trip.objects.bulk_update(existing_trips, fields=fields, batch_size=batch_size)
+
+    return existing_trips
+
+
+def set_route_start_dates(source) -> None:
+    source.route_set.update(
+        start_date=Subquery(
+            Route.objects.filter(pk=OuterRef("pk"))
+            .annotate(min_date=Min("trip__calendar__start_date"))
+            .values("min_date")[:1]
+        )
+    )
+
+
+def finish_gtfs_import(
+    source, operator, routes: list, trip_objs: list, update_geometry: bool = False
+) -> None:
+    """Common cleanup once a GTFS import's routes, trips and stop times have
+    been saved: refresh affected services' stop usages and search vectors,
+    remove routes/trips that weren't in this import, mark the operator's
+    other services as not current, and work out each route's start date.
+    """
+    for service in source.service_set.filter(current=True):
+        service.do_stop_usages()
+        service.update_search_vector()
+        if update_geometry:
+            service.update_geometry()
+
+    logger.info(
+        source.route_set.exclude(id__in=[route.id for route in routes]).delete()
+    )
+    logger.info(
+        operator.trip_set.exclude(id__in=[trip.id for trip in trip_objs]).delete()
+    )
+    logger.info(
+        operator.service_set.filter(current=True, route__isnull=True).update(
+            current=False
+        )
+    )
+
+    set_route_start_dates(source)
+
+
+def handle_gtfs_upload(source_name, file, note=None):
+    source, _ = DataSource.objects.get_or_create(name=source_name)
+
+    with (
+        tempfile.NamedTemporaryFile(suffix=".zip") as temp_file,
+        transaction.atomic(),
+    ):
+        if note:
+            note = Note.objects.get_or_create(code="", text=note)[0]
+
+        for chunk in file.chunks():
+            temp_file.write(chunk)
+        temp_file.flush()
+
+        feed = gtfs_kit.read_feed(temp_file.name, dist_units="km")
+
+        calendars = get_calendars(feed, source)
+        operators = get_operators(feed)
+        stops = do_stops(feed, source)
+
+        existing_routes = {route.code: route for route in source.route_set.all()}
+
+        routes = {}
+        route_operators = {}
+
+        for row in feed.routes.itertuples():
+            line_name = get_str(row, "route_short_name")
+            description = get_str(row, "route_long_name")
+
+            if row.route_id in existing_routes:
+                route = existing_routes[row.route_id]
+                service = route.service
+            else:
+                route = Route(code=row.route_id, source=source)
+                service = Service()
+
+            service.line_name = line_name
+            service.source = source
+            route.service = service
+            route.line_name = line_name
+            service.description = route.description = description
+            service.current = True
+            if row.route_type in MODES:
+                service.mode = MODES[row.route_type]
+
+            service.save()
+            route.save()
+
+            operator = operators.get(get_str(row, "agency_id"))
+            if operator is None and len(operators) == 1:
+                # agency_id is optional if there's only one agency
+                operator = next(iter(operators.values()))
+            if operator:
+                service.operator.add(operator)
+
+            routes[row.route_id] = route
+            route_operators[row.route_id] = operator
+
+        # reuse existing trip ids where possible, so foreign keys elsewhere
+        # (e.g. vehicle journeys) don't get orphaned by every re-upload
+        existing_trip_ids = dict(
+            Trip.objects.filter(route__source=source)
+            .order_by("id")
+            .values_list("ticket_machine_code", "id")
+        )
+
+        trips = {}
+
+        for row in feed.trips.itertuples():
+            route = routes[row.route_id]
+            trip = Trip(
+                route=route,
+                calendar=calendars[row.service_id],
+                inbound=getattr(row, "direction_id", None) == 1,
+                headsign=get_str(row, "trip_headsign"),
+                ticket_machine_code=row.trip_id,
+                operator=route_operators[row.route_id],
+            )
+            if row.trip_id in existing_trip_ids:
+                trip.id = existing_trip_ids[row.trip_id]
+            trips[row.trip_id] = trip
+
+        # use stop_times.txt to work out trips' start times, end times and destinations
+        _, first_stop_times, last_stop_times = get_first_and_last_stop_times(
+            feed.stop_times
+        )
+        for trip_id in set_trip_times(trips, first_stop_times, last_stop_times, stops):
+            logger.warning(f"trip {trip_id} has no stop times")
+
+        trip_objs = [trip for trip in trips.values() if trip is not None]
+        existing_trips = save_trips(
+            trip_objs,
+            fields=[
+                "route",
+                "calendar",
+                "inbound",
+                "headsign",
+                "ticket_machine_code",
+                "operator",
+                "start",
+                "end",
+                "destination",
+            ],
+        )
+        # clear out old stop times for reused trips, they'll be recreated below
+        StopTime.objects.filter(trip__in=existing_trips).delete()
+
+        set_stop_time_defaults(feed)
+
+        stop_times = []
+
+        for row in feed.stop_times.itertuples():
+            trip = trips[row.trip_id]
+            if trip is None:
+                continue
+
+            pick_up, set_down = get_pick_up_and_set_down(row)
+
+            is_last = row.stop_sequence == last_stop_times.stop_sequence.get(
+                row.trip_id
+            )
+            arrival_time, departure_time = get_arrival_and_departure(
+                row.arrival_time, row.departure_time, is_last
+            )
+
+            stop_times.append(
+                StopTime(
+                    trip=trip,
+                    stop=stops.get(row.stop_id),
+                    arrival=arrival_time,
+                    departure=departure_time,
+                    sequence=row.stop_sequence,
+                    timing_point=bool(row.timepoint),
+                    pick_up=pick_up,
+                    set_down=set_down,
+                )
+            )
+
+        StopTime.objects.bulk_create(stop_times, batch_size=1000)
+
+        kept_trip_ids = {trip.pk for trip in trips.values() if trip}
+
+        # remove trips that used to belong to these routes but weren't in this upload
+        Trip.objects.filter(route__in=routes.values()).exclude(
+            id__in=kept_trip_ids
+        ).delete()
+
+        if note:
+            TripNote.objects.bulk_create(
+                [TripNote(trip_id=trip_id, note=note) for trip_id in kept_trip_ids],
+                ignore_conflicts=True,
+            )
+
+        services = Service.objects.filter(
+            id__in={route.service_id for route in routes.values()}
+        )
+        for service in services:
+            service.do_stop_usages()
+            service.update_search_vector()
+            service.update_geometry()
+
+        do_geometries_and_route_links(feed, source, routes, services)
+
+        set_route_start_dates(source)
+
+    return source
+
+
+def do_geometries_and_route_links(
+    feed: gtfs_kit.feed.Feed, source, routes: dict, services
+) -> None:
+    """If the feed has shapes.txt, use it for detailed service geometries
+    (instead of just the bounding box of the stops) and route links
+    """
+    try:
+        routes_gdf = feed.get_routes(as_gdf=True)
+    except (AttributeError, EmptyPartError, ValueError):
+        return
+
+    geometries = {}
+    for row in routes_gdf.itertuples():
+        if row.geometry and row.route_id in routes:
+            geometries.setdefault(routes[row.route_id].service_id, []).append(
+                row.geometry
+            )
+
+    for service in services:
+        if service.id in geometries:
+            service.geometry = so.unary_union(geometries[service.id]).wkt
+            service.save(update_fields=["geometry"])
+
+    feed_stops = {row.stop_id: row for row in feed.stops.itertuples()}
+    do_route_links(feed, source, routes, feed_stops)

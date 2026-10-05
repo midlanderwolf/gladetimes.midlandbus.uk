@@ -2,6 +2,7 @@ from datetime import datetime
 
 from django.contrib.syndication.views import Feed
 from django.db.models import Exists, Max, OuterRef
+from django.utils import timezone
 from django.views.generic.detail import DetailView
 
 from busstops.models import Service
@@ -98,4 +99,6 @@ class LicenceFeed(Feed):
 
     def item_pubdate(self, item):
         date = item.date_received
-        return datetime(date.year, date.month, date.day)
+        return timezone.make_aware(
+            datetime(date.year, date.month, date.day)  # noqa: DTZ001
+        )

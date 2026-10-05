@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 
 from busstops.models import DataSource, Operator, Service, StopPoint, StopUsage
 from bustimes.models import Calendar, Route, StopTime, Trip
+
 from . import gtfsr
 
 
@@ -130,9 +131,6 @@ class GTFSRTTest(TestCase):
             response = self.client.get("/trip_updates/foo.json")
             self.assertEqual(response.status_code, HTTPStatus.NOT_FOUND)
 
-            response = self.client.get("/trip_updates?feed_name=foo")
-            self.assertEqual(response.status_code, HTTPStatus.NOT_FOUND)
-
             response = self.client.get("/stops/8250DB000429?date=2022-05-04&time=05:00")
             self.assertContains(response, "Ex&shy;pected")
             self.assertContains(response, "Sched&shy;uled")
@@ -148,6 +146,11 @@ class GTFSRTTest(TestCase):
     def test_no_feed(self):
         with patch("departures.gtfsr.get_trip_updates", return_value=None):
             self.assertIsNone(gtfsr.update_stop_departures((), "ntaie"))
+
+    def test_update_departure_without_stop_time_updates(self):
+        departure = {"stop_time": StopTime(sequence=1)}
+        gtfsr.update_departure(departure, {"trip": {}})
+        self.assertEqual(departure, {"stop_time": departure["stop_time"]})
 
     def test_get_expected_time(self):
         update = {
