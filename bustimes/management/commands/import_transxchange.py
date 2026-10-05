@@ -1415,7 +1415,7 @@ class Command(BaseCommand):
                 )
             elif service_code and service.mode == "bus" and service_code[:4] == "tfl_":
                 # London bus red
-                service.colour_id = 47
+                service.colour_id = 452
             else:
                 # use the operator's colour
                 for operator in operators.values():

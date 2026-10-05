@@ -28,8 +28,16 @@ def get_operators(operator_ref):
     )
 
 
-def handle_item(item: ET.Element, source: DataSource, current_situations: dict):
+def handle_item(item: ET.Element, sources: dict, current_situations: dict):
     situation_number = item.findtext("SituationNumber")
+
+    # the bulk feed is itself an aggregate of several different local
+    # authorities' own SIRI-SX feeds - ParticipantRef identifies which one
+    # a given situation actually came from (e.g. "TfGM", "WestofEngland"),
+    # so it can get its own DataSource instead of everything being lumped
+    # under one generic "Bus Open Data" source
+    participant_ref = item.findtext("ParticipantRef")
+    source = sources[participant_ref]
 
     item.find("Source/TimeOfCommunication").text = None
 
@@ -38,6 +46,13 @@ def handle_item(item: ET.Element, source: DataSource, current_situations: dict):
     situation = current_situations.get(situation_number)
 
     if situation:
+        # migrate a situation created before each ParticipantRef got its
+        # own source (or one whose ParticipantRef has genuinely changed)
+        # onto the right one now, rather than leaving it stuck on
+        # whatever source it was first seen under
+        if situation.source_id != source.id:
+            situation.source = source
+            situation.save(update_fields=["source"])
         if situation.data == xml:
             return situation.id  # hasn't changed
         created = False
@@ -155,8 +170,6 @@ def get_situation_elements(open_file):
 def bods_disruptions():
     url = "https://data.bus-data.dft.gov.uk/disruptions/download/bulk_archive"
 
-    source = DataSource.objects.get_or_create(name="Bus Open Data")[0]
-
     situations = []
 
     response = requests.get(url, timeout=61)
@@ -169,16 +182,34 @@ def bods_disruptions():
 
     elements = list(get_situation_elements(open_file))
 
+    participant_refs = {element.findtext("ParticipantRef") for element in elements}
+    sources = {
+        participant_ref: DataSource.objects.get_or_create(
+            name=f"Bus Open Data ({participant_ref})"
+        )[0]
+        for participant_ref in participant_refs
+    }
+
     situation_numbers = (element.findtext("SituationNumber") for element in elements)
 
+    # not scoped to this run's sources: a situation seen before each
+    # ParticipantRef got its own source is still out there under the old
+    # shared "Bus Open Data" source (or whatever source it was last
+    # migrated to), and needs to be found so it gets migrated onto the
+    # right source rather than duplicated under it
     current_situations = {
         s.situation_number: s
-        for s in source.situation_set.filter(situation_number__in=situation_numbers)
+        for s in Situation.objects.filter(situation_number__in=situation_numbers)
     }
 
     for element in elements:
-        situations.append(handle_item(element, source, current_situations))
+        situations.append(handle_item(element, sources, current_situations))
 
-    source.situation_set.filter(current=True).exclude(id__in=situations).update(
-        current=False
-    )
+    stale_sources = set(sources.values())
+    if legacy_source := DataSource.objects.filter(name="Bus Open Data").first():
+        stale_sources.add(legacy_source)
+
+    for source in stale_sources:
+        source.situation_set.filter(current=True).exclude(id__in=situations).update(
+            current=False
+        )

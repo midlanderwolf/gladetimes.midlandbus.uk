@@ -8,6 +8,7 @@ from django.utils.timezone import localdate
 from busstops.models import Operator, Service, StopPoint
 
 from ...models import Vehicle, VehicleJourney, VehicleLocation
+from ...utils import merge_vehicles, pick_keeper_vehicle
 from ..import_live_vehicles import ImportLiveVehiclesCommand
 
 logger = logging.getLogger(__name__)
@@ -111,9 +112,41 @@ class Command(ImportLiveVehiclesCommand):
         if vehicle or item.get("hg") == "0":
             return vehicle, False
 
-        return Vehicle.objects.filter(operator__in=self.operators).get_or_create(
-            {"operator": operator, "source": self.source, "fleet_code": vehicle_code},
-            code=vehicle_code,
+        # Stagecoach uses one fleet-numbering scheme across all its
+        # operating companies, so the same code under a different
+        # Stagecoach operator is the same physical vehicle - most likely
+        # reallocated between them - not a coincidence. Search (and merge
+        # down to one, if there's more than one) across the whole group,
+        # rather than just the operator this update claims to be from -
+        # that operator can be stale, or the feed's operating company code
+        # might not be recognised at all
+        matches = list(
+            Vehicle.objects.filter(
+                operator__in=self.operators, code__iexact=vehicle_code
+            ).select_related("latest_journey")
+        )
+
+        if matches:
+            vehicle = pick_keeper_vehicle(matches)
+            duplicates = [match for match in matches if match.pk != vehicle.pk]
+            if duplicates:
+                merge_vehicles(vehicle, duplicates)
+
+            if operator and vehicle.operator_id != operator.pk:
+                # it's moved to a different operating company
+                vehicle.operator = operator
+                vehicle.save(update_fields=["operator"])
+
+            return vehicle, False
+
+        return (
+            Vehicle.objects.create(
+                operator=operator,
+                source=self.source,
+                fleet_code=vehicle_code,
+                code=vehicle_code,
+            ),
+            True,
         )
 
     def get_journey(self, item, vehicle):

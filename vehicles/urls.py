@@ -13,6 +13,11 @@ urlpatterns = [
         name="operator_vehicles",
     ),
     path("operators/<slug>/map", views.operator_map, name="operator_map"),
+    path(
+        "operators/<slug:slug>/vehicles/lateness",
+        views.operator_lateness,
+        name="operator_lateness",
+    ),
     path("operators/<slug:slug>/debug", views.operator_debug),
     path(
         "services/<noc>:<path:line_name>/vehicles",

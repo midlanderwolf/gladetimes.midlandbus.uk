@@ -11,8 +11,15 @@ from .models import Consequence, Situation, ValidityPeriod
 
 logger = logging.getLogger(__name__)
 
+# nctx.arcticapi.com identifies operators by its own short codes, which
+# mostly match the local NOC directly (e.g. "CBNL", "NOTB") except for
+# Nottingham City Transport itself, whose local NOC is "NCTR" not "NCT"
+NCTX_REMAP = {
+    "NCT": "NCTR",
+}
 
-def handle_alert(alert: dict, source: DataSource, services):
+
+def handle_alert(alert: dict, source: DataSource, operators: dict, services):
     situation_number = alert["id"]
 
     situation = Situation.objects.filter(
@@ -70,15 +77,21 @@ def handle_alert(alert: dict, source: DataSource, services):
 
     if consequence.id:
         consequence.services.clear()
+        consequence.stops.clear()
+        consequence.operators.clear()
 
     consequence.save()
 
     lines = alert.get("_embedded", {}).get("line", [])
     for line in lines:
         line_name = line["name"]
+        operator_id = line.get("_embedded", {}).get("transmodel:operator", {}).get("id")
+        operator = operators.get(operator_id)
         matching = services.filter(
             Q(route__line_name__iexact=line_name) | Q(line_name__iexact=line_name),
         )
+        if operator:
+            matching = matching.filter(operator=operator)
         matching = matching.distinct()
         if matching:
             consequence.services.add(*matching)
@@ -92,6 +105,22 @@ def handle_alert(alert: dict, source: DataSource, services):
             ).only("atco_code")
             if matching_stops:
                 consequence.stops.add(*matching_stops)
+
+    # a "network"-wide disruption (e.g. citywide roadworks/congestion)
+    # embeds the affected operators directly on the alert itself, rather
+    # than embedding any specific line - without this, a disruption like
+    # that had nothing attached to it at all, so it never showed up
+    # anywhere (not on a service page, and not on an operator page either,
+    # since OperatorDetailView filters by consequence__operators)
+    alert_operators = alert.get("_embedded", {}).get("operator", [])
+    if alert_operators:
+        matching_operators = [
+            operators[operator_id]
+            for operator_data in alert_operators
+            if (operator_id := operator_data.get("id")) and operators.get(operator_id)
+        ]
+        if matching_operators:
+            consequence.operators.add(*matching_operators)
 
     return situation.id
 
@@ -110,13 +139,31 @@ def nctx_disruptions():
 
     situation_numbers = [alert["id"] for alert in alerts]
 
-    services = Service.objects.filter(operator__noc="NCTR", current=True).only(
-        "id", "line_name"
-    )
+    operator_ids = set()
+    for alert in alerts:
+        for line in alert.get("_embedded", {}).get("line", []):
+            operator_id = (
+                line.get("_embedded", {}).get("transmodel:operator", {}).get("id")
+            )
+            if operator_id:
+                operator_ids.add(operator_id)
+        for operator_data in alert.get("_embedded", {}).get("operator", []):
+            if operator_id := operator_data.get("id"):
+                operator_ids.add(operator_id)
+
+    local_nocs = {NCTX_REMAP.get(oid, oid) for oid in operator_ids}
+    operators_by_noc = {o.noc: o for o in Operator.objects.filter(noc__in=local_nocs)}
+    operators = {
+        oid: operators_by_noc.get(NCTX_REMAP.get(oid, oid)) for oid in operator_ids
+    }
+
+    services = Service.objects.filter(
+        operator__in=[o for o in operators.values() if o], current=True
+    ).only("id", "line_name")
 
     ids = set()
     for alert in alerts:
-        if situation_id := handle_alert(alert, source, services):
+        if situation_id := handle_alert(alert, source, operators, services):
             ids.add(situation_id)
 
     source.situation_set.filter(current=True).exclude(id__in=ids).update(current=False)

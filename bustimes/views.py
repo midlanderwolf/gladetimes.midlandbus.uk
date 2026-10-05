@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required, permission_required
 from django.core.cache import cache
+from django.core.exceptions import PermissionDenied
 from django.core.files.storage import storages
 from django.db.models import (
     Count,
@@ -443,6 +444,23 @@ class TripDetailView(DetailView):
         .defer("route__service__search_vector")
         .prefetch_related("notes")
     )
+
+    def get_object(self, **kwargs):
+        trip = super().get_object(**kwargs)
+
+        if trip.operator:
+            operators = [trip.operator]
+        elif trip.route and trip.route.service:
+            operators = list(trip.route.service.operator.all())
+        else:
+            operators = []
+
+        if operators and all(
+            operator.locked_for(self.request.user) for operator in operators
+        ):
+            raise PermissionDenied(f"{trip} is currently locked")
+
+        return trip
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

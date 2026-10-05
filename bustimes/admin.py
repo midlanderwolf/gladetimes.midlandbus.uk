@@ -10,7 +10,7 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from sql_util.utils import SubqueryCount
 
-from buses.admin_utils import M2MThroughMixin
+from buses.admin_utils import LockedOperatorAdminMixin, M2MThroughMixin
 
 from .models import (
     BankHoliday,
@@ -124,7 +124,7 @@ class RouteAdmin(admin.ModelAdmin):
 
 
 @admin.register(Trip)
-class TripAdmin(M2MThroughMixin, admin.ModelAdmin):
+class TripAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
     list_filter = (("calendar", admin.EmptyFieldListFilter),)
     raw_id_fields = ("route", *TripInline.raw_id_fields)
     list_display = (

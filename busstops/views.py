@@ -969,19 +969,25 @@ class OperatorDetailView(DetailView):
 
     def get_object(self):
         try:
-            return super().get_object()
+            operator = super().get_object()
         except Http404:
             if "slug" in self.kwargs:
                 try:
-                    return get_object_or_404(
+                    operator = get_object_or_404(
                         self.queryset,
                         operatorcode__code=self.kwargs["slug"],
                         operatorcode__source__name="slug",
                     )
                 except Http404:
                     self.kwargs["pk"] = self.kwargs["slug"].upper()
-                    return super().get_object()
-            raise
+                    operator = super().get_object()
+            else:
+                raise
+
+        if operator.locked_for(self.request.user):
+            raise PermissionDenied(f"{operator} is currently locked")
+
+        return operator
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -1197,11 +1203,25 @@ class ServiceDetailView(DetailView):
                 alternative = operators[0]
 
             if alternative:
+                self._check_not_locked(alternative)
                 return alternative
 
             raise Http404()
 
+        self._check_not_locked(service)
         return service
+
+    def _check_not_locked(self, obj):
+        # `obj` may be a Service, or an Operator (when redirecting to an
+        # operator's page in lieu of a matching current service)
+        if isinstance(obj, Operator):
+            operators = [obj]
+        else:
+            operators = list(obj.operator.all())
+        if operators and all(
+            operator.locked_for(self.request.user) for operator in operators
+        ):
+            raise PermissionDenied(f"{obj} is currently locked")
 
     def get_fare_tables(self):
         fare_tables = (
