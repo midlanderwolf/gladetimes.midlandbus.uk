@@ -293,6 +293,8 @@ class Vehicle(models.Model):
     def is_editable(self) -> bool:
         if self.locked:
             return False
+        if self.operator_id and self.operator.locked:
+            return False
         # withrawn and hasn't tracked recently - "let sleeping dogs lie"
         return not (
             self.withdrawn

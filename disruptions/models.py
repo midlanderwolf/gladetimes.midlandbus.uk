@@ -3,6 +3,7 @@ from itertools import pairwise
 
 from django.contrib.postgres.fields import DateTimeRangeField
 from django.db import models
+from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import camel_case_to_spaces
@@ -22,22 +23,28 @@ class Situation(models.Model):
     source = models.ForeignKey(
         "busstops.DataSource",
         models.DB_CASCADE,
-        limit_choices_to={
-            "name__in": (
+        # the BODS bulk disruptions feed is itself an aggregate of several
+        # different authorities' own SIRI-SX feeds (identified by each
+        # situation's ParticipantRef) - rather than one shared "Bus Open
+        # Data" source for all of them, each gets created as its own
+        # "Bus Open Data (<ParticipantRef>)" source, hence the startswith
+        # here instead of a fixed name
+        limit_choices_to=Q(
+            name__in=(
                 "bustimes.org",
                 "TfL",
                 "TfL disruptions",
                 "TfL statuses",
                 "BODS disruptions",
                 "BODS cancellations",
-                "Bus Open Data",
                 "Translink",
                 "Nottingham City Transport",
                 "Intalink",
                 "McGill's",
                 "Arriva UK",
             )
-        },
+        )
+        | Q(name__startswith="Bus Open Data"),
         default=236,
     )
     situation_number = models.CharField(max_length=36, blank=True)

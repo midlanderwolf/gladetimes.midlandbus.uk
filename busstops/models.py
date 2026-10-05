@@ -619,6 +619,7 @@ class Operator(SearchMixin, models.Model):
     )
     search_vector = SearchVectorField(null=True, blank=True)
     modified_at = models.DateTimeField(auto_now=True)
+    locked = models.BooleanField(default=False)
 
     objects = OperatorManager()
 
@@ -631,6 +632,11 @@ class Operator(SearchMixin, models.Model):
 
     def __str__(self):
         return str(self.name or self.noc)
+
+    def locked_for(self, user) -> bool:
+        """Whether this operator's lock should currently block the given user
+        (superusers always bypass a lock)"""
+        return self.locked and not user.is_superuser
 
     def get_absolute_url(self):
         return reverse("operator_detail", args=(self.slug or self.noc,))

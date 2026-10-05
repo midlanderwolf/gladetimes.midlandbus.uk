@@ -1,19 +1,27 @@
+from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
 from django.db.models import Exists, OuterRef, Q
 from django.db.models.functions import Collate
 from django.forms import ModelForm, Textarea, TextInput
-from django.urls import reverse
+from django.shortcuts import redirect, render
+from django.urls import path, reverse
 from django.utils.html import format_html
 from simple_history.admin import SimpleHistoryAdmin
 from sql_util.utils import SubqueryCount
 
-from buses.admin_utils import M2MThroughMixin
+from buses.admin_utils import LockedOperatorAdminMixin, M2MThroughMixin
 from bustimes.admin import log_change
+from busstops.models import Operator, OperatorGroup
 
 from . import models
+from .management.commands.import_vehicles import (
+    merge_duplicate_vehicles_by_reg,
+    merge_duplicate_vehicles_in_group,
+)
 
 UserModel = get_user_model()
 
@@ -73,6 +81,37 @@ class VehicleCodeInline(admin.TabularInline):
     model = models.VehicleCode
 
 
+class MergeDuplicateVehiclesByRegForm(forms.Form):
+    operators = forms.ModelMultipleChoiceField(
+        queryset=Operator.objects.order_by("noc"),
+        widget=forms.SelectMultiple(attrs={"size": 20}),
+        help_text="Vehicles sharing a registration across two or more of "
+        "these operators will be merged into one record each (keeping "
+        "whichever's been tracked most recently). Vehicles sharing a "
+        "registration within just one of these operators are left alone.",
+    )
+
+
+class MergeDuplicateVehiclesByGroupForm(forms.Form):
+    group = forms.ModelChoiceField(
+        queryset=OperatorGroup.objects.order_by("name"),
+        help_text="Vehicles sharing a fleet number across operators "
+        "currently belonging to this group will be merged into one "
+        "record each (keeping whichever's been tracked most recently).",
+    )
+
+    def clean_group(self):
+        group = self.cleaned_data["group"]
+        if not group.group_fleet_numbering:
+            raise forms.ValidationError(
+                f'"{group}" isn\'t flagged as using one shared fleet-numbering '
+                "scheme across its operators (group_fleet_numbering is off) - "
+                "merging by fleet number here could wrongly combine unrelated "
+                "vehicles."
+            )
+        return group
+
+
 class DuplicateVehicleFilter(admin.SimpleListFilter):
     title = "duplicate"
     parameter_name = "duplicate"
@@ -105,7 +144,7 @@ class DuplicateVehicleFilter(admin.SimpleListFilter):
 
 
 @admin.register(models.Vehicle)
-class VehicleAdmin(M2MThroughMixin, admin.ModelAdmin):
+class VehicleAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
     list_display = (
         "code",
         "fleet_number",
@@ -172,6 +211,65 @@ class VehicleAdmin(M2MThroughMixin, admin.ModelAdmin):
     )
     inlines = (VehicleCodeInline,)
     readonly_fields = ("latest_journey_data",)
+
+    def get_urls(self):
+        urls = [
+            path(
+                "merge-duplicates-by-reg/",
+                self.admin_site.admin_view(self.merge_duplicates_by_reg_view),
+                name="vehicles_vehicle_merge_duplicates_by_reg",
+            ),
+            path(
+                "merge-duplicates-by-group/",
+                self.admin_site.admin_view(self.merge_duplicates_by_group_view),
+                name="vehicles_vehicle_merge_duplicates_by_group",
+            ),
+        ]
+        return urls + super().get_urls()
+
+    def merge_duplicates_by_reg_view(self, request):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+
+        if request.method == "POST":
+            form = MergeDuplicateVehiclesByRegForm(request.POST)
+            if form.is_valid():
+                merged = merge_duplicate_vehicles_by_reg(
+                    form.cleaned_data["operators"]
+                )
+                self.message_user(request, f"Merged {merged} duplicate vehicle(s)")
+                return redirect("admin:vehicles_vehicle_changelist")
+        else:
+            form = MergeDuplicateVehiclesByRegForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Merge duplicate vehicles by registration",
+            "form": form,
+            "opts": self.model._meta,
+        }
+        return render(request, "admin/vehicles/merge_duplicates_by_reg.html", context)
+
+    def merge_duplicates_by_group_view(self, request):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+
+        if request.method == "POST":
+            form = MergeDuplicateVehiclesByGroupForm(request.POST)
+            if form.is_valid():
+                merged = merge_duplicate_vehicles_in_group(form.cleaned_data["group"])
+                self.message_user(request, f"Merged {merged} duplicate vehicle(s)")
+                return redirect("admin:vehicles_vehicle_changelist")
+        else:
+            form = MergeDuplicateVehiclesByGroupForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Merge duplicate vehicles by group",
+            "form": form,
+            "opts": self.model._meta,
+        }
+        return render(request, "admin/vehicles/merge_duplicates_by_group.html", context)
 
     def copy_livery(self, request, queryset):
         livery = models.Livery.objects.filter(vehicle__in=queryset).first()

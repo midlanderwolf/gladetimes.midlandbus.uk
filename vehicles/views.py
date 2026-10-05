@@ -206,7 +206,9 @@ def operator_vehicles(request, slug=None, group_slug=None):
             # cool URIs don't change
             group = get_object_or_404(OperatorGroup, name=group_slug)
         operators = group.operator_set.in_bulk()
-        vehicles = Vehicle.objects.filter(operator__group=group)
+        vehicles = Vehicle.objects.filter(operator__group=group).select_related(
+            "operator"
+        )
     elif slug:
         group = None
         try:
@@ -215,7 +217,9 @@ def operator_vehicles(request, slug=None, group_slug=None):
             operator = get_object_or_404(
                 operators, operatorcode__code=slug, operatorcode__source__name="slug"
             )
-        vehicles = operator.vehicle_set
+        if operator.locked_for(request.user):
+            raise PermissionDenied(f"{operator} is currently locked")
+        vehicles = operator.vehicle_set.select_related("operator")
 
     if "withdrawn" not in request.GET:
         vehicles = vehicles.filter(withdrawn=False)
@@ -916,13 +920,19 @@ class VehicleDetailView(DetailView):
 
     def get_object(self, **kwargs):
         try:
-            return super().get_object(**kwargs)
+            vehicle = super().get_object(**kwargs)
         except Http404:
             if slug := self.kwargs.get("slug"):
-                return get_object_or_404(
+                vehicle = get_object_or_404(
                     self.queryset, vehiclecode__code=slug, vehiclecode__scheme="slug"
                 )
-            raise
+            else:
+                raise
+
+        if vehicle.operator_id and vehicle.operator.locked_for(self.request.user):
+            raise PermissionDenied(f"{vehicle.operator} is currently locked")
+
+        return vehicle
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -1050,8 +1060,11 @@ def edit_vehicle(request, **kwargs):
         **kwargs,
     )
 
-    if not request.user.is_superuser and not vehicle.is_editable():
-        raise PermissionDenied
+    if not request.user.is_superuser:
+        if vehicle.operator_id and vehicle.operator.locked:
+            raise PermissionDenied(f"Editing {vehicle.operator} vehicles is locked")
+        if not vehicle.is_editable():
+            raise PermissionDenied
 
     form_data = request.POST or None
 
@@ -1251,6 +1264,16 @@ def vehicle_edits(request):
 
 class VehicleJourneyDetailView(DetailView):
     model = VehicleJourney
+    queryset = model.objects.select_related("vehicle__operator")
+
+    def get_object(self, **kwargs):
+        journey = super().get_object(**kwargs)
+        vehicle = journey.vehicle
+        if vehicle and vehicle.operator_id and vehicle.operator.locked_for(
+            self.request.user
+        ):
+            raise PermissionDenied(f"{vehicle.operator} is currently locked")
+        return journey
 
 
 @require_safe

@@ -10,7 +10,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 from sql_util.utils import SubqueryCount
 
-from buses.admin_utils import M2MThroughMixin
+from buses.admin_utils import LockedOperatorAdminMixin, M2MThroughMixin
 from bustimes.admin import log_change
 from bustimes.models import Route, RouteLink
 from bustimes.utils import generate_route_links_for_service_valhalla
@@ -123,8 +123,9 @@ class DuplicateOperatorFilter(admin.SimpleListFilter):
 
 
 @admin.register(models.Operator)
-class OperatorAdmin(M2MThroughMixin, admin.ModelAdmin):
+class OperatorAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
     form = OperatorAdminForm
+    locked_operator_field = ""  # the Operator instance is itself the Operator
     list_display = (
         "name",
         "slug",
@@ -134,6 +135,7 @@ class OperatorAdmin(M2MThroughMixin, admin.ModelAdmin):
         "region_id",
         "services",
         "vehicles",
+        "locked",
     )
     list_filter = (
         "modified_at",
@@ -142,6 +144,7 @@ class OperatorAdmin(M2MThroughMixin, admin.ModelAdmin):
         "vehicle_mode",
         "payment_methods",
         "group",
+        "locked",
     )
     search_fields = ("noc", "name")
     raw_id_fields = ("region", "regions", "siblings", "colour", "source")
@@ -149,6 +152,17 @@ class OperatorAdmin(M2MThroughMixin, admin.ModelAdmin):
     readonly_fields = ("search_vector", "modified_at")
     prepopulated_fields = {"slug": ("name",)}
     autocomplete_fields = ("licences", "payment_methods")
+    actions = ("lock", "unlock")
+
+    def lock(self, request, queryset):
+        count = queryset.update(locked=True)
+        log_change(request, queryset, ["locked"])
+        self.message_user(request, f"Locked {count} operators.")
+
+    def unlock(self, request, queryset):
+        count = queryset.update(locked=False)
+        log_change(request, queryset, ["locked"])
+        self.message_user(request, f"Unlocked {count} operators.")
 
     def get_exclude(self, request, obj=None):
         if obj:

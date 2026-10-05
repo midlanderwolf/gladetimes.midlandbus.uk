@@ -4,7 +4,6 @@
 
 {% block head %}
     <link rel="stylesheet" href="/liveries.{{ liveries_css_version }}.css">
-    <meta http-equiv="refresh" content="10">
 {% endblock head %}
 
 {% block bodyclass %}{% endblock %}
@@ -30,6 +29,30 @@
     }
 </style>
 
+{% load static %}
+<script src="{% static 'js/htmx.org/htmx.min.js' %}"></script>
+
+{% load tz %}
+<div
+    id="lateness"
+    data-hx-trigger="every 30s"
+    data-hx-get="{{ request.get_full_path }}"
+    data-hx-select="#lateness"
+    data-hx-target="#lateness"
+    data-hx-swap="outerHTML"
+>
+{% timezone object.timezone|default:"Europe/London" %}
+    <p class="refresh-controls">
+        <button type="button"
+            data-hx-get="{{ request.get_full_path }}"
+            data-hx-select="#lateness"
+            data-hx-target="#lateness"
+            data-hx-swap="outerHTML"
+            data-hx-trigger="click"
+        >Refresh now</button>
+        Refreshed at {% now "H:i:s" %}
+    </p>
+
 {% if rows %}
     <p class="sort-links">
         Sort by:
@@ -40,8 +63,6 @@
         {% endif %}
     </p>
 
-    {% load tz %}
-    {% timezone object.timezone|default:"Europe/London" %}
     <div class="table-wrapper">
     <table class="fleet compact">
         <thead>
@@ -88,9 +109,10 @@
         </tbody>
     </table>
     </div>
-    {% endtimezone %}
 {% else %}
     <p>None of {{ object }}'s vehicles are currently tracking on a scheduled trip.</p>
 {% endif %}
+{% endtimezone %}
+</div>
 
 {% endblock content %}
