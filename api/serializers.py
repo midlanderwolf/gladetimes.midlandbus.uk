@@ -41,7 +41,7 @@ class VehicleSerializer(serializers.ModelSerializer):
             }
 
     def get_livery(self, obj):
-        if obj.colours or obj.livery_id:
+        if obj.colours or obj.livery_id or obj.css:
             return {
                 "id": obj.livery_id,
                 "name": obj.livery_id and str(obj.livery),

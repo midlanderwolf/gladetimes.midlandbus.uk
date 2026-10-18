@@ -157,6 +157,11 @@ def get_revision(vehicle, data):
         if revision.vehicle.colours != to_colour:
             revision.changes["colours"] = f"-{revision.vehicle.colours}\n+{to_colour}"
 
+    if "css" in data:
+        to_css = data.pop("css")
+        if revision.vehicle.css != to_css:
+            revision.changes["css"] = f"-{revision.vehicle.css}\n+{to_css}"
+
     if "features" in data:
         for feature in revision.vehicle.features.all():
             if feature not in data["features"]:
@@ -214,7 +219,7 @@ def apply_revision(revision, features=None):
         assert to_value[0] == "+"
         to_value = to_value[1:]
 
-        if field in ("reg", "notes", "branding", "name", "colours"):
+        if field in ("reg", "notes", "branding", "name", "colours", "css"):
             setattr(vehicle, field, to_value)
             changed_fields.append(field)
 

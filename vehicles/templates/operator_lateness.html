@@ -96,8 +96,8 @@
                     {% endif %}
                     <td>{{ row.route_name }}{% if row.route_name and row.destination %} – {% endif %}{{ row.destination }}</td>
                     <td>{{ row.block }}</td>
-                    <td{% if vehicle.colours or vehicle.livery_id %} class="livery-cell"{% endif %}>
-                        {% if vehicle.colours or vehicle.livery_id %}<div class="livery{% if vehicle.livery_id %} livery-{{ vehicle.livery_id }}{% else %}" style="background:{{ vehicle.get_livery }}{% endif %}"></div>{% endif %}
+                    <td{% if vehicle.colours or vehicle.livery_id or vehicle.css %} class="livery-cell"{% endif %}>
+                        {% if vehicle.colours or vehicle.livery_id or vehicle.css %}<div class="livery{% if vehicle.livery_id and not vehicle.css %} livery-{{ vehicle.livery_id }}{% else %}" style="background:{{ vehicle.get_livery }}{% endif %}"></div>{% endif %}
                         {% if vehicle.livery_name %}{{ vehicle.livery_name }}{% else %}{{ vehicle.branding }}{% endif %}
                     </td>
                     <td class="lateness{% if row.delay > 45 %} late{% elif row.delay < -45 %} early{% endif %}">

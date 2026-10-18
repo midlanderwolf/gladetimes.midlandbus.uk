@@ -126,7 +126,7 @@ def get_delay(progress, date, when, tzinfo=None) -> int:
 
 
 def get_progress(
-    item: dict, stop_time=None, stop_times=None, tzinfo=None
+    item: dict, stop_time=None, stop_times=None, tzinfo=None, route_links=True
 ) -> Progress | None:
     when = datetime.datetime.fromisoformat(item["datetime"])
     date = datetime.date.fromisoformat(item["date"])
@@ -155,8 +155,8 @@ def get_progress(
     if not stop_times:
         return
 
-    route_links = {}
-    if "service_id" in item:
+    route_links_by_stops = {}
+    if route_links and "service_id" in item:
         for rl in RouteLink.objects.filter(
             service=item["service_id"],
             geometry__dwithin=(point, 0.01),  # ~1km in degrees
@@ -165,7 +165,7 @@ def get_progress(
             distance=Distance("geometry", point),
         ):
             rl.distance = rl.distance.m  # convert to meters
-            route_links[(rl.from_stop_id, rl.to_stop_id)] = rl
+            route_links_by_stops[(rl.from_stop_id, rl.to_stop_id)] = rl
 
     with sentry_sdk.start_span(name="nearby pairs"):
         # each stop is in two pairs, and the same stops recur between calls
@@ -174,8 +174,8 @@ def get_progress(
         nearby_pairs = []
         for a, b in pairwise(stop_times):
             key = (a.stop_id, b.stop_id)
-            if key in route_links:
-                rl = route_links[key]
+            if key in route_links_by_stops:
+                rl = route_links_by_stops[key]
                 if rl.distance < NEARBY_ROUTE_LINK:
                     nearby_pairs.append((a, b, rl))
                 continue
@@ -256,8 +256,10 @@ def get_progress(
     return progress
 
 
-def add_progress_and_delay(item, stop_time=None, stop_times=None, tzinfo=None):
-    progress = get_progress(item, stop_time, stop_times, tzinfo)
+def add_progress_and_delay(
+    item, stop_time=None, stop_times=None, tzinfo=None, route_links=True
+):
+    progress = get_progress(item, stop_time, stop_times, tzinfo, route_links)
     if not progress:
         return
 

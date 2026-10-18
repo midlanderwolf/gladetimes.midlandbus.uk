@@ -2,10 +2,10 @@
     <p>{{ vehicle.notes }}</p>
 {% endif %}
 
-{% if vehicle.colours or vehicle.livery or vehicle.branding or vehicle.vehicle_type or vehicle.name or vehicle.data or vehicle.features.all %}
+{% if vehicle.colours or vehicle.livery or vehicle.css or vehicle.branding or vehicle.vehicle_type or vehicle.name or vehicle.data or vehicle.features.all %}
 
 <dl class="contact-details">
-    {% if vehicle.colours or vehicle.livery %}
+    {% if vehicle.colours or vehicle.livery or vehicle.css %}
         <div>
             <dt>Livery</dt>
             <dd>

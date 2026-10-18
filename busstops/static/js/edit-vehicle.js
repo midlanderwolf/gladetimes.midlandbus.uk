@@ -100,4 +100,15 @@
         minimumInputLength: 1
     });
 
+    var cssField = $('#id_css');
+    if (cssField.length) {
+        var swatch = $('<div class="livery" style="width:6em;height:3em;margin-top:.5em"></div>');
+        cssField.after(swatch);
+        function updateCssSwatch() {
+            swatch.css('background', cssField.val());
+        }
+        cssField.on('input', updateCssSwatch);
+        updateCssSwatch();
+    }
+
 })();

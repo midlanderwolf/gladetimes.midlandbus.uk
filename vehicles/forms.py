@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 
 from busstops.models import Operator
 
-from .fields import validate_colours
+from .fields import validate_colours, validate_css
 from .form_fields import RegField, SummaryField
 from .models import Livery, Vehicle, VehicleFeature, VehicleType
 
@@ -44,6 +44,7 @@ class EditVehicleForm(forms.Form):
         "vehicle_type",
         "colours",
         "other_colour",
+        "css",
         "branding",
         "name",
         "previous_reg",
@@ -91,6 +92,18 @@ class EditVehicleForm(forms.Form):
         validators=[validate_colours],
         required=False,
         max_length=255,
+    )
+
+    css = forms.CharField(
+        label="Other colours (CSS)",
+        help_text="""Superuser only. An alternative to 'Other colours' above, for liveries too
+complicated to describe as a plain list of colours, e.g.
+'linear-gradient(#0000 80%,#0f6db4 80%),radial-gradient(circle at 0 0,#fff 60%,#f79f48 60% 70%,#ea2639 70%)'.
+Doesn't touch the current livery or other colours fields, so won't get overwritten by imports from bustimes.org.""",
+        validators=[validate_css],
+        required=False,
+        max_length=1000,
+        widget=forms.Textarea(attrs={"rows": 2}),
     )
 
     branding = forms.CharField(
@@ -151,6 +164,7 @@ link to a picture to prove it. Be polite.""",
             )
 
         self.fields["other_colour"].initial = vehicle.colours or ""
+        self.fields["css"].initial = vehicle.css or ""
         self.fields["features"].initial = vehicle.features.all()
         self.fields["branding"].initial = vehicle.branding
         self.fields["name"].initial = vehicle.name
@@ -179,6 +193,9 @@ link to a picture to prove it. Be polite.""",
         ):
             del self.fields["notes"]
 
+        if not user.is_superuser:
+            del self.fields["css"]
+
         if vehicle.is_spare_ticket_machine():
             del self.fields["notes"]
             if not vehicle.fleet_code:
@@ -198,6 +215,8 @@ link to a picture to prove it. Be polite.""",
             ):
                 del self.fields["colours"]
                 del self.fields["other_colour"]
+            if not vehicle.css and "css" in self.fields:
+                del self.fields["css"]
             if not vehicle.branding:
                 del self.fields["branding"]
             if not vehicle.features.all():

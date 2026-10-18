@@ -95,7 +95,10 @@ function VehicleMarker({ vehicle, selected }: VehicleMarkerProps) {
 
   if (liveryId) {
     className += ` livery-${liveryId}`;
-  } else if (background && vehicle.vehicle?.text_colour) {
+  } else if (background) {
+    // no way to know whether a plain colour list or custom CSS background
+    // is light or dark, so default to white text with a black outline,
+    // which should be visible against pretty much anything
     className += " white-text";
   }
 

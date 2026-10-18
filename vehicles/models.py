@@ -266,6 +266,7 @@ class Vehicle(models.Model):
     )
     colours = ColoursField(max_length=255, blank=True)
     livery = models.ForeignKey(Livery, models.DB_SET_NULL, null=True, blank=True)
+    css = CSSField(max_length=1000, blank=True)
     name = models.CharField(max_length=255, blank=True)
     branding = models.CharField(max_length=255, blank=True)
     notes = models.CharField(max_length=255, blank=True)
@@ -416,6 +417,9 @@ class Vehicle(models.Model):
             return get_text_colour(self.colours)
 
     def get_livery(self, direction=None):
+        if self.css:
+            return escape(self.css)
+
         if self.livery:
             if direction is not None and direction < 180:
                 return escape(self.livery.right_css)
@@ -466,7 +470,11 @@ class Vehicle(models.Model):
         if features:
             json["features"] = features
 
-        if self.livery_id:
+        if self.css:
+            json["css"] = self.get_livery()
+            json["right_css"] = self.get_livery(90)
+            json["text_colour"] = self.get_text_colour()
+        elif self.livery_id:
             json["livery"] = self.livery_id
         elif self.colours:
             json["css"] = self.get_livery()
@@ -642,6 +650,17 @@ class VehicleRevision(models.Model):
                         after = format_html(
                             '<span class="livery" style="background:{}"></span>',
                             get_css(after.split()),
+                        )
+                if key == "css" and html:
+                    if before:
+                        before = format_html(
+                            '<span class="livery" style="background:{}"></span>',
+                            before,
+                        )
+                    if after:
+                        after = format_html(
+                            '<span class="livery" style="background:{}"></span>',
+                            after,
                         )
                 if key == "withdrawn":
                     if after == "Yes":

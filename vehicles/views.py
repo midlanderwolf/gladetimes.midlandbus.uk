@@ -633,6 +633,50 @@ def get_vehicle_locations(
     if journeys_to_cache_later:
         cache.set_many(journeys_to_cache_later, 3600)  # an hour
 
+    # for any vehicles that didn't already get progress/delay worked out above
+    # (i.e. most vehicles, when this isn't a single-vehicle or trip-specific
+    # request), fetch the trip/stop time data needed in bulk - like
+    # operator_lateness does - instead of querying per vehicle
+    trip_ids = {
+        item["trip_id"]
+        for item in locations
+        if "progress" not in item and item.get("trip_id")
+    }
+    # but not when there are a huge number of trips to look up at once
+    # (e.g. a very zoomed-out map, or a request for literally every vehicle) -
+    # that's a lot of StopTime rows to fetch and process in one request
+    MAX_BULK_PROGRESS_TRIPS = 250
+    if trip_ids and len(trip_ids) <= MAX_BULK_PROGRESS_TRIPS:
+        trips_by_id = (
+            Trip.objects.filter(id__in=trip_ids).select_related("route").in_bulk()
+        )
+        stop_times_by_trip_id = defaultdict(list)
+        for stop_time in (
+            StopTime.objects.filter(trip_id__in=trip_ids)
+            .filter(stop__latlong__isnull=False)
+            .select_related("stop")
+            .only("arrival", "departure", "stop__latlong", "trip_id")
+            .order_by("trip_id", "id")
+        ):
+            stop_times_by_trip_id[stop_time.trip_id].append(stop_time)
+
+        for item in locations:
+            if "progress" in item:
+                continue
+            trip = trips_by_id.get(item.get("trip_id"))
+            stop_times = stop_times_by_trip_id.get(item.get("trip_id"))
+            if not trip or not stop_times:
+                continue
+            add_progress_and_delay(
+                item,
+                stop_times=stop_times,
+                tzinfo=trip.route.timezone if trip.route_id else None,
+                # skip the RouteLink lookup here (an extra DB query per vehicle)
+                # since this runs for every vehicle on the map, not just one -
+                # the straight-line-between-stops fallback is good enough
+                route_links=False,
+            )
+
     return locations
 
 
