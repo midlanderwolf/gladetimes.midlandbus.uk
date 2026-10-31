@@ -113,12 +113,6 @@ exports[`renders trip timetable 1`] = `
 
 exports[`renders trip timetable 2`] = `
 <div>
-  <label>
-    <input
-      type="checkbox"
-    />
-     Show previous stops
-  </label>
   <table>
     <thead>
       <tr>
@@ -139,6 +133,20 @@ exports[`renders trip timetable 2`] = `
           class="stop-name"
         >
           <a
+            href="/stops/2900C0305"
+          >
+            Harford Park & Ride
+          </a>
+        </td>
+        <td>
+          10:05
+        </td>
+      </tr>
+      <tr>
+        <td
+          class="stop-name"
+        >
+          <a
             href="/stops/2900N1237"
           >
             County Hall Bus Shelter (A)
@@ -148,7 +156,9 @@ exports[`renders trip timetable 2`] = `
           10:13
         </td>
         <td>
-          09:17
+          <strong>
+            09:17
+          </strong>
         </td>
       </tr>
       <tr>
@@ -222,12 +232,6 @@ exports[`renders trip timetable 2`] = `
 
 exports[`renders trip timetable 3`] = `
 <div>
-  <label>
-    <input
-      type="checkbox"
-    />
-     Show previous stops
-  </label>
   <table>
     <thead>
       <tr>
@@ -248,6 +252,20 @@ exports[`renders trip timetable 3`] = `
           class="stop-name"
         >
           <a
+            href="/stops/2900C0305"
+          >
+            Harford Park & Ride
+          </a>
+        </td>
+        <td>
+          10:05
+        </td>
+      </tr>
+      <tr>
+        <td
+          class="stop-name"
+        >
+          <a
             href="/stops/2900N1237"
           >
             County Hall Bus Shelter (A)
@@ -257,7 +275,9 @@ exports[`renders trip timetable 3`] = `
           10:13
         </td>
         <td>
-          09:17
+          <strong>
+            09:17
+          </strong>
         </td>
       </tr>
       <tr>

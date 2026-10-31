@@ -1,6 +1,7 @@
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import numpy as np
 from django.contrib.auth.models import Permission
 from django.core.files.base import ContentFile
 from django.core.files.storage import InMemoryStorage
@@ -380,13 +381,19 @@ class PhotoTest(TestCase):
         }
         sizes = {"sizes": {"size": [{"source": "https://live.example/123_o.jpg"}]}}
 
-        with patch(
-            "photos.utils.requests.Session.get",
-            side_effect=[
-                FakeResponse(info),
-                FakeResponse(sizes),
-                FakeResponse(content=make_jpeg(1600, 900)),
-            ],
+        session = Mock()
+        session.run.return_value = (np.full((1, 300, 80), -10), np.zeros((1, 300, 4)))
+
+        with (
+            patch(
+                "photos.utils.requests.Session.get",
+                side_effect=[
+                    FakeResponse(info),
+                    FakeResponse(sizes),
+                    FakeResponse(content=make_jpeg(1600, 900)),
+                ],
+            ),
+            patch("photos.detect.get_session", return_value=session),
         ):
             response = self.client.post(
                 self.vehicle.get_absolute_url(), {"url": FLICKR_URL}
@@ -398,6 +405,7 @@ class PhotoTest(TestCase):
         self.assertEqual(photo.caption, "Lynx 2")
         self.assertEqual(photo.credit, "Norma")
         self.assertEqual(photo.license, "4")
+        self.assertEqual(photo.get_license()[0], "CC BY 2.0")
         self.assertEqual(photo.url, FLICKR_URL)
         self.assertEqual((photo.width, photo.height), (1600, 900))
         self.assertAlmostEqual(photo.location.y, 52.75)

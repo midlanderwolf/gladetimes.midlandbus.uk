@@ -1,4 +1,5 @@
-from django import forms
+import contextlib
+
 from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -203,7 +204,8 @@ class VehicleAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
         "copy_livery",
         "copy_type",
         "make_livery",
-        "deduplicate",
+        "deduplicate_reg",
+        "deduplicate_fleet_code",
         "merge_all_selected",
         "spare_ticket_machine",
         "lock",
@@ -303,12 +305,10 @@ class VehicleAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
             duplicate.vehiclecode_set.update(vehicle=vehicle)
             duplicate.vehiclerevision_set.update(vehicle=vehicle)
 
-            try:
+            with contextlib.suppress(IntegrityError):
                 models.VehicleCode.objects.create(
                     vehicle=vehicle, scheme="slug", code=vehicle.slug
                 )
-            except IntegrityError:
-                pass
 
             vehicle.slug = duplicate.slug
             vehicle.code = duplicate.code
@@ -346,24 +346,42 @@ class VehicleAdmin(LockedOperatorAdminMixin, M2MThroughMixin, admin.ModelAdmin):
                 ),
             )
 
-    def deduplicate(self, request, queryset):
+    def deduplicate(self, request, queryset, field, **filters):
+        merged = set()
         for vehicle in queryset.order_by("id"):
-            if not vehicle.reg:
-                self.message_user(request, f"{vehicle} has no reg")
+            if vehicle.id in merged:
+                continue
+            value = getattr(vehicle, field)
+            if not value:
+                self.message_user(request, f"{vehicle} has no {field}")
                 continue
             try:
                 duplicate = models.Vehicle.objects.get(
                     id__gt=vehicle.id,
-                    reg__iexact=vehicle.reg,
                     operator=vehicle.operator_id,
-                )  # newer record
-            except (
-                models.Vehicle.DoesNotExist,
-                models.Vehicle.MultipleObjectsReturned,
-            ) as e:
-                self.message_user(request, f"{vehicle} {e}")
+                    **{f"{field}__iexact": value},
+                    **filters,
+                )
+            except models.Vehicle.DoesNotExist:
+                self.message_user(
+                    request, f"{vehicle}: no newer vehicle with same {field}"
+                )
                 continue
+            except models.Vehicle.MultipleObjectsReturned:
+                self.message_user(
+                    request, f"{vehicle}: more than one newer vehicle with same {field}"
+                )
+                continue
+            merged.add(duplicate.id)
             self.merge_all_selected(request, (vehicle, duplicate))
+
+    @admin.action(description="Merge duplicates with same reg")
+    def deduplicate_reg(self, request, queryset):
+        self.deduplicate(request, queryset, "reg")
+
+    @admin.action(description="Merge duplicates with same fleet code and no reg")
+    def deduplicate_fleet_code(self, request, queryset):
+        self.deduplicate(request, queryset, "fleet_code", reg="")
 
     def spare_ticket_machine(self, request, queryset):
         queryset.update(
@@ -653,6 +671,13 @@ class SiriSubscriptionAdmin(admin.ModelAdmin):
     autocomplete_fields = ("source",)
     readonly_fields = ("uuid", "sample", "status")
     list_display = ("__str__", "source")
+
+    def get_fields(self, request, obj=None):
+        fields = super().get_fields(request, obj)
+        if obj is None:
+            # exclude uuid when creating a new one
+            return [f for f in fields if f not in self.readonly_fields]
+        return fields
 
     def status(self, obj):
         return cache.get(obj.get_status_key())

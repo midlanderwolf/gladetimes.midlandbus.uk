@@ -8,8 +8,7 @@ from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
 
 from busstops.models import DataSource, Service
-from bustimes.models import Trip
-from bustimes.utils import get_calendars
+from bustimes.models import Calendar, Trip
 
 from ...models import Vehicle, VehicleJourney, VehicleLocation
 from ..import_live_vehicles import ImportLiveVehiclesCommand
@@ -22,7 +21,6 @@ occupancies = {
     4: "Crushed standing room only",
     5: "Full",
     6: "Not accepting passengers",
-    7: "No data available",
     8: "Not boardable",
 }
 
@@ -32,6 +30,7 @@ class Command(ImportLiveVehiclesCommand):
     vehicle_code_scheme = "NTA"
     trip_id_field = "ticket_machine_code"
     trip_select_related = ("route__service",)
+    stop_id_prefix = ""  # to match how the GTFS stops were imported
 
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/Dublin")
@@ -119,7 +118,7 @@ class Command(ImportLiveVehiclesCommand):
 
     def get_journey(self, item, vehicle):
         # GTFS spec for working out datetimes:
-        start_date = datetime.strptime(  # noqa: DTZ007 - tzinfo applied below
+        start_date = datetime.strptime(
             f"{item.vehicle.trip.start_date} 12:00:00",
             "%Y%m%d %H:%M:%S",
         )
@@ -181,8 +180,11 @@ class Command(ImportLiveVehiclesCommand):
             if trips:
                 if len(trips) > 1:
                     calendar_ids = [trip.calendar_id for trip in trips]
-                    calendars = get_calendars(start_date, calendar_ids)
-                    trips = trips.filter(calendar__in=calendars)
+                    trips = trips.filter(
+                        calendar__in=Calendar.objects.active_on(
+                            start_date, calendar_ids
+                        )
+                    )
                     trip = trips.first()
                 else:
                     trip = trips[0]
@@ -211,10 +213,27 @@ class Command(ImportLiveVehiclesCommand):
         return journey
 
     def create_vehicle_location(self, item):
-        return VehicleLocation(
-            heading=item.vehicle.position.bearing or None,
+        location = VehicleLocation(
+            heading=item.vehicle.position.bearing % 360 or None,
             latlong=GEOSGeometry(
                 f"POINT({item.vehicle.position.longitude} {item.vehicle.position.latitude})"
             ),
-            occupancy=occupancies.get(item.vehicle.occupancy_status or None),
+            occupancy=occupancies.get(item.vehicle.occupancy_status)
+            if item.vehicle.HasField("occupancy_status")
+            else None,
         )
+        match item.vehicle.vehicle.wheelchair_accessible:
+            case gtfs_realtime_pb2.VehicleDescriptor.WHEELCHAIR_ACCESSIBLE:
+                location.wheelchair = "accessible"
+            case gtfs_realtime_pb2.VehicleDescriptor.WHEELCHAIR_INACCESSIBLE:
+                location.wheelchair = "not accessible"
+        if item.vehicle.stop_id:
+            stop_id = f"{self.stop_id_prefix}{item.vehicle.stop_id}"
+            if (
+                item.vehicle.current_status
+                == gtfs_realtime_pb2.VehiclePosition.STOPPED_AT
+            ):
+                location.prev_stop = stop_id
+            else:
+                location.next_stop = stop_id
+        return location

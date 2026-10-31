@@ -1,4 +1,3 @@
-import functools
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -14,7 +13,9 @@ from django.utils.dateparse import parse_duration
 from google.protobuf import json_format
 
 from busstops.models import DataSource
+from bustimes.models import Trip
 
+from ... import rtpi
 from ...models import Livery, VehicleJourney
 from ...utils import VEHICLE_POSITIONS_CHANNEL, calculate_bearing
 from .. import import_live_vehicles
@@ -35,7 +36,25 @@ class Command(GTFSRCommand):
         self.url = "https://rt.flix.baguette.pirnet.si/rt.pb"
         self.livery = Livery.objects.filter(name="FlixBus").first()
         self.interval = None  # observed gap between feed timestamps
+        self.source_timestamp = None
+        self.trips = {}
+        self.journeys = {}
         return self
+
+    def get_trips(self):
+        source = DataSource.objects.get(id=self.source.id)
+        if self.trips and source.datetime == self.source_timestamp:
+            return
+
+        # timetables have updated, so re-fetch trips
+
+        self.trips = {
+            trip.vehicle_journey_code: trip
+            for trip in Trip.objects.filter(route__source=source).select_related(
+                *self.trip_select_related
+            )
+        }
+        self.source_timestamp = source.datetime
 
     def get_items(self):
         previous_timestamp = self.source.datetime
@@ -44,14 +63,44 @@ class Command(GTFSRCommand):
         if feed is None:  # not modified
             return
 
+        self.get_trips()
+
         new_timestamp = self.source.datetime
 
         if previous_timestamp and new_timestamp > previous_timestamp:
             self.interval = (new_timestamp - previous_timestamp).total_seconds()
 
+        self.trip_updates = {}
+        positions = []
         for item in feed.entity:
-            if item.HasField("vehicle") and item.vehicle.trip.trip_id.startswith("UK"):
-                yield item
+            if item.HasField("vehicle"):
+                trip = item.vehicle.trip
+            else:
+                trip = item.trip_update.trip
+            if trip.trip_id.startswith("UK") or trip.trip_id in self.trips:
+                if item.HasField("vehicle"):
+                    positions.append(item)
+                else:
+                    self.trip_updates[(trip.trip_id, trip.start_date)] = (
+                        item.trip_update
+                    )
+
+        current = {self.get_vehicle_identity(item) for item in positions}
+        # remove old journeys from cache
+        self.journeys = {
+            key: journey for key, journey in self.journeys.items() if key in current
+        }
+
+        yield from positions
+
+        cache.set(
+            "flixbus_trip_updates",
+            {
+                trip_id: json_format.MessageToDict(trip_update)
+                for (trip_id, _), trip_update in self.trip_updates.items()
+            },
+            300,
+        )
 
         cache.set("flixbus_feed", json_format.MessageToDict(feed))
 
@@ -65,13 +114,16 @@ class Command(GTFSRCommand):
                 changed_item_identities,
                 changed_journey_identities,
                 total_items,
-            ) = self.get_changed_items()
+            ) = import_live_vehicles.ImportLiveVehiclesCommand.get_changed_items(self)
         except requests.exceptions.RequestException:
             logger.exception("error getting changed items")
             return self.wait
 
-        self.handle_items(changed_items, changed_item_identities)
-        self.handle_items(changed_journey_items, changed_journey_identities)
+        if changed_items or changed_journey_items:
+            self.refresh_journey_vehicles()
+
+            self.handle_items(changed_items, changed_item_identities)
+            self.handle_items(changed_journey_items, changed_journey_identities)
 
         age = now - self.source.datetime
 
@@ -91,35 +143,49 @@ class Command(GTFSRCommand):
         if not self.interval:
             return self.wait
 
-        wait = self.interval - age.total_seconds() + 10
+        wait = self.interval - age.total_seconds()
         return min(max(wait, 10), self.wait)
 
     @staticmethod
     def get_vehicle_identity(item):
-        # not the vehicle id! we're not sure if that maps to an actual vehicle,
-        # so we track journeys with no Vehicle records
-        return f"{item.vehicle.trip.trip_id} {item.vehicle.trip.start_date}"
+        return (
+            item.vehicle.trip.trip_id,
+            item.vehicle.trip.start_date,
+            item.vehicle.trip.start_time,
+        )
 
-    @functools.lru_cache(maxsize=256)  # noqa: B019 - one instance per process
-    def get_journey(self, trip_id, start_date, start_time):
-        date = datetime.strptime(start_date, "%Y%m%d").date()  # noqa: DTZ007
+    def refresh_journey_vehicles(self):
+        # journeys may have gained vehicle ids from another source,
+        if journeys := {
+            journey.id: journey
+            for journey in self.journeys.values()
+            if not journey.vehicle_id
+        }:
+            for journey_id, vehicle_id in VehicleJourney.objects.filter(
+                id__in=journeys, vehicle__isnull=False
+            ).values_list("id", "vehicle_id"):
+                journey = journeys[journey_id]
+                journey.vehicle_id = vehicle_id
+                import_live_vehicles.redis_client.delete(f"vehicle{-journey.id}")
 
-        journey = (
+    def get_journey(self, trip_code, start_date, start_time):
+        date = datetime.strptime(start_date, "%Y%m%d").date()
+
+        if journey := (
             VehicleJourney.objects.filter(
-                source=self.source, vehicle=None, code=trip_id, date=date
+                source=self.source, vehicle=None, code=trip_code, date=date
             )
             .select_related("service")
             .first()
-        )
-        if journey:
+        ):
             return journey
 
         journey = VehicleJourney(
             source=self.source,
             vehicle=None,
-            code=trip_id,
+            code=trip_code,
             date=date,
-            route_name=trip_id.split("-", 1)[0].removeprefix("UK"),
+            route_name=trip_code.split("-", 1)[0].removeprefix("UK"),
         )
 
         # (the noon minus 12 hours trick copes with daylight saving time)
@@ -127,7 +193,7 @@ class Command(GTFSRCommand):
             tzinfo=self.tzinfo
         )
 
-        if trip := self.trips.get(trip_id):
+        if trip := self.trips.get(trip_code):
             journey.trip = trip
             journey.datetime = noon - timedelta(hours=12) + trip.start
             journey.service = trip.route.service
@@ -146,10 +212,12 @@ class Command(GTFSRCommand):
                 journey.service.save(update_fields=["tracking"])
 
             # existing journey with a vehicle id (Scotland)
-            if existing_journey := (
-                journey.service.vehiclejourney_set.filter(
-                    code=trip_id, date=journey.date, datetime=journey.datetime
-                ).first()
+            if trip and (
+                existing_journey := (
+                    journey.service.vehiclejourney_set.filter(
+                        trip=trip, date=journey.date, datetime=journey.datetime
+                    ).first()
+                )
             ):
                 existing_journey.service = journey.service
                 return existing_journey
@@ -160,21 +228,20 @@ class Command(GTFSRCommand):
 
     def handle_items(self, items, identities):
         for item, identity in zip(items, identities):
-            self.handle_item(item, self.source.datetime)
+            self.handle_item(item)
             self.identifiers[identity] = self.get_item_identity(item)
 
-    def handle_item(self, item, now):
-        journey = self.get_journey(
-            item.vehicle.trip.trip_id,
-            item.vehicle.trip.start_date,
-            item.vehicle.trip.start_time,
-        )
+    def handle_item(self, item):
+        key = self.get_vehicle_identity(item)
+        if not (journey := self.journeys.get(key)):
+            journey = self.get_journey(*key)
+            self.journeys[key] = journey
 
         updated_at = self.get_datetime(item)
 
         redis_client = import_live_vehicles.redis_client
 
-        vehicle_or_journey_id = journey.vehicle_id or journey.id
+        vehicle_or_journey_id = journey.vehicle_id or -journey.id
 
         latest = redis_client.get(f"vehicle{vehicle_or_journey_id}")
         if latest:
@@ -203,6 +270,13 @@ class Command(GTFSRCommand):
             }
         if journey.service_id and "service" in redis_json:
             redis_json["service"]["url"] = journey.service.get_absolute_url()
+        if "trip_id" in redis_json:
+            try:
+                rtpi.add_progress_and_delay(
+                    redis_json, tzinfo=self.tzinfo, modified_at=rtpi.UNKNOWN
+                )
+            except Exception:
+                logger.exception("error calculating progress and delay")
 
         pipeline = redis_client.pipeline(transaction=False)
         pipeline.geoadd(

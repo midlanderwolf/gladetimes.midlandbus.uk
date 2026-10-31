@@ -13,23 +13,23 @@ from django.utils.timezone import localdate
 from sql_util.utils import Exists
 
 from .formatting import format_timedelta
-from .models import Calendar, Note, StopTime, Trip
-from .utils import get_calendars, get_descriptions, get_routes
+from .models import Calendar, Note, Route, StopTime, Trip, chain_split_trips
+from .utils import get_descriptions
 
 differ = Differ(charjunk=lambda _: True)
 
 
-def compare_trips(rows, trip_ids, a, b):
+def compare_trips(rows, positions, trip_indices, a, b):
     a_time = None
     b_time = None
 
-    a_top = rows.index(a.top)
-    a_bottom = rows.index(a.bottom)
-    b_top = rows.index(b.top)
-    b_bottom = rows.index(b.bottom)
+    a_top = positions[a.top]
+    a_bottom = positions[a.bottom]
+    b_top = positions[b.top]
+    b_bottom = positions[b.bottom]
 
-    a_index = trip_ids.index(id(a))
-    b_index = trip_ids.index(id(b))
+    a_index = trip_indices[id(a)]
+    b_index = trip_indices[id(b)]
 
     for row in rows[max(a_top, b_top) : min(a_bottom, b_bottom) + 1]:
         if row.times[a_index] and row.times[b_index]:
@@ -54,12 +54,23 @@ def compare_trips(rows, trip_ids, a, b):
 
 
 class Timetable:
-    def __init__(self, routes, date, calendar_id=None, detailed=False, operators=None):
-        self.today = localdate()
-
+    def __init__(
+        self,
+        routes,
+        date,
+        calendar_id=None,
+        detailed=False,
+        operators=None,
+        loose_trip_chaining=False,
+    ):
         self.operators = operators
+        self.loose_trip_chaining = loose_trip_chaining
 
         routes = list(routes.order_by("id").select_related("source"))
+        # today where the service runs (e.g. Las Vegas), not necessarily in London
+        self.today = localdate(
+            timezone=next((route.timezone for route in routes if route.timezone), None)
+        )
         self.routes = self.current_routes = routes
         # self.current_routes is a subset of self.routes
         self.yesterday = None
@@ -138,26 +149,30 @@ class Timetable:
 
         # consider revision numbers:
         if self.date:
-            self.current_routes = get_routes(routes, self.date)
+            revisions = any(route.revision_number for route in routes)
+            routes_qs = Route.objects.filter(
+                id__in=[route.id for route in routes]
+            ).select_related("source")
+            self.current_routes = routes_qs.active_on(self.date, revisions)
             self.yesterday = self.date - datetime.timedelta(days=1)
-            self.yesterday_routes = get_routes(routes, self.yesterday)
+            self.yesterday_routes = routes_qs.active_on(self.yesterday, revisions)
 
         if not self.calendar and self.calendars:
             calendar_ids = [calendar.id for calendar in self.calendars]
             self.calendar_ids = list(
-                get_calendars(self.date, calendar_ids, scotland=scotland).values_list(
-                    "id", flat=True
-                )
+                Calendar.objects.active_on(
+                    self.date, calendar_ids, scotland=scotland
+                ).values_list("id", flat=True)
             )
             self.yesterday_calendar_ids = list(
-                get_calendars(
+                Calendar.objects.active_on(
                     self.yesterday, calendar_ids, scotland=scotland
                 ).values_list("id", flat=True)
             )
 
     def correct_directions(self, trips):
-        # for merged multi-operator routes: reverse the polarity if they disagree which direction is inbound/outbound
-        stops = {}  # stops by source and direction
+        # for merged multi-operator* routes: reverse the polarity if they disagree which direction is inbound/outbound
+        stops = {}  # stops by operator and direction
         for trip in trips:
             if trip.operator_id not in stops:
                 stops[trip.operator_id] = {
@@ -168,6 +183,7 @@ class Timetable:
                 stop.stop_id for stop in trip.times
             )
 
+        # *exactly two operators
         if len(stops) == 2:
             operator_a, operator_b = stops
 
@@ -698,11 +714,10 @@ class Grouping:
                 # terminus stop) stay grouped near their branch point rather
                 # than being stranded at the bottom of the timetable.
                 return (True, -chain_length(k), adj, sequences.get(k, 0))
-            else:
-                # Initial selection or no direct-successor relationship:
-                # use sequence number only (chain_length would wrongly prefer
-                # short-chain route-starts over long-chain route-starts).
-                return (False, 0, adj, sequences.get(k, 0))
+            # Initial selection or no direct-successor relationship:
+            # use sequence number only (chain_length would wrongly prefer
+            # short-chain route-starts over long-chain route-starts).
+            return (False, 0, adj, sequences.get(k, 0))
 
         # Kahn's algorithm, but when multiple nodes are ready,
         # prefer the direct successor of the last emitted node
@@ -737,100 +752,110 @@ class Grouping:
 
     def sort_columns(self):
         rows = self.rows
+        trips = self.trips
+        # for each trip, a bitmask of the rows it has times in, and the times
+        masks = []
+        columns = []
+        for i in range(len(trips)):
+            mask = 0
+            times = []
+            for y, row in enumerate(rows):
+                if cell := row.times[i]:
+                    mask |= 1 << y
+                    times.append(cell.departure_or_arrival())
+                else:
+                    times.append(None)
+            masks.append(mask)
+            columns.append(times)
 
+        # topological sort - edges from each trip to the trips
+        # after it, compared at the first row they have in common.
+        # Each pair is compared from both sides, a then b and b then a, so most
+        # edges are added twice - that affects the order of unrelated trips
         sorter = graphlib.TopologicalSorter()
-        for a_index, a in enumerate(self.trips):
-            a_top = rows.index(a.top)
-            a_bottom = rows.index(a.bottom)
+        add = sorter.add
+        # edges from comparing b with a, added when we get to b
+        pending = [[] for _ in trips]
 
-            for b_index, b in enumerate(self.trips):
-                if a_index == b_index:
-                    continue
+        for a_index, a in enumerate(trips):
+            for edge in pending[a_index]:
+                add(*edge)
 
-                b_top = rows.index(b.top)
-                b_bottom = rows.index(b.bottom)
+            a_mask = masks[a_index]
+            a_times = columns[a_index]
 
-                for row in rows[max(a_top, b_top) : min(a_bottom, b_bottom) + 1]:
-                    if row.times[a_index] and row.times[b_index]:
-                        a_time = row.times[a_index].departure_or_arrival()
-                        b_time = row.times[b_index].departure_or_arrival()
-                        if a_time > b_time:  # a after b
-                            sorter.add(id(a), id(b))
-                        elif a_time < b_time or b.top is a.bottom:  # a before b
-                            sorter.add(id(b), id(a))
-                        break
+            for b_index in range(a_index + 1, len(trips)):
+                if common := a_mask & masks[b_index]:
+                    y = (common & -common).bit_length() - 1  # first common row
+                    a_time = a_times[y]
+                    b_time = columns[b_index][y]
+                    if a_time > b_time:  # a after b
+                        add(a_index, b_index)
+                        pending[b_index].append((a_index, b_index))
+                    elif a_time < b_time:  # a before b
+                        add(b_index, a_index)
+                        pending[b_index].append((b_index, a_index))
+                    else:
+                        b = trips[b_index]
+                        if b.top is a.bottom:
+                            add(b_index, a_index)
+                        if a.top is b.bottom:
+                            pending[b_index].append((a_index, b_index))
 
-        # use python id(), not trip.id: a trip in yesterday_q can also match
-        # today_q (same DB row, two instances), and trip.id collides
-        trip_ids = [id(trip) for trip in self.trips]
         try:
-            indices = [trip_ids.index(trip_id) for trip_id in sorter.static_order()]
-            assert len(trip_ids) == len(indices)
-            self.trips = [self.trips[i] for i in indices]
-        except (graphlib.CycleError, AssertionError):
-            self.trips.sort(key=cmp_to_key(partial(compare_trips, self.rows, trip_ids)))
-            new_trip_ids = [id(trip) for trip in self.trips]
-            indices = [trip_ids.index(trip_id) for trip_id in new_trip_ids]
+            indices = list(sorter.static_order())
+        except graphlib.CycleError:
+            indices = []
+
+        if len(indices) == len(trips):
+            self.trips = [trips[i] for i in indices]
+        else:
+            # cycle, or a trip with no rows in common with any other
+            positions = {row: i for i, row in enumerate(rows)}
+            # use python id(), not trip.id: a trip in yesterday_q can also match
+            # today_q (same DB row, two instances), and trip.id collides
+            trip_indices = {id(trip): i for i, trip in enumerate(trips)}
+            self.trips.sort(
+                key=cmp_to_key(partial(compare_trips, rows, positions, trip_indices))
+            )
+            indices = [trip_indices[id(trip)] for trip in self.trips]
 
         for row in rows:
             # reassemble in order
             row.times = [row.times[i] for i in indices]
 
     def merge_split_trips(self):
-        zero = datetime.timedelta()
-        fifteen = datetime.timedelta(minutes=15)
         prev_trip = None
+        trips = []
 
-        for i, trip_a in enumerate(self.trips):
-            if not trip_a.times:
+        for trip in self.trips:
+            if not trip.times:
                 continue
 
             # remove duplicates
             if (
                 prev_trip
-                and prev_trip.start == trip_a.start
-                and prev_trip.end == trip_a.end
-                and prev_trip.destination_id == trip_a.destination_id
-                and len(prev_trip.times) == len(trip_a.times)
+                and prev_trip.start == trip.start
+                and prev_trip.end == trip.end
+                and prev_trip.destination_id == trip.destination_id
+                and len(prev_trip.times) == len(trip.times)
             ):
-                trip_a.times = None
                 continue
-            prev_trip = trip_a
+            prev_trip = trip
+            trips.append(trip)
 
-            # don't merge circular trips (start and finish at same stop))
-            origin = trip_a.times[0].stop_id
-            destination = trip_a.times[-1].stop_id
-            if origin == destination:
-                continue
-
-            for j, trip_b in enumerate(self.trips[i + 1 :]):
-                if (
-                    trip_b.times
-                    and trip_a.route_id != trip_b.route_id
-                    and trip_a.route.source_id == trip_b.route.source_id
-                    and trip_a.route.line_name == trip_b.route.line_name
-                    and (
-                        trip_a.route.service_code != trip_b.route.service_code
-                        or trip_a.ticket_machine_code == trip_b.ticket_machine_code
-                    )
-                    and trip_a.operator_id == trip_b.operator_id
-                    and destination == trip_b.times[0].stop_id
-                    and origin != trip_b.times[-1].stop_id  # not circular
-                    and destination != trip_b.times[-1].stop_id  # not circular
-                    and zero
-                    <= (trip_b.start - trip_a.end)
-                    <= fifteen  # short wait time
-                ):
-                    # merge trip_a and trip_b
-                    origin = trip_b.times[0].stop_id
-                    destination = trip_b.times[-1].stop_id
-                    trip_a.times[-1].departure = trip_b.times[0].departure
-                    trip_a.times[-1].pick_up = trip_b.times[0].pick_up
-                    trip_a.times += trip_b.times[1:]
-                    trip_a.end = trip_b.end
-                    trip_b.times = None
-
-        self.trips = [trip for trip in self.trips if trip.times]
+        self.trips = []
+        for trip_a, *parts in chain_split_trips(
+            trips,
+            lambda trip: (trip.times[0].stop_id, trip.times[-1].stop_id),
+            self.parent.loose_trip_chaining,
+        ):
+            for trip_b in parts:
+                trip_a.times[-1].departure = trip_b.times[0].departure
+                trip_a.times[-1].pick_up = trip_b.times[0].pick_up
+                trip_a.times += trip_b.times[1:]
+                trip_a.end = trip_b.end
+            self.trips.append(trip_a)
 
     def handle_trip(self, trip):
         rows = self.rows
@@ -1039,10 +1064,7 @@ class Row:
 
     @cached_property
     def has_waittimes(self) -> bool:
-        for cell in self.times:
-            if type(cell) is Cell and cell.wait_time:
-                return True
-        return False
+        return any(type(cell) is Cell and cell.wait_time for cell in self.times)
 
     @cached_property
     def set_down_only(self) -> bool:

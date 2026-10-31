@@ -1,5 +1,6 @@
 """These settings rely on various environment variables being set"""
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -23,15 +24,37 @@ DEFAULT_FROM_EMAIL = os.environ.get(
     '"bustimes.org" <bustimes.org@bustimes.org>',
 )
 
-EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
-EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
-EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() in {"1", "true", "yes"}
-EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in {"1", "true", "yes"}
-EMAIL_TIMEOUT = 10
+MAILERS = {
+    "default": {
+        "OPTIONS": {
+            "host": os.environ.get("EMAIL_HOST", ""),
+            "username": os.environ.get("EMAIL_HOST_USER", ""),
+            "password": os.environ.get("EMAIL_HOST_PASSWORD", ""),
+            "use_tls": True,
+            "timeout": 5,
+        }
+    }
+}
+
 if TEST:
-    EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+    import ipaddress
+    import socket
+
+    class NetworkAccessInTest(BaseException):
+        """a BaseException so that "except Exception" can't swallow it"""
+
+    def connect(sock, address, _connect=socket.socket.connect):
+        if sock.family in (socket.AF_INET, socket.AF_INET6):
+            host = address[0]
+            try:
+                is_local = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                is_local = host == "localhost"
+            if not is_local:
+                raise NetworkAccessInTest(address)
+        return _connect(sock, address)
+
+    socket.socket.connect = connect
 
 INSTALLED_APPS = [
     "daphne",
@@ -180,6 +203,14 @@ if REDIS_URL:
                 "hosts": [{"address": REDIS_URL, "socket_timeout": 10}],
             },
         },
+        "bod_avl": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [{"address": REDIS_URL, "socket_timeout": 10}],
+                "capacity": 1000,
+                "expiry": 120,
+            },
+        },
     }
 
 STATIC_URL = "/static/"
@@ -270,6 +301,7 @@ elif TEST:
         )
     ]
 
+URLIZE_ASSUME_HTTPS = True
 
 CACHES = {}
 if TEST or DEBUG:
@@ -322,22 +354,48 @@ def traces_sampler(context):
     return 0.000003
 
 
+def before_send_transaction(event, hint):
+    # the AVL importer makes thousands of queries per update - too many spans
+    # to send, and we only want the top-level timings anyway
+    if event.get("transaction") == "bod_avl_update":
+        event["spans"] = [
+            span for span in event.get("spans", ()) if span.get("op") != "db"
+        ]
+    return event
+
+
 if not TEST:  # pragma: nocover
     if "SENTRY_DSN" in os.environ:
         import sentry_sdk
         from sentry_sdk.integrations.django import DjangoIntegration
         from sentry_sdk.integrations.huey import HueyIntegration
-        from sentry_sdk.integrations.logging import ignore_logger
+        from sentry_sdk.integrations.logging import (
+            LoggingIntegration,
+            ignore_logger,
+            ignore_logger_for_sentry_logs,
+        )
         from sentry_sdk.integrations.redis import RedisIntegration
 
         sentry_sdk.init(
             dsn=os.environ.get("SENTRY_DSN"),
-            integrations=[DjangoIntegration(), RedisIntegration(), HueyIntegration()],
+            integrations=[
+                DjangoIntegration(signals_spans=False),
+                RedisIntegration(),
+                HueyIntegration(),
+                LoggingIntegration(sentry_logs_level=logging.WARNING),
+            ],
+            enable_logs=True,
             ignore_errors=[KeyboardInterrupt, RuntimeError],
             release=os.environ.get("COMMIT_HASH")
             or os.environ.get("KAMAL_CONTAINER_NAME"),
             traces_sampler=traces_sampler,
+            before_send_transaction=before_send_transaction,
+            # don't truncate before the interesting spans are recorded
+            _experiments={"max_spans": 10000},
+            send_default_pii=False,
         )
+        ignore_logger_for_sentry_logs("django.request")
+        ignore_logger_for_sentry_logs("django.security.DisallowedHost")
         ignore_logger("django.security.DisallowedHost")
 
     LOGGING = {

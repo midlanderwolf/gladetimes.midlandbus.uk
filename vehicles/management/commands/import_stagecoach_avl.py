@@ -47,7 +47,11 @@ logger = logging.getLogger(__name__)
 # "pr" "previousStopOnRoute": "1100DEC10843",
 # "cs" "currentStopOnRoute": "",
 # "ns" "nextStopOnRoute": "",
-# "jc" "isJourneyCompletedHeuristic": "False",
+# "os" outOfService": "False",
+# "do" metresFromRoute": "0",
+# "sg" snapLongitude": "-2.454792",
+# "sa" snapLatitude": "57.584357",
+# "to" secondsOffRoute": "",
 # "rg" "rag": "A"
 
 
@@ -217,8 +221,14 @@ class Command(ImportLiveVehiclesCommand):
         return journey
 
     def create_vehicle_location(self, item):
-        return VehicleLocation(
-            latlong=GEOSGeometry(f"POINT({item['lo']} {item['la']})"),
+        location = VehicleLocation(
+            latlong=GEOSGeometry(f"POINT({item.get('lo') or 0} {item.get('la') or 0})"),
             heading=item.get("hg"),
             # occupancy=occupancies.get(item.get("rg")),
         )
+        if item.get("os") == "True":
+            location.in_service = False
+        else:
+            location.prev_stop = item.get("cs") or item.get("pr") or None
+            location.next_stop = item.get("ns") or None
+        return location

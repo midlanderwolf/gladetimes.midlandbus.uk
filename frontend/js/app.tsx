@@ -1,13 +1,10 @@
-import "./maps.css";
-import "maplibre-gl/dist/maplibre-gl.css";
+import "./polyfills";
 
 import { recordSkew } from "./clockSkew";
 
 declare global {
   interface Window {
     SERVICE_ID?: number;
-    OPERATOR_ID?: string;
-    VEHICLE_ID: number;
     globalThis: Window;
   }
 }

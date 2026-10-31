@@ -5,6 +5,7 @@ import logging
 from channels.layers import get_channel_layer
 from django.core.management.base import BaseCommand
 from redis.exceptions import ConnectionError
+from tqdm import tqdm
 
 from ...models import VehicleLocation
 from ...time_aware_polyline import (
@@ -33,13 +34,18 @@ class PolylineWrapper:
         self.last_time = 0
 
     def extend(self, lat, lng, time):
-        before = len(self.polyline)
-        self.polyline = extend_time_aware_polyline(
-            self.polyline,
+        if time < self.last_time:
+            # e.g. a vehicle in the feed twice (under two VehicleRefs) with different lags
+            return
+        extension = extend_time_aware_polyline(
+            "",
             ((lat, lng, time),),
             (self.last_lat, self.last_lng, self.last_time),
         )
-        self.pending += self.polyline[before:]
+        if extension == "???":
+            return  # no change
+        self.polyline += extension
+        self.pending += extension
         self.last_lat = lat
         self.last_lng = lng
         self.last_time = time
@@ -70,7 +76,7 @@ class Command(BaseCommand):
             if not polyline.polyline
         ]
 
-        for uuid, polyline in unknowns:
+        for uuid, _ in unknowns:
             pipeline.type(uuid)
 
         types = await pipeline.execute()
@@ -140,11 +146,13 @@ class Command(BaseCommand):
 
     async def run(self):
         channel_layer = get_channel_layer()
+        progress = tqdm(unit=" locations", disable=None)
 
-        while True:
+        while channel_layer:
             try:
                 message = await channel_layer.receive(VEHICLE_POSITIONS_CHANNEL)
                 await self.handle_items(message["items"])
+                progress.update(len(message["items"]))
             except ConnectionError:
                 logger.exception("error distributing vehicle locations")
                 raise

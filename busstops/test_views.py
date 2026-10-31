@@ -461,13 +461,13 @@ class ViewsTests(TestCase):
         self.assertEqual(
             response.context_data["links"][0],
             {
-                "text": "(ad) Buy tickets at National Express",
+                "text": "Buy tickets at National Express",
                 "url": "https://nationalexpress.prf.hn/click/camref:1011ljPYw/pubref:45C",
             },
         )
 
         response = self.client.get(self.chariots.get_absolute_url())
-        self.assertContains(response, ">Tickets (ad)<")
+        self.assertContains(response, ">Tickets<")
         self.assertContains(
             response, "https://nationalexpress.prf.hn/click/camref:1011ljPYw", 2
         )
@@ -535,10 +535,12 @@ class ViewsTests(TestCase):
         )
 
     def test_sitemap_index(self):
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(8):
             response = self.client.get("/sitemap.xml")
         self.assertContains(response, "https://testserver/sitemap-operators.xml")
         self.assertContains(response, "https://testserver/sitemap-services.xml")
+        self.assertContains(response, "https://testserver/sitemap-stops.xml")
+        self.assertContains(response, "https://testserver/sitemap-vehicles.xml")
 
     def test_sitemap_operators(self):
         with self.assertNumQueries(2):

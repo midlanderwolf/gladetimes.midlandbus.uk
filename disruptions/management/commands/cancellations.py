@@ -8,10 +8,9 @@ from django.db.transaction import atomic
 from django.utils.timezone import localtime
 
 from busstops.models import DataSource
-from bustimes.models import Trip
-from bustimes.utils import get_calendars
+from bustimes.models import Calendar, Trip
 
-from ...models import AffectedJourney, Call, Situation
+from ...models import AffectedJourney, Call, Situation, delete_old_situations
 from ...siri_sx import get_period
 
 
@@ -35,7 +34,7 @@ def get_trip(avj):
         operator=operator_ref,
         ticket_machine_code=journey_ref,
         start=timedelta(hours=departure_time.hour, minutes=departure_time.minute),
-        calendar__in=get_calendars(departure_time),
+        calendar__in=Calendar.objects.active_on(departure_time),
     )
     print("  ", journey_ref, trips)
     return trips
@@ -57,7 +56,7 @@ def handle_situation(element, source, current_situations):
             situation.data = xml
             situation.save()
             return situation
-        elif situation.data == xml:
+        if situation.data == xml:
             return situation
 
         # diff the XML to see why it changed
@@ -167,9 +166,4 @@ class Command(BaseCommand):
 
                 element.clear()
 
-        # archive old situations
-        print(
-            source.situation_set.filter(current=True)
-            .exclude(id__in=situations)
-            .update(current=False)
-        )
+        delete_old_situations(source, situations)

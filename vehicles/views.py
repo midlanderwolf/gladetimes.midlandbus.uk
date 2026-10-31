@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import logging
 import subprocess
@@ -37,7 +38,7 @@ from django.utils.cache import (
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_control
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST, require_safe
+from django.views.decorators.http import require_GET, require_POST, require_safe
 from django.views.generic.detail import DetailView
 from django_orjson.http import JsonResponse
 from haversine import haversine
@@ -55,10 +56,11 @@ from busstops.models import (
     Service,
 )
 from busstops.utils import get_bounding_box
-from bustimes.models import Garage, Route, StopTime, Trip
-from bustimes.utils import get_other_trips_in_block
+from bustimes.models import Garage, Route, Trip
+from departures.gtfsr import get_trip_updates
 from photos.forms import PhotoForm
 from photos.utils import WrongLicense, add_flickr_photo, add_uploaded_photo
+from tfl.models import Journey as TflJourney
 
 from . import filters, forms
 from .management.commands import import_bod_avl
@@ -69,10 +71,10 @@ from .models import (
     VehicleJourney,
     VehicleRevision,
     VehicleRevisionFeature,
+    get_text_colour,
 )
-from .rtpi import add_progress_and_delay
-from .tasks import handle_siri_post
-from .utils import apply_revision, get_revision, redis_client  # calculate_bearing,
+from .tasks import queue_siri_post
+from .utils import apply_revision, get_revision, redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,16 @@ class Vehicles:
         if self.vehicle:
             url = f"{url}#{self.vehicle.slug}"
         return url
+
+
+@require_safe
+def map(request):
+    if request.headers.get("cf_ipcountry") == "IE":
+        coords = (53.45, -7.5)
+    else:
+        coords = (54, -2.9)
+    initial_view_state = {"latitude": coords[0], "longitude": coords[1], "zoom": 5}
+    return render(request, "map.html", {"initial_view_state": initial_view_state})
 
 
 @require_safe
@@ -330,7 +342,7 @@ def operator_vehicles(request, slug=None, group_slug=None):
 
 @require_safe
 def operator_map(request, slug):
-    operator = get_object_or_404(Operator.objects.select_related("region"), slug=slug)
+    operator = get_object_or_404(Operator, slug=slug)
 
     return render(
         request,
@@ -338,7 +350,11 @@ def operator_map(request, slug):
         {
             "object": operator,
             "operator": operator,
-            "breadcrumb": [operator.region, operator],
+            "operator_data": {
+                "noc": operator.noc,
+                "slug": operator.slug,
+                "name": operator.name,
+            },
         },
     )
 
@@ -498,17 +514,10 @@ def get_vehicle_locations(
     vehicle_ids=None,
     service_ids=None,
     operator_ids=None,
-    trip_id=None,
-    journey_id=None,
-    stop_times=None,
-    tzinfo=None,
 ):
     """Fetch live vehicle locations from Redis (and enrich with cached/db journey info).
 
     Provide exactly one of vehicle_ids, service_ids, or operator_ids.
-
-    `stop_times` (optional) is a pre-fetched list of StopTime objects for `trip_id`,
-    reused when computing progress/delay for the matching live vehicle.
     """
     set_names = None
     if service_ids:
@@ -522,7 +531,7 @@ def get_vehicle_locations(
     try:
         vehicle_ids = [int(vehicle_id) for vehicle_id in vehicle_ids]
     except ValueError:
-        raise BadRequest
+        raise BadRequest from None
 
     if not vehicle_ids:
         return []
@@ -557,6 +566,7 @@ def get_vehicle_locations(
                 service_line_name=F("latest_journey__trip__route__line_name"),
                 service_slug=F("latest_journey__service__slug"),
                 colour=F("livery__colour"),
+                service_colour=F("latest_journey__service__colour__background"),
             )
             .defer("data", "latest_journey_data")
         ).in_bulk(
@@ -591,6 +601,14 @@ def get_vehicle_locations(
                     continue  # vehicle was deleted?
                 else:
                     journey = {"vehicle": vehicle.get_json()}
+                    # no livery - use the service colour
+                    if vehicle.service_colour and not (
+                        vehicle.livery_id or vehicle.colours
+                    ):
+                        journey["vehicle"]["css"] = vehicle.service_colour
+                        journey["vehicle"]["text_colour"] = get_text_colour(
+                            vehicle.service_colour
+                        )
                     if vehicle.service_slug:
                         journey["service"] = {
                             "url": f"/services/{vehicle.service_slug}",
@@ -605,19 +623,6 @@ def get_vehicle_locations(
                             f"{vehicle=} {vehicle.latest_journey_id=} {item['journey_id']=}"
                         )
                     item.update(journey)
-
-            matching_trip = (
-                trip_id is not None
-                and item.get("trip_id") == trip_id
-                or journey_id is not None
-                and item.get("journey_id") == journey_id
-            )
-            if "progress" not in item and (len(vehicle_ids) == 1 or matching_trip):
-                add_progress_and_delay(
-                    item,
-                    stop_times=stop_times if matching_trip else None,
-                    tzinfo=tzinfo if matching_trip else None,
-                )
 
         if (
             service_ids
@@ -735,18 +740,11 @@ def vehicles_json(request) -> JsonResponse:
         # ids of all vehicles
         vehicle_ids = redis_client.zrange("vehicle_location_locations", 0, -1)
 
-    if trip_id := request.GET.get("trip"):
-        try:
-            trip_id = int(trip_id)
-        except ValueError:
-            return cachable_400()
-
     try:
         locations = get_vehicle_locations(
             vehicle_ids=vehicle_ids,
             service_ids=service_ids,
             operator_ids=operator_ids,
-            trip_id=trip_id,
         )
     except BadRequest:
         return cachable_400()
@@ -876,7 +874,10 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
     # "Track this bus" button
     if vehicle and vehicle.latest_journey_id:
         if redis_client and redis_client.get(f"vehicle{vehicle.id}"):
-            context["tracking"] = f"/journeys/{vehicle.latest_journey_id}"
+            context["tracking"] = f"/map#journey={vehicle.latest_journey_id}"
+
+        predictions = None
+        last_trip = None
 
         # predict next workings
         if vehicle.latest_journey_id == journeys[-1].pk:
@@ -886,27 +887,50 @@ def journeys_list(request, journeys, service=None, vehicle=None) -> dict:
                 if last_trip.block and all(
                     trip.block == last_trip.block for trip in trips[-3:-1]
                 ):
-                    context["predictions"] = (
-                        get_other_trips_in_block(
-                            last_trip,
-                            date,
-                        )
-                        .filter(
-                            start__gte=last_trip.end,
-                        )
-                        .annotate(
-                            destination_name=Coalesce(
-                                "headsign",
-                                "destination__locality__name",
-                                "destination__common_name",
-                            ),
-                            line_name=F("route__line_name"),
-                        )
+                    predictions = last_trip.get_trips_in_block(date).filter(
+                        start__gte=last_trip.end
                     )
-                    for a, b in pairwise(context["predictions"]):
-                        if a.end > b.start:
-                            del context["predictions"]
-                            break
+
+        if (
+            not predictions
+            and vehicle.operator_id == "EMBR"
+            and (trip_updates := get_trip_updates("ember"))
+        ):
+            trip_ids = [
+                trip_id
+                for trip_id, trip_update in trip_updates.items()
+                if trip_update["vehicle"]["id"] == vehicle.code
+                and (last_trip is None or last_trip.vehicle_journey_code != trip_id)
+            ]
+            if trip_ids:
+                trips = Trip.objects.filter(
+                    operator=vehicle.operator_id,
+                    vehicle_journey_code__in=trip_ids,
+                    route__service__current=True,
+                ).order_by("start")
+                predictions = trips
+
+        if (
+            not predictions
+            and vehicle.is_tfl()
+            and vehicle.latest_journey_id == journeys[-1].pk
+            and (journey := TflJourney.from_vehicle_journey(journeys[-1]))
+        ):
+            context["predictions"] = journey.get_next_journeys()
+
+        elif predictions is not None:
+            context["predictions"] = predictions.annotate(
+                destination_name=Coalesce(
+                    "headsign",
+                    "destination__locality__name",
+                    "destination__common_name",
+                ),
+                line_name=F("route__line_name"),
+            )
+            for a, b in pairwise(context["predictions"]):
+                if a.end > b.start:
+                    del context["predictions"]
+                    break
 
     return context
 
@@ -1029,7 +1053,7 @@ class VehicleDetailView(DetailView):
             context["form"] = self.form or PhotoForm()
 
         if self.request.user.is_staff:
-            context["css"], context["latest_journey_debug"] = format_json(
+            context["latest_journey_debug"] = format_json(
                 self.object.latest_journey_data
             )
 
@@ -1146,12 +1170,10 @@ def edit_vehicle(request, **kwargs):
 
     revision = None
 
-    try:
+    with contextlib.suppress(KeyError, TypeError):
         context["vehicle_unique_id"] = vehicle.latest_journey_data["Extensions"][
             "VehicleJourney"
         ]["VehicleUniqueId"]
-    except (KeyError, TypeError):
-        pass
 
     form = forms.EditVehicleForm(
         form_data,
@@ -1251,7 +1273,7 @@ def vehicle_revision_action(request, revision_id, action):
     if action == "disapprove" and request.user.id == revision.user_id:
         revision.delete()  # cancel one's own edit
         return HttpResponse("")
-    elif not request.user.trusted:
+    if not request.user.trusted:
         raise PermissionDenied
 
     revision.disapproved_reason = unquote(request.headers.get("HX-Prompt", ""))
@@ -1327,10 +1349,8 @@ def latest_journey_debug(request, **kwargs):
     vehicle = get_object_or_404(Vehicle, **kwargs, latest_journey_data__isnull=False)
 
     # redact possible personal information
-    try:
+    with contextlib.suppress(KeyError, TypeError):
         del vehicle.latest_journey_data["Extensions"]["VehicleJourney"]["DriverRef"]
-    except (KeyError, TypeError):
-        pass
 
     return JsonResponse(vehicle.latest_journey_data)
 
@@ -1374,21 +1394,32 @@ def debug(request):
     return render(request, "vehicles/debug.html", {"form": form, "result": result})
 
 
-@csrf_exempt
-def siri_post(request, uuid):
-    subscription = get_object_or_404(SiriSubscription, uuid=uuid)
+@require_GET
+def siri_get(request, **kwargs):
+    subscription = get_object_or_404(SiriSubscription, **kwargs)
     last_post_key = subscription.get_status_key().replace("_status", "_last_post")
 
+    last_post = cache.get(last_post_key)
+
+    content_type = last_post["headers"].get("content-type")
+    if content_type not in ("application/json", "application/xml", "text/xml"):
+        content_type = "text_plain"
+
+    return HttpResponse(last_post["body"], content_type=content_type)
+
+
+@csrf_exempt
+def siri_post(request, uuid):
     if request.method == "GET":
-        last_post = cache.get(last_post_key)
-        return HttpResponse(
-            last_post["body"], content_type=last_post["headers"]["content-type"]
-        )
+        return siri_get(request, uuid=uuid)
+
+    subscription = get_object_or_404(SiriSubscription, uuid=uuid)
+    last_post_key = subscription.get_status_key().replace("_status", "_last_post")
 
     body = request.body.decode()
     data = xmltodict.parse(body, force_list=["VehicleActivity"])
 
-    handle_siri_post(uuid, data)
+    queue_siri_post(uuid, data)
 
     cache.set(last_post_key, {"headers": request.headers, "body": body}, None)
 
@@ -1409,6 +1440,59 @@ def siri_post(request, uuid):
             }
         ),
         content_type="application/xml",
+    )
+
+
+def queue_device_location(uuid, when, device_id, lon, lat, bearing=None):
+    # device_id is "operator:vehicle:line_name:journey_ref:destination",
+    # trailing parts optional, or just "vehicle"
+    parts = device_id.split(":", 4)
+    if len(parts) == 1:
+        parts.insert(0, "")
+    operator, vehicle, line_name, journey_ref, destination = parts + [""] * (
+        5 - len(parts)
+    )
+    activity = {
+        "RecordedAtTime": when,
+        "MonitoredVehicleJourney": {
+            "OperatorRef": operator,
+            "VehicleRef": vehicle,
+            "PublishedLineName": line_name,
+            "VehicleJourneyRef": journey_ref,
+            "VehicleLocation": {
+                "Longitude": lon,
+                "Latitude": lat,
+            },
+        },
+    }
+    if bearing is not None and bearing >= 0:
+        activity["MonitoredVehicleJourney"]["Bearing"] = bearing
+    if destination:
+        activity["MonitoredVehicleJourney"]["DestinationName"] = destination
+
+    queue_siri_post(
+        uuid,
+        {
+            "Siri": {
+                "ServiceDelivery": {
+                    "ResponseTimestamp": when,
+                    "VehicleMonitoringDelivery": {
+                        "VehicleActivity": [activity],
+                    },
+                }
+            }
+        },
+    )
+
+
+def cache_last_post(request, subscription):
+    cache.set(
+        subscription.get_status_key().replace("_status", "_last_post"),
+        {
+            "headers": request.headers,
+            "body": request.body.decode() or request.META["QUERY_STRING"],
+        },
+        None,
     )
 
 
@@ -1458,23 +1542,53 @@ def overland(request, uuid=None):
 
         handle_siri_post(
             uuid,
-            {
-                "Siri": {
-                    "ServiceDelivery": {
-                        "ResponseTimestamp": when,
-                        "VehicleMonitoringDelivery": {
-                            "VehicleActivity": [activity],
-                        },
-                    }
-                }
-            },
+            item["properties"]["timestamp"],
+            item["properties"]["device_id"],
+            lon,
+            lat,
         )
 
-    cache.set(
-        subscription.get_status_key().replace("_status", "_last_post"),
-        {"headers": request.headers, "body": request.body.decode()},
-        None,
-    )
+    cache_last_post(request, subscription)
 
     # https://github.com/aaronpk/Overland-iOS#api
     return JsonResponse({"result": "ok"})
+
+
+@csrf_exempt
+@require_POST
+def traccar(request, uuid):
+    # OsmAnd protocol, as sent by Traccar Client
+    # https://github.com/traccar/traccar/blob/master/src/main/java/org/traccar/protocol/OsmAndProtocolDecoder.java
+
+    subscription = get_object_or_404(SiriSubscription, uuid=uuid)
+
+    cache_last_post(request, subscription)
+
+    if request.content_type == "application/json":
+        data = loads(request.body)
+        location = data["location"]
+        device_id = data["device_id"]
+        when = location["timestamp"]
+        lon = location["coords"]["longitude"]
+        lat = location["coords"]["latitude"]
+        bearing = location["coords"].get("heading")
+    else:
+        params = request.GET or request.POST
+        if "timestamp" not in params:
+            return HttpResponse()
+        device_id = params.get("id") or params["deviceid"]
+        when = params["timestamp"]
+        if when.isdigit():
+            when = int(when)
+            if when > 2**31:  # milliseconds
+                when /= 1000
+            when = datetime.datetime.fromtimestamp(when, datetime.UTC).isoformat()
+        lon = float(params["lon"])
+        lat = float(params["lat"])
+        bearing = params.get("bearing") or params.get("heading")
+        if bearing is not None:
+            bearing = float(bearing)
+
+    queue_device_location(uuid, when, device_id, lon, lat, bearing)
+
+    return HttpResponse()

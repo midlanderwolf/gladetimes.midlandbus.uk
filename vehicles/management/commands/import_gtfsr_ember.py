@@ -19,7 +19,7 @@ class Command(GTFSRCommand):
     def do_source(self):
         self.tzinfo = ZoneInfo("Europe/London")
         self.source, _ = DataSource.objects.get_or_create(name=self.source_name)
-        self.url = "https://api.ember.to/v1/gtfs/realtime/vehicle-positions/"
+        self.url = "https://api.ember.to/v1/gtfs/realtime/"
         return self
 
     def get_items(self):
@@ -27,12 +27,12 @@ class Command(GTFSRCommand):
         if feed is None:  # not modified
             return
 
-        trip_updates = {
+        self.trip_updates = {
             entity["tripUpdate"]["trip"]["tripId"]: entity["tripUpdate"]
             for entity in json_format.MessageToDict(feed).get("entity", ())
             if "tripUpdate" in entity and "tripId" in entity["tripUpdate"]["trip"]
         }
-        cache.set("ember_trip_updates", trip_updates, 300)
+        cache.set("ember_trip_updates", self.trip_updates, 300)
 
         # the feed contains both vehicle positions and alerts (and possibly other entities)
         for item in feed.entity:
@@ -51,7 +51,7 @@ class Command(GTFSRCommand):
     def get_journey(self, item, vehicle):
         journey = VehicleJourney(code=item.vehicle.trip.trip_id)
 
-        start_date = datetime.strptime(  # noqa: DTZ007 - only .date() is used
+        start_date = datetime.strptime(
             f"{item.vehicle.trip.start_date} 12:00:00",
             "%Y%m%d %H:%M:%S",
         )
@@ -79,3 +79,28 @@ class Command(GTFSRCommand):
         vehicle.latest_journey_data = json_format.MessageToDict(item)
 
         return journey
+
+    def create_vehicle_location(self, item):
+        location = super().create_vehicle_location(item)
+
+        # stops already passed have their actual times, skipped stops have no times
+        trip_update = self.trip_updates.get(item.vehicle.trip.trip_id)
+        if trip_update and "stopTimeUpdate" in trip_update:
+            prev_stop = None
+            for update in trip_update["stopTimeUpdate"]:
+                time = next(
+                    (
+                        update[key]["time"]
+                        for key in ("arrival", "departure")
+                        if "time" in update.get(key, ())
+                    ),
+                    None,
+                )
+                if time is not None:
+                    if int(time) > item.vehicle.timestamp:
+                        location.prev_stop = prev_stop
+                        location.next_stop = update.get("stopId")
+                        break
+                    prev_stop = update.get("stopId")
+
+        return location

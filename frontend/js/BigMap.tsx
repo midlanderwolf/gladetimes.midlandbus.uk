@@ -15,7 +15,6 @@ import {
   Popup,
   Source,
   type ViewStateChangeEvent,
-  useMap,
 } from "react-map-gl/maplibre";
 import { Link } from "wouter";
 
@@ -44,12 +43,6 @@ import { getBounds, getFont } from "./utils";
 
 const apiRoot = process.env.apiRoot ?? "/";
 
-declare global {
-  interface Window {
-    INITIAL_VIEW_STATE: MapProps["initialViewState"];
-  }
-}
-
 const updateLocalStorage = debounce((zoom: number, latLng) => {
   try {
     localStorage.setItem("vehicleMap", `${zoom}/${latLng.lat}/${latLng.lng}`);
@@ -58,12 +51,27 @@ const updateLocalStorage = debounce((zoom: number, latLng) => {
   }
 }, 2000);
 
-if (window.INITIAL_VIEW_STATE && !window.location.hash) {
+const hash = new Hash();
+
+function updateHash(map: MapGL) {
+  hash._map = map;
+  hash._updateHashUnthrottled();
+}
+
+const initialViewStateElement = document.getElementById("initialViewState");
+let INITIAL_VIEW_STATE: MapProps["initialViewState"];
+if (initialViewStateElement) {
+  INITIAL_VIEW_STATE = JSON.parse(
+    initialViewStateElement.textContent as string,
+  );
+}
+
+if (INITIAL_VIEW_STATE && !window.location.hash) {
   try {
     if (localStorage.vehicleMap) {
       const parts = localStorage.vehicleMap.split("/");
       if (parts.length === 3) {
-        window.INITIAL_VIEW_STATE = {
+        INITIAL_VIEW_STATE = {
           zoom: parts[0],
           latitude: parts[1],
           longitude: parts[2],
@@ -99,24 +107,6 @@ export enum MapMode {
   Operator = 1,
   Trip = 2,
   Journey = 3,
-}
-
-function SlippyMapHash() {
-  const mapRef = useMap();
-
-  React.useEffect(() => {
-    if (mapRef.current) {
-      const map = mapRef.current.getMap();
-      const hash = map._hash || new Hash();
-      map._hash = hash;
-      hash.addTo(map);
-      return () => {
-        hash.remove();
-      };
-    }
-  }, [mapRef]);
-
-  return null;
 }
 
 function Stops({
@@ -253,12 +243,12 @@ const Vehicles = memo(function Vehicles({
         ? vehicles.map((vehicle) => {
             return {
               type: "Feature" as const,
-              id: vehicle.id,
               geometry: {
                 type: "Point" as const,
                 coordinates: vehicle.coordinates,
               },
               properties: {
+                id: vehicle.id, // (not feature.id, which can't be negative)
                 url: vehicle.vehicle?.url,
                 colour:
                   vehicle.vehicle?.colour ||
@@ -349,7 +339,7 @@ function TripSidebar(props: {
   tripId?: string;
   vehicle?: VehicleLocation | null;
   highlightedStop?: string;
-  onMouseEnter: (stop: TripTime) => void;
+  onHover: (stop: TripTime) => void;
 }) {
   let className = "trip-timetable map-sidebar";
 
@@ -382,16 +372,16 @@ function TripSidebar(props: {
   return (
     <div className={className}>
       {operator || service ? (
-        <ul className="breadcrumb">
+        <ol className="breadcrumb">
           {operator}
           {service}
-        </ul>
+        </ol>
       ) : null}
       <TripTimetable
         trip={trip}
         vehicle={props.vehicle}
         highlightedStop={props.highlightedStop}
-        onMouseEnter={props.onMouseEnter}
+        onHover={props.onHover}
       />
       <dl className="contact-details">
         {trip.block ? (
@@ -410,9 +400,10 @@ function TripSidebar(props: {
 function JourneySidebar(props: {
   journey?: VehicleJourney;
   journeyId: string;
+  journeyContext?: string | null;
   highlightedStop?: string;
   vehicle?: VehicleLocation | null;
-  onMouseEnter: (stop: TripTime) => void;
+  onHover: (stop: TripTime) => void;
 }) {
   let className = "trip-timetable map-sidebar";
 
@@ -427,6 +418,9 @@ function JourneySidebar(props: {
   }
 
   const showNavigation = journey.previous || journey.next;
+  const context = props.journeyContext
+    ? `&context=${props.journeyContext}`
+    : "";
 
   const _operator = journey.operator || journey.trip?.operator;
   let operator: ReactElement | undefined;
@@ -491,23 +485,23 @@ function JourneySidebar(props: {
   return (
     <div className={className}>
       {operator || service ? (
-        <ul className="breadcrumb">
+        <ol className="breadcrumb">
           {operator}
           {service}
-        </ul>
+        </ol>
       ) : null}
       {showNavigation ? (
         <div className="navigation">
           {journey.previous ? (
             <p className="previous">
-              <Link href={`/journeys/${journey.previous.id}`}>
+              <Link href={`/map#journey=${journey.previous.id}${context}`}>
                 &larr; {journey.previous.datetime.slice(11, 16)}
               </Link>
             </p>
           ) : null}
           {journey.next ? (
             <p className="next">
-              <Link href={`/journeys/${journey.next.id}`}>
+              <Link href={`/map#journey=${journey.next.id}${context}`}>
                 {journey.next.datetime.slice(11, 16)} &rarr;
               </Link>
             </p>
@@ -522,7 +516,7 @@ function JourneySidebar(props: {
           trip={journey.trip}
           vehicle={props.vehicle}
           highlightedStop={props.highlightedStop}
-          onMouseEnter={props.onMouseEnter}
+          onHover={props.onHover}
         />
       ) : null}
       <dl className="contact-details">
@@ -572,7 +566,9 @@ function getStopName({
   common_name,
   locality_name,
   indicator,
-}: { [name: string]: string }) {
+}: {
+  [name: string]: string;
+}) {
   let name = common_name;
   if (indicator) {
     if (
@@ -594,12 +590,18 @@ function getStopName({
   return name;
 }
 
+export type Operator = {
+  noc: string;
+  slug: string;
+  name: string;
+};
+
 export default function BigMap(
   props: {
-    noc?: string;
+    operatorSlug?: string;
+    operator?: Operator;
     trip?: Trip;
     tripId?: string;
-    vehicleId?: number;
     journeyId?: string;
   } & (
     | {
@@ -617,6 +619,32 @@ export default function BigMap(
 
   const [journey, setJourney] = React.useState<VehicleJourney>();
 
+  // null means not found
+  const [operator, setOperator] = React.useState<Operator | null>();
+
+  React.useEffect(() => {
+    if (!props.operatorSlug) {
+      setOperator(undefined);
+      return;
+    }
+    if (props.operator?.slug === props.operatorSlug) {
+      setOperator(props.operator);
+      return;
+    }
+    setOperator(undefined);
+    let cancelled = false;
+    fetchJson(
+      `api/operators/?slug=${encodeURIComponent(props.operatorSlug)}`,
+    ).then((response?: { results: Operator[] }) => {
+      if (!cancelled) {
+        setOperator(response?.results[0] || null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.operatorSlug, props.operator]);
+
   const [vehicles, setVehicles] = React.useState<VehicleLocation[]>();
 
   const [zoom, setZoom] = React.useState<number>();
@@ -630,15 +658,32 @@ export default function BigMap(
     }
   });
 
+  const [journeyContext] = React.useState(() =>
+    new URLSearchParams(window.location.hash.slice(1)).get("context"),
+  );
+
   const [clickedStopFeature, setClickedStopFeature] = React.useState<
     Stop | undefined
   >();
+
+  // hovering a timetable row opens a popup, but doesn't highlight the row -
+  // only a clicked stop is highlighted
+  const [hoveredStopUrl, setHoveredStopUrl] = React.useState<string>();
+
+  const popupStopUrl = hoveredStopUrl || clickedStopUrl;
+
+  const setStopPopup = React.useCallback((url?: string) => {
+    setHoveredStopUrl(undefined);
+    setClickedStopURL(url);
+  }, []);
 
   const [tripVehicle, setTripVehicle] = React.useState<VehicleLocation | null>(
     null,
   );
 
-  const initialViewState = useRef(window.INITIAL_VIEW_STATE);
+  const initialViewState = useRef(
+    props.mode === MapMode.Slippy ? INITIAL_VIEW_STATE : undefined,
+  );
 
   const polylineLocations = useMemo(() => {
     if (journey?.time_aware_polyline) {
@@ -702,13 +747,24 @@ export default function BigMap(
       return getBounds(trip.times, (time) => time.stop.location);
     }
     if (journey) {
-      const _bounds = getBounds(
+      let _bounds = getBounds(
         journey.trip?.times,
         (item) => item.stop.location,
       );
-      return getBounds(polylineLocations, (item) => item.coordinates, _bounds);
+      _bounds = getBounds(
+        polylineLocations,
+        (item) => item.coordinates,
+        _bounds,
+      );
+      _bounds = getBounds(
+        tripVehicle ? [tripVehicle] : undefined,
+        (item) => item.coordinates,
+        _bounds,
+      );
+      // e.g. stops without locations
+      return _bounds?.isEmpty() ? undefined : _bounds;
     }
-  }, [trip, journey, polylineLocations]);
+  }, [trip, journey, polylineLocations, tripVehicle]);
 
   const fitBoundsOptions = useMemo(() => {
     if (props.mode === MapMode.Slippy || props.mode === MapMode.Operator) {
@@ -719,11 +775,16 @@ export default function BigMap(
     return { padding: 50 };
   }, [props.mode]);
 
+  const fittedBoundsFor = useRef<string>(undefined);
+
   useEffect(() => {
     if (bounds && mapRef.current) {
+      const key = trip ? `trip-${trip.id}` : `journey-${journey?.id}`;
+      if (fittedBoundsFor.current === key) return;
+      fittedBoundsFor.current = key;
       mapRef.current.fitBounds(bounds, { padding: 50 });
     }
-  }, [bounds]);
+  }, [bounds, trip, journey?.id]);
 
   // slippy map stuff
   const boundsRef = React.useRef<LngLatBounds | null>(null);
@@ -731,6 +792,7 @@ export default function BigMap(
   const vehiclesTimeout = React.useRef<number | null>(null);
   const vehiclesAbortController = React.useRef<AbortController | null>(null);
   const vehiclesLength = React.useRef<number>(0);
+  const vehiclesLoadedAt = React.useRef<number>(0);
 
   const [loadingBuses, setLoadingBuses] = React.useState(true);
 
@@ -758,19 +820,19 @@ export default function BigMap(
           }
           break;
         case MapMode.Operator:
-          url = `?operator=${props.noc}`;
+          if (operator) {
+            url = `?operator=${operator.noc}`;
+          }
           break;
         case MapMode.Trip:
-          if (props.vehicleId) {
-            url = `?id=${props.vehicleId}`;
-          } else if (trip?.service?.id) {
-            url = `?service=${trip.service.id}&trip=${trip.id}`;
+          if (trip?.service?.id) {
+            url = `?service=${trip.service.id}`;
           }
           break;
         case MapMode.Journey:
           if (journey?.live) {
-            if (journey.service?.id && journey.trip_id) {
-              url = `?service=${journey.service.id}&trip=${journey.trip_id}`;
+            if (journey.service?.id) {
+              url = `?service=${journey.service.id}`;
             } else if (journey.vehicle?.id) {
               url = `?id=${journey.vehicle.id}`;
             } else {
@@ -788,15 +850,18 @@ export default function BigMap(
       const handleItems = (items: VehicleLocation[]) => {
         vehiclesHighWaterMark.current = _bounds;
 
-        if (props.mode === MapMode.Operator && !initialViewState.current) {
+        if (props.mode === MapMode.Operator && first) {
           const bounds = getBounds(items, (item) => item.coordinates);
           if (bounds) {
-            initialViewState.current = {
-              bounds,
-              fitBoundsOptions: {
-                padding: { top: 50, bottom: 150, left: 50, right: 50 },
-              },
+            const fitBoundsOptions = {
+              padding: { top: 50, bottom: 150, left: 50, right: 50 },
             };
+            if (mapRef.current) {
+              // navigated here from another map
+              mapRef.current.fitBounds(bounds, fitBoundsOptions);
+            } else if (!initialViewState.current) {
+              initialViewState.current = { bounds, fitBoundsOptions };
+            }
           }
         }
 
@@ -834,6 +899,7 @@ export default function BigMap(
           (response) => {
             recordSkew(response);
             if (response.ok || response.status === 404) {
+              vehiclesLoadedAt.current = Date.now();
               response.json().then(handleItems);
 
               setLoadingBuses(false);
@@ -853,12 +919,37 @@ export default function BigMap(
           // setLoadingBuses(false);
         });
     },
-    [props.mode, props.noc, trip, journey, props.vehicleId],
+    [props.mode, operator, trip, journey],
   );
+
+  const loadJourney = React.useCallback(() => {
+    fetchJson(
+      `api/vehiclejourneys/${props.journeyId}/details.json${journeyContext ? `?context=${journeyContext}` : ""}`,
+    ).then((journey: VehicleJourney) => {
+      vehiclesLoadedAt.current = Date.now();
+      setJourney(journey);
+      const item = journey.vehicle?.id
+        ? (journey.live?.find((v) => v.id === journey.vehicle?.id) ?? null)
+        : // journey-based tracking with no vehicle (e.g. FlixBus)
+          (journey.live?.find((v) => v.journey_id === journey.id) ?? null);
+      // sort of duplicating `handleItems`
+      vehiclesHighWaterMark.current = null;
+      setVehicles(journey.live);
+      vehiclesLength.current = journey.live?.length || 0;
+      if (item) {
+        setClickedVehicleMarker(item?.id);
+      }
+      setTripVehicle(item);
+    });
+  }, [props.journeyId, journeyContext]);
 
   React.useEffect(() => {
     if (vehiclesTimeout.current) {
       clearTimeout(vehiclesTimeout.current);
+    }
+    if (vehiclesAbortController.current) {
+      vehiclesAbortController.current.abort();
+      vehiclesAbortController.current = null;
     }
     setAppendedLocations([]);
     if (props.tripId) {
@@ -870,59 +961,41 @@ export default function BigMap(
         setJourney(undefined);
         fetchJson(`api/trips/${props.tripId}.json`).then(setTrip);
       }
-    } else if (props.noc) {
+    } else if (props.operatorSlug) {
       setJourney(undefined);
       setTrip(undefined);
       // operator mode
-      if (props.noc === trip?.operator?.noc) {
-        document.title = `Bus tracker map \u2013 ${trip.operator.name} \u2013 bustimes.org`;
+      if (operator) {
+        document.title = `Map \u2013 ${operator.name} \u2013 bustimes.org`;
+        loadVehicles(true);
       }
-      loadVehicles(true);
     } else if (props.journeyId) {
       // journey mode
       if (journey?.id?.toString() === props.journeyId) {
+        document.title = `${journey.route_name} – ${journey.destination} – bustimes.org`;
         if (!document.hidden) {
           vehiclesTimeout.current = window.setTimeout(loadVehicles, 12000); // 12 seconds
         }
       } else {
         setTrip(undefined);
-        fetchJson(`api/vehiclejourneys/${props.journeyId}/details.json`).then(
-          (journey: VehicleJourney) => {
-            setJourney(journey);
-            const item = journey.vehicle?.id
-              ? (journey.live?.find((v) => v.id === journey.vehicle?.id) ??
-                null)
-              : // journey-based tracking with no vehicle (e.g. FlixBus)
-                (journey.live?.find((v) => v.journey_id === journey.id) ??
-                null);
-            // sort of duplicating `handleItems`
-            vehiclesHighWaterMark.current = null;
-            setVehicles(journey.live);
-            vehiclesLength.current = journey.live?.length || 0;
-            if (item) {
-              setClickedVehicleMarker(item?.id);
-            }
-            setTripVehicle(item);
-          },
-        );
+        loadJourney();
       }
-    } else if (!props.vehicleId) {
+    } else {
       setJourney(undefined);
       setTrip(undefined);
       // slippy mode
       document.title = "Map \u2013 bustimes.org";
       loadVehicles();
-    } else {
-      loadVehicles();
     }
   }, [
     props.tripId,
     trip,
-    props.noc,
-    props.vehicleId,
+    props.operatorSlug,
+    operator,
     props.journeyId,
     journey,
     loadVehicles,
+    loadJourney,
   ]);
 
   const handleMoveEnd = React.useCallback(
@@ -931,6 +1004,7 @@ export default function BigMap(
       const _zoom = evt.viewState.zoom;
       setZoom(_zoom);
       boundsRef.current = _bounds;
+      updateHash(evt.target);
 
       if (!evt.originalEvent) {
         return;
@@ -961,7 +1035,18 @@ export default function BigMap(
   // (re)load vehicles on tab visibility change
   React.useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden) {
+      if (document.hidden) {
+        return;
+      }
+      if (
+        props.mode === MapMode.Journey &&
+        journey?.live &&
+        journey.time_aware_polyline &&
+        Date.now() - vehiclesLoadedAt.current > 60000
+      ) {
+        // the trail would have a gap in it, so get a fresh polyline
+        loadJourney();
+      } else {
         loadVehicles();
       }
     };
@@ -971,11 +1056,10 @@ export default function BigMap(
     return () => {
       window.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [loadVehicles]);
+  }, [loadVehicles, loadJourney, props.mode, journey]);
 
-  const [clickedVehicleMarkerId, setClickedVehicleMarker] = React.useState<
-    number | undefined
-  >(props.vehicleId);
+  const [clickedVehicleMarkerId, setClickedVehicleMarker] =
+    React.useState<number>();
 
   const handleMapClick = React.useCallback(
     (e: MapLayerMouseEvent) => {
@@ -984,6 +1068,7 @@ export default function BigMap(
       if (vehicleId) {
         setClickedVehicleMarker(vehicleId);
         setClickedStopURL(undefined);
+        setHoveredStopUrl(undefined);
         setHoveredLocation(null);
         setClickedStopFeature(undefined);
         return;
@@ -992,12 +1077,13 @@ export default function BigMap(
       // handle click on maplibre rendered feature
       if (e.features?.length) {
         for (const feature of e.features) {
-          if (feature.layer.id === "vehicles" && feature.id) {
-            setClickedVehicleMarker(feature.id as number);
+          if (feature.layer.id === "vehicles" && feature.properties.id) {
+            setClickedVehicleMarker(feature.properties.id);
             return;
           }
           if (feature.layer.id.startsWith("stops")) {
             const url = feature.properties.url;
+            setHoveredStopUrl(undefined);
             if (url !== clickedStopUrl) {
               setClickedStopURL(url);
               setHoveredLocation(null);
@@ -1021,6 +1107,7 @@ export default function BigMap(
         }
       } else {
         setClickedStopURL(undefined);
+        setHoveredStopUrl(undefined);
         setClickedStopFeature(undefined);
       }
       setClickedVehicleMarker(undefined);
@@ -1031,10 +1118,17 @@ export default function BigMap(
   const handleMapInit = React.useCallback(
     (map: MapGL) => {
       mapRef.current = map;
+      map.once("remove", () => {
+        if (mapRef.current === map) {
+          mapRef.current = null;
+        }
+      });
 
       if (props.mode === MapMode.Slippy) {
         if (!boundsRef.current) {
           // first load
+          hash._map = map;
+          hash._onHashChange();
           const _zoom = map.getZoom();
           boundsRef.current = map.getBounds();
           setZoom(_zoom);
@@ -1048,6 +1142,12 @@ export default function BigMap(
     },
     [props.mode, loadVehicles],
   );
+
+  useEffect(() => {
+    if (props.mode === MapMode.Slippy && mapRef.current) {
+      updateHash(mapRef.current);
+    }
+  }, [props.mode]);
 
   const [cursor, setCursor] = React.useState<string>();
 
@@ -1090,6 +1190,13 @@ export default function BigMap(
 
   const handleRowHover = React.useCallback((a: TripTime) => {
     if (a.stop.location && a.stop.atco_code) {
+      setHoveredStopUrl(`/stops/${a.stop.atco_code}`);
+    }
+  }, []);
+
+  const handleRowClick = React.useCallback((a: TripTime) => {
+    if (a.stop.location && a.stop.atco_code) {
+      setHoveredStopUrl(undefined);
       setClickedStopURL(`/stops/${a.stop.atco_code}`);
     }
   }, []);
@@ -1097,16 +1204,25 @@ export default function BigMap(
   const showStops = shouldShowStops(zoom);
   const showBuses = props.mode !== MapMode.Slippy || shouldShowVehicles(zoom);
 
+  const breadcrumb =
+    props.operatorSlug && operator ? (
+      <ol className="breadcrumb">
+        <li>
+          <a href="/">Home</a>
+        </li>
+        <li>
+          <a href={`/operators/${operator.slug}`}>{operator.name}</a>
+        </li>
+      </ol>
+    ) : null;
+
   if (props.mode === MapMode.Operator) {
-    if (!vehicles) {
-      return <LoadingSorry />;
-    }
-    if (!vehiclesLength.current) {
+    if (operator === null) {
       return (
         <LoadingSorry
           text={
             <>
-              <p>Sorry, no buses are tracking at the moment</p>
+              <p>Sorry, operator not found</p>
               <p>
                 <a href="/map">Go to the main map?</a>
               </p>
@@ -1115,19 +1231,56 @@ export default function BigMap(
         />
       );
     }
+    if (!vehicles || (!operator && !vehiclesLength.current)) {
+      return (
+        <div className="big-map">
+          {breadcrumb}
+          <LoadingSorry />
+        </div>
+      );
+    }
+    if (operator && !vehiclesLength.current) {
+      return (
+        <div className="big-map">
+          {breadcrumb}
+          <LoadingSorry
+            text={
+              <>
+                <p>
+                  Sorry, no {operator.name} buses are tracking at the moment
+                </p>
+                <p>
+                  <a href="/map">Go to the main map?</a>
+                </p>
+              </>
+            }
+          />
+        </div>
+      );
+    }
   }
 
   if (props.mode === MapMode.Journey && !journey && !mapRef.current) {
     return <LoadingSorry />;
   }
 
+  // nothing to show on a map (no stops, history or live location)
+  if (props.mode === MapMode.Journey && !bounds && !mapRef.current) {
+    return (
+      <JourneySidebar
+        journey={journey}
+        journeyId={props.journeyId}
+        journeyContext={journeyContext}
+        vehicle={tripVehicle}
+        onHover={handleRowHover}
+      />
+    );
+  }
+
   let className = "big-map";
   if (props.mode === MapMode.Trip || props.mode === MapMode.Journey) {
     className += " has-sidebar";
   }
-  // console.dir(bounds);
-  // console.dir(journey);
-  // console.dir(initialViewState.current);
 
   return (
     <React.Fragment>
@@ -1137,12 +1290,12 @@ export default function BigMap(
         </Link>
       )}
       <div className={className}>
+        {breadcrumb}
         <BusTimesMap
           initialViewState={
             initialViewState.current || { bounds, fitBoundsOptions }
           }
           onMoveEnd={props.mode === MapMode.Slippy ? handleMoveEnd : undefined}
-          hash={props.mode === MapMode.Slippy}
           onClick={handleMapClick}
           onMouseEnter={onMouseEnter}
           onMouseMove={
@@ -1162,8 +1315,6 @@ export default function BigMap(
             <Route times={trip.times} />
           ) : null}
 
-          {/* props.mode === MapMode.Slippy ? <SlippyMapHash /> : null */}
-
           {props.mode === MapMode.Journey && journey?.trip?.times ? (
             <Route times={journey.trip.times} />
           ) : null}
@@ -1179,14 +1330,14 @@ export default function BigMap(
           ) : trip ? (
             <Stops
               times={trip.times}
-              clickedStopUrl={clickedStopUrl}
-              setClickedStop={setClickedStopURL}
+              clickedStopUrl={popupStopUrl}
+              setClickedStop={setStopPopup}
             />
           ) : props.mode === MapMode.Journey && journey?.trip?.times ? (
             <Stops
               times={journey.trip.times}
-              clickedStopUrl={clickedStopUrl}
-              setClickedStop={setClickedStopURL}
+              clickedStopUrl={popupStopUrl}
+              setClickedStop={setStopPopup}
             />
           ) : null}
 
@@ -1238,7 +1389,7 @@ export default function BigMap(
           tripId={props.tripId}
           vehicle={tripVehicle}
           highlightedStop={clickedStopUrl}
-          onMouseEnter={handleRowHover}
+          onHover={handleRowHover}
         />
       ) : null}
 
@@ -1246,9 +1397,10 @@ export default function BigMap(
         <JourneySidebar
           journey={journey}
           journeyId={props.journeyId}
+          journeyContext={journeyContext}
           vehicle={tripVehicle}
           highlightedStop={clickedStopUrl}
-          onMouseEnter={handleRowHover}
+          onHover={handleRowHover}
         />
       ) : null}
     </React.Fragment>

@@ -17,6 +17,8 @@ from . import views
 sitemaps = {
     "operators": views.OperatorSitemap,
     "services": views.ServiceSitemap,
+    "stops": views.StopSitemap,
+    "vehicles": views.VehicleSitemap,
 }
 
 urlpatterns = [
@@ -32,7 +34,7 @@ urlpatterns = [
         TemplateView.as_view(template_name="cookies.html"),
     ),
     path("503", TemplateView.as_view(template_name="503.html")),
-    path("data", TemplateView.as_view(template_name="data.html")),
+    path("data", views.data_sources),
     path("status", views.status),
     path("timetable-source-stats.json", views.timetable_source_stats),
     path("stats.json", views.stats),

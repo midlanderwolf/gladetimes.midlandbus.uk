@@ -1,5 +1,6 @@
 import datetime
 import math
+import pickle
 
 import redis.asyncio
 from django.conf import settings
@@ -21,6 +22,24 @@ if redis_client:
     )
 else:
     async_redis_client = None
+
+
+def append_status(key, status, maxlen=50):
+    """a bounded list, safe for several processes to append to"""
+    if not redis_client:
+        return
+    pipeline = redis_client.pipeline(transaction=False)
+    pipeline.rpush(key, pickle.dumps(status))
+    pipeline.ltrim(key, -maxlen, -1)
+    pipeline.expire(key, 800)
+    pipeline.execute()
+
+
+def get_statuses(key) -> list:
+    if not redis_client:
+        return []
+    return [pickle.loads(status) for status in redis_client.lrange(key, 0, -1)]
+
 
 # channel that import_live_vehicles sends batches of updated vehicle locations to,
 # for the distribute_vehicle_locations worker to fan out to websocket groups
@@ -49,10 +68,9 @@ def archive_avl_data(source, data: bytes | str, filename: str):
 
 
 def calculate_bearing(a, b):
-    a_lat = math.radians(a.y)
-    a_lon = math.radians(a.x)
-    b_lat = math.radians(b.y)
-    b_lon = math.radians(b.x)
+    """Bearing in degrees from point a to point b, each (longitude, latitude)"""
+    a_lon, a_lat = math.radians(a[0]), math.radians(a[1])
+    b_lon, b_lat = math.radians(b[0]), math.radians(b[1])
 
     y = math.sin(b_lon - a_lon) * math.cos(b_lat)
     x = math.cos(a_lat) * math.sin(b_lat) - math.sin(a_lat) * math.cos(
@@ -62,10 +80,7 @@ def calculate_bearing(a, b):
     bearing_radians = math.atan2(y, x)
     bearing_degrees = math.degrees(bearing_radians)
 
-    if bearing_degrees < 0:
-        bearing_degrees += 360
-
-    return round(bearing_degrees)
+    return round(bearing_degrees) % 360
 
 
 def pick_keeper_vehicle(vehicles):
@@ -249,7 +264,7 @@ def apply_revision(revision, features=None):
             changed_fields.append("withdrawn")
 
         else:
-            assert False
+            raise ValueError(field)
 
     vehicle.save(update_fields=changed_fields)
 

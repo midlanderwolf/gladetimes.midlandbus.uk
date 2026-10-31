@@ -9,6 +9,7 @@ from google.protobuf import json_format
 from google.transit import gtfs_realtime_pb2
 
 from bustimes.formatting import format_timedelta
+from bustimes.gtfs_feeds import FEEDS
 from vehicles.utils import redis_client
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,6 @@ def _get_feed():
                 url,
                 headers={"x-api-key": settings.NTA_API_KEY},
                 timeout=10,
-                verify=False,
             )
             response.raise_for_status()
         except requests.RequestException:
@@ -35,7 +35,7 @@ def _get_feed():
         return feed
 
 
-def get_trip_updates(feed_name) -> dict:
+def get_trip_updates(feed_name) -> dict | None:
     if feed_name == "ntaie" and (feed := _get_feed()):
         feed = json_format.MessageToDict(feed)
         if "entity" in feed:
@@ -51,6 +51,21 @@ def get_trip_updates(feed_name) -> dict:
     return cache.get(f"{feed_name}_trip_updates")
 
 
+FEED_NAMES = {
+    "Realtime Transport Operators": "ntaie",
+    "FlixBus": "flixbus",
+} | {feed.source_name: name for name, feed in FEEDS.items() if feed.trip_updates_url}
+
+
+def maybe_get_and_apply_trip_update(trip, stops: list):
+    if not (trip.route and (feed_name := FEED_NAMES.get(trip.route.source.name))):
+        return False  # source not supported
+
+    if trip_update := get_trip_update(trip, feed_name):
+        apply_trip_update(stops, trip_update, trip.route.timezone)
+        return True
+
+
 def get_trip_update(trip, feed_name: str) -> dict:
     if (
         (trip_id := trip.ticket_machine_code)
@@ -60,21 +75,21 @@ def get_trip_update(trip, feed_name: str) -> dict:
         return trip_updates[trip_id]
 
 
-def get_expected_time(scheduled_time, stop_time_update, key):
+def get_expected_time(scheduled_time, stop_time_update, key, tzinfo=None):
     if key in stop_time_update:
         update = stop_time_update[key]
         if scheduled_time and "delay" in update:
             expected_time = scheduled_time + timedelta(seconds=update["delay"])
         elif "time" in update:
             return datetime.fromtimestamp(
-                int(update["time"]), tz=ZoneInfo("Europe/Dublin")
-            ).strftime("%H:%M")
+                int(update["time"]), tz=tzinfo or ZoneInfo("Europe/Dublin")
+            )
         else:
             return
         return format_timedelta(expected_time)
 
 
-def apply_trip_update(stops, trip_update: dict) -> None:
+def apply_trip_update(stops, trip_update: dict, tzinfo=None) -> None:
     if "stopTimeUpdate" not in trip_update:
         return
 
@@ -86,11 +101,10 @@ def apply_trip_update(stops, trip_update: dict) -> None:
 
     for stop_time_update in trip_update["stopTimeUpdate"]:
         sequence = stop_time_update["stopSequence"]
-        stop_time = stops_by_sequence[sequence]
-        assert sequence == stop_time.sequence
-        # if "stopId" in stop_time_update:
-        #     assert stop_time_update["stopId"] == stop_time.stop_id
-        stop_time.update = stop_time_update
+        if stop_time := stops_by_sequence.get(sequence):
+            stop_time.update = stop_time_update
+            if stop_time_update.get("scheduleRelationship") == "SKIPPED":
+                stop_time.call_condition = "notStopping"
 
     stop_time_update = None
     for stop_time in stops:
@@ -101,11 +115,11 @@ def apply_trip_update(stops, trip_update: dict) -> None:
             stop_time.update = stop_time_update
             if stop_time_update.get("scheduleRelationship") == "SKIPPED":
                 continue
-            stop_time.expected_arrival = get_expected_time(
-                stop_time.arrival, stop_time_update, "arrival"
+            stop_time.expected_arrival_time = get_expected_time(
+                stop_time.arrival, stop_time_update, "arrival", tzinfo
             )
-            stop_time.expected_departure = get_expected_time(
-                stop_time.departure, stop_time_update, "departure"
+            stop_time.expected_departure_time = get_expected_time(
+                stop_time.departure, stop_time_update, "departure", tzinfo
             )
 
 
@@ -121,20 +135,21 @@ def update_departure(departure: dict, trip_update: dict) -> None:
     if stop_time_update:
         if stop_time_update.get("scheduleRelationship") == "SKIPPED":
             departure["cancelled"] = True
-        elif "departure" in stop_time_update:
+        elif update := stop_time_update.get("departure") or stop_time_update.get(
+            "arrival"
+        ):
             if (
                 stop_time_update["stopSequence"] == departure["stop_time"].sequence
-                and "time" in stop_time_update["departure"]
+                and "time" in update
             ):
-                time = datetime.fromtimestamp(
-                    int(stop_time_update["departure"]["time"]),
-                    tz=ZoneInfo("Europe/Dublin"),
+                departure["live"] = datetime.fromtimestamp(
+                    int(update["time"]), tz=departure["time"].tzinfo
                 )
-                departure["live"] = time
 
-            elif "delay" in stop_time_update["departure"]:
-                delay = timedelta(seconds=stop_time_update["departure"]["delay"])
-                departure["live"] = departure["time"] + delay
+            elif "delay" in update:
+                departure["live"] = departure["time"] + timedelta(
+                    seconds=update["delay"]
+                )
 
     if (
         "vehicle" not in departure
@@ -144,12 +159,7 @@ def update_departure(departure: dict, trip_update: dict) -> None:
         departure["vehicle"] = trip_update["vehicle"]["licensePlate"]
 
 
-def update_stop_departures(departures: list, feed_name: str) -> None:
-    trip_updates = get_trip_updates(feed_name)
-
-    if not trip_updates:
-        return
-
+def update_stop_departures(departures: list, trip_updates: dict) -> None:
     for departure in departures:
         trip_id = departure["stop_time"].trip.ticket_machine_code
         if trip_update := trip_updates.get(trip_id):

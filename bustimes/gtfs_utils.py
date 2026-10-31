@@ -4,7 +4,9 @@ from enum import IntEnum
 from itertools import pairwise
 
 import gtfs_kit
+import numpy as np
 import pandas as pd
+import shapely
 import shapely.ops as so
 from django.contrib.gis.geos import GEOSGeometry
 from django.db import connection, transaction
@@ -229,6 +231,57 @@ def copy_stop_times(
             )
 
 
+def is_straight(coords) -> bool:
+    # just two points, or one long (> ~5km) segment that's most of the length
+    if len(coords) <= 2:
+        return True
+    lengths = np.hypot(*np.diff(coords, axis=0).T)
+    return lengths.max() > max(0.05, 0.9 * lengths.sum())
+
+
+def get_end_dist(geometry, start_dist: float, point) -> float | None:
+    end_dist = geometry.project(point)
+    if end_dist >= start_dist:
+        return end_dist
+    # nearest bit is behind - the route must use the same road more than once (loop
+    # or out-and-back), so look further along
+    ahead = so.substring(geometry, start_dist, geometry.length)
+    if type(ahead) is so.LineString:
+        end_dist = start_dist + ahead.project(point)
+        if point.distance(geometry.interpolate(end_dist)) < 0.0005:  # ~50m
+            return end_dist
+
+
+def get_passes(geometry, point, after: float) -> list[float]:
+    """distances along geometry (after `after`) of each time it passes near point"""
+    coords = shapely.get_coordinates(geometry)
+    lengths = np.concatenate(([0], np.cumsum(np.hypot(*np.diff(coords, axis=0).T))))
+    i0 = max(np.searchsorted(lengths, after, side="right") - 1, 0)
+    segments = shapely.linestrings(np.stack((coords[i0:-1], coords[i0 + 1 :]), axis=1))
+    distances = shapely.distance(segments, point)
+    if not len(distances):
+        return []
+    near = distances <= distances.min() + 0.0005  # ~50m
+    # a run of nearby segments is one pass
+    starts = np.flatnonzero(near & ~np.concatenate(([False], near[:-1])))
+    ends = np.flatnonzero(near & ~np.concatenate((near[1:], [False])))
+    passes = []
+    for start, end in zip(starts, ends):
+        i = start + distances[start : end + 1].argmin()
+        distance = lengths[i0 + i] + segments[i].project(point)
+        if distance >= after:
+            passes.append(distance)
+    return passes
+
+
+def is_implausible(point_a, point_b, distance: float, seconds: int | None) -> bool:
+    """much further than the crow flies, and too fast for the timetable"""
+    if seconds is None or distance < 3 * max(point_a.distance(point_b), 0.001):
+        return False
+    km_per_degree = 111.2 * np.cos(np.radians(point_a.y))
+    return seconds <= 0 or distance * km_per_degree / seconds * 3600 > 60  # km/h
+
+
 def do_route_links(
     feed: gtfs_kit.feed.Feed,
     source,
@@ -245,9 +298,11 @@ def do_route_links(
         (rl.service_id, rl.from_stop_id, rl.to_stop_id): rl
         for rl in RouteLink.objects.filter(service__source=source)
     }
+    overridden = {key for key, rl in existing_route_links.items() if rl.override}
     route_links = {}
 
-    stop_times_by_trip = dict(tuple(feed.stop_times.groupby("trip_id", sort=False)))
+    stop_times = feed.stop_times[feed.stop_times.trip_id.isin(trips.trip_id)]
+    stop_times_by_trip = dict(tuple(stop_times.groupby("trip_id", sort=False)))
 
     for trip in trips.itertuples():
         if trip.geometry is None:
@@ -260,6 +315,7 @@ def do_route_links(
             continue
 
         start_dist = None
+        prev_dist = 0
 
         for a, b in pairwise(trip_stop_times.itertuples()):
             from_stop_id = (
@@ -270,30 +326,62 @@ def do_route_links(
             )
             key = (service, from_stop_id, to_stop_id)
 
-            if key in route_links:
+            if key in route_links or key in overridden:
                 start_dist = None
                 continue
 
             stop_a = stops[a.stop_id]
             point_a = so.Point(stop_a.stop_lon, stop_a.stop_lat)
-            if not start_dist:
+            fresh = start_dist is None
+            if fresh:
                 start_dist = trip.geometry.project(point_a)
             stop_b = stops[b.stop_id]
             point_b = so.Point(stop_b.stop_lon, stop_b.stop_lat)
-            end_dist = trip.geometry.project(point_b)
+            end_dist = get_end_dist(trip.geometry, start_dist, point_b)
+
+            seconds = None
+            if type(a.departure_time) is str and type(b.arrival_time) is str:
+                departure = parse_duration(a.departure_time.strip())
+                arrival = parse_duration(b.arrival_time.strip())
+                if departure is not None and arrival is not None:
+                    seconds = (arrival - departure).total_seconds()
+            if end_dist is not None and is_implausible(
+                point_a, point_b, end_dist - start_dist, seconds
+            ):
+                # the route passes a stop more than once, and we've picked the wrong time
+                starts = (
+                    get_passes(trip.geometry, point_a, prev_dist)
+                    if fresh
+                    else [start_dist]
+                )
+                end_dist = None
+                for start in starts:
+                    end_dist = next(
+                        (
+                            end
+                            for end in get_passes(trip.geometry, point_b, start)
+                            if not is_implausible(
+                                point_a, point_b, end - start, seconds
+                            )
+                        ),
+                        None,
+                    )
+                    if end_dist is not None:
+                        start_dist = start
+                        break
 
             # skip if either stop is too far from the route geometry (~1km at UK latitudes)
             projected_a = trip.geometry.interpolate(start_dist)
-            projected_b = trip.geometry.interpolate(end_dist)
             if (
-                point_a.distance(projected_a) > 0.01
-                or point_b.distance(projected_b) > 0.01
+                end_dist is None
+                or point_a.distance(projected_a) > 0.01
+                or point_b.distance(trip.geometry.interpolate(end_dist)) > 0.01
             ):
                 start_dist = None
                 continue
 
             geom = so.substring(trip.geometry, start_dist, end_dist)
-            if type(geom) is so.LineString and len(geom.coords) > 2:
+            if type(geom) is so.LineString and not is_straight(geom.coords):
                 if key in existing_route_links:
                     rl = existing_route_links[key]
                 else:
@@ -305,8 +393,17 @@ def do_route_links(
                 rl.geometry = geom.wkt
                 route_links[key] = rl
 
-            start_dist = end_dist
+            start_dist = prev_dist = end_dist
 
+    RouteLink.objects.filter(
+        id__in=[
+            rl.id
+            for key, rl in existing_route_links.items()
+            if key not in route_links
+            and not rl.override
+            and is_straight(rl.geometry.coords)
+        ]
+    ).delete()
     RouteLink.objects.bulk_update(
         [rl for rl in route_links.values() if rl.id], fields=["geometry"]
     )
@@ -436,14 +533,15 @@ def handle_gtfs_upload(source_name, file, note=None):
 
             if row.route_id in existing_routes:
                 route = existing_routes[row.route_id]
-                service = route.service
             else:
                 route = Route(code=row.route_id, source=source)
+
+            if not (service := route.service):
                 service = Service()
+                route.service = service
 
             service.line_name = line_name
             service.source = source
-            route.service = service
             route.line_name = line_name
             service.description = route.description = description
             service.current = True

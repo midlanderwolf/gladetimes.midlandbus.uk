@@ -16,7 +16,7 @@
         <meta property="og:description" content="{% firstof object.vehicle_type object.operator %}{% if object.name %}
 
 {{ object.name }}{% endif %}">
-        {% if photo %}
+        {% if photo and not photo.credit %}
             <meta name="twitter:card" content="summary_large_image">
             <meta property="og:image" content="{{ photo.image_1200_630.url }}">
             <meta property="og:image:width" content="1200">
@@ -31,17 +31,27 @@
 
 {% if vehicle %}
     {% if photo %}
-        <figure class="vehicle-photo">
-            {% if form %}<a href="{% url 'admin:photos_photo_change' photo.id %}">{% endif %}
-            <img src="{{ photo.image_320.url }}"{% if photo.width and photo.height %} width="{{ photo.width }}" height="{{ photo.height }}"{% endif %} alt="" />
-            {% if photo.credit %}
-                <figcaption>
-                    {% if photo.url %}
-                        <a href="{{ photo.url }}">{{ photo.credit }}</a>
-                    {% else %}{{ photo.credit }}{% endif %}
-                </figcaption>
-            {% endif %}
-            {% if form %}</a>{% endif %}
+        <figure itemscope itemtype="https://schema.org/ImageObject" class="vehicle-photo">
+            {% if photo.url %}<a href="{{ photo.url }}" itemprop="acquireLicensePage">{% endif %}
+                <img src="{{ photo.image_320.url }}"{% if photo.width and photo.height %} width="{{ photo.width }}" height="{{ photo.height }}"{% endif %} alt="" itemprop="contentUrl">
+            {% if photo.url %}</a>{% endif %}
+            <figcaption>{% with license=photo.get_license %}
+                {% if perms.photos.change_photo %}
+                    <a href="{% url 'admin:photos_photo_change' photo.id %}" class="edit" title="Edit photo">✎</a>
+                    {% if photo.credit %} &middot; {% endif %}
+                {% endif %}
+                {% if photo.credit %}
+                    <span itemprop="creditText">
+                        <span itemprop="creator" itemscope itemtype="https://schema.org/Person">
+                            <span itemprop="name">{{ photo.credit }}</span>
+                        </span>
+                    </span>
+                    {% if license %}
+                        &middot;
+                        <a itemprop="license" href="{{ license.1 }}">{{ license.0 }}</a>
+                    {% endif %}
+                {% endif %}
+            {% endwith %}</figcaption>
         </figure>
     {% endif %}
 
@@ -177,14 +187,14 @@
             <td class="tabular">{% if journey.code|length < 20 %}{{ journey.code }}{% endif %}</td>
             {% if journey.trip_id %}
                 <td class="link tabular">
-                    <a href="{% if journey.locations is not False %}/journeys/{{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.trip }}</a>
+                    <a href="{% if journey.locations is not False %}/map#journey={{ journey.id }}{% else %}{{ journey.trip.get_absolute_url }}{% endif %}">{{ journey.trip }}</a>
                 </td>
             {% else %}
                 <td class="tabular">{{ journey.datetime|time:"H:i" }}{% if journey.datetime|date:"Y-m-d" > date.isoformat %}⁺¹{% endif %}</td>
             {% endif %}
             <td>{% firstof journey.destination journey.direction %}</td>
             {% if journey.locations is not False %}
-                <td class="link"><a href="/journeys/{{ journey.id }}">Map</a></td>
+                <td class="link"><a href="/map#journey={{ journey.id }}{% if not vehicle %}&context=service{% endif %}">Map</a></td>
             {% endif %}
             {% if perms.vehicles.change_vehiclejourney %}
                 <td class="link">
@@ -202,7 +212,11 @@
         <tr class="prediction">
             <td>{{ trip.line_name }}</td>
             <td></td>
-            <td class="link tabular"><a href="{{ trip.get_absolute_url }}">{{ trip }}</a></td>
+            {% if trip.get_absolute_url %}
+                <td class="link tabular"><a href="{{ trip.get_absolute_url }}">{{ trip }}</a></td>
+            {% else %}
+                <td class="tabular">{{ trip }}</td>
+            {% endif %}
             <td>{{ trip.destination_name }}</td>
         </tr>
     {% endfor %}
@@ -227,7 +241,6 @@
 {% endif %}
 
 {% if latest_journey_debug %}
-<style>{{ css }}</style>
 <details name="advanced">
     <summary>Latest journey data</summary>
     <code>{{ latest_journey_debug }}</code>

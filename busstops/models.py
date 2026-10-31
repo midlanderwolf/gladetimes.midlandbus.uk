@@ -68,8 +68,7 @@ class Region(models.Model):
         with the definite article prepended if appropriate"""
         if self.name[-2:] in ("ds", "st"):
             return "the " + self.name
-        else:
-            return self.name
+        return self.name
 
     def get_absolute_url(self):
         return reverse("region_detail", args=(self.id,))
@@ -120,11 +119,11 @@ class District(models.Model):
         return reverse("district_detail", args=(self.id,))
 
 
-class LocalityManager(models.Manager):
+class LocalityQuerySet(models.QuerySet):
     def with_documents(self):
         vector = SearchVector("name", weight="A", config="english")
         vector += SearchVector("qualifier_name", weight="B", config="english")
-        return self.get_queryset().annotate(document=vector)
+        return self.annotate(document=vector)
 
 
 class Locality(SearchMixin, models.Model):
@@ -148,7 +147,7 @@ class Locality(SearchMixin, models.Model):
     created_at = models.DateTimeField(null=True, blank=True)
     modified_at = models.DateTimeField(null=True, blank=True)
 
-    objects = LocalityManager()
+    objects = LocalityQuerySet.as_manager()
 
     class Meta:
         ordering = ("name",)
@@ -295,7 +294,7 @@ class DataSource(models.Model):
                 text = "National Transport Authority"
         elif urlparse(self.url).hostname == "opendata.ticketer.com":
             text = self.url
-        elif self.name == "MET" or self.name == "ULB":
+        elif self.name in {"MET", "ULB"}:
             url = self.url
             text = "Translink open data"
         else:
@@ -449,7 +448,7 @@ class StopPoint(models.Model):
 
     def get_heading(self):
         """Return the stop's bearing converted to degrees, for use with Google Street View."""
-        if self.heading:
+        if self.heading is not None:
             return self.heading
         headings = {
             "N": 0,
@@ -569,12 +568,12 @@ class OperatorGroup(models.Model):
         return reverse("group_vehicles", args=(self.slug,))
 
 
-class OperatorManager(models.Manager):
+class OperatorQuerySet(models.QuerySet):
     def with_documents(self):
         vector = SearchVector("name", weight="A", config="english")
         vector += SearchVector("noc", weight="A", config="english")
         vector += SearchVector("aka", weight="B", config="english")
-        return self.get_queryset().annotate(document=vector)
+        return self.annotate(document=vector)
 
 
 class Operator(SearchMixin, models.Model):
@@ -621,7 +620,7 @@ class Operator(SearchMixin, models.Model):
     modified_at = models.DateTimeField(auto_now=True)
     locked = models.BooleanField(default=False)
 
-    objects = OperatorManager()
+    objects = OperatorQuerySet.as_manager()
 
     class Meta:
         ordering = ("name",)
@@ -780,7 +779,7 @@ class ServiceColour(models.Model):
         )
 
 
-class ServiceManager(models.Manager):
+class ServiceQuerySet(models.QuerySet):
     def with_documents(self):
         vector = SearchVector(
             StringAgg("route__line_name", Value(" "), distinct=True, default=""),
@@ -807,10 +806,10 @@ class ServiceManager(models.Manager):
             weight="C",
             config="english",
         )
-        return self.get_queryset().annotate(document=vector)
+        return self.annotate(document=vector)
 
     def with_line_names(self):
-        return self.get_queryset().annotate(
+        return self.annotate(
             line_names=ArrayAgg(
                 Coalesce("route__line_name", "line_name"), distinct=True, default=None
             )
@@ -846,7 +845,18 @@ class Service(models.Model):
 
     colour = models.ForeignKey(ServiceColour, models.SET_NULL, null=True, blank=True)
 
-    objects = ServiceManager()
+    trip_chaining = models.CharField(
+        max_length=5,
+        blank=True,
+        choices=(
+            ("", "No"),
+            ("split", "Split registrations"),
+            ("merge", "Split registrations, merged on import"),
+            ("any", "Any trips that join up"),
+        ),
+    )
+
+    objects = ServiceQuerySet.as_manager()
     update_search_vector = SearchMixin.update_search_vector
 
     class Meta:
@@ -915,7 +925,7 @@ class Service(models.Model):
     def get_line_name_order(line_name):
         prefix, number, suffix = SERVICE_ORDER_REGEX.match(line_name).groups()
         number = number.zfill(4)
-        if prefix == "X" or prefix == "N":
+        if prefix in {"X", "N"}:
             return ("", number, prefix, suffix)
         return (prefix, number, suffix)
 
@@ -962,16 +972,6 @@ class Service(models.Model):
         ids = self.link_from.values("to_service").union(
             self.link_to.values("from_service")
         )
-
-        # if self.service_code:
-        #     ids = ids.union(
-        #         Service.objects.filter(
-        #             ~Q(id=self.id),
-        #             source=self.source_id,
-        #             service_code=self.service_code
-        #         ).values("id")
-        #     )
-        # else:
 
         ids = ids.union(
             Route.objects.filter(
@@ -1044,6 +1044,7 @@ class Service(models.Model):
                 calendar_id=calendar_id,
                 detailed=detailed,
                 operators=operators,
+                loose_trip_chaining=self.trip_chaining == "any",
             )
         except (IndexError, UnboundLocalError, AssertionError):
             logger = logging.getLogger(__name__)
@@ -1095,7 +1096,7 @@ class Service(models.Model):
                 st["trip__inbound"],
                 st["sequence"] or 0,
                 st["stop_id"],
-                st["timing_point"],
+                st["timing_point"] is not False,
             )
             for st in stop_times
         ]

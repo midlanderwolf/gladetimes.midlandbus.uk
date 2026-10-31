@@ -150,6 +150,8 @@ const vehicle: Vehicle = {
   delay: 252,
 };
 
+Element.prototype.scrollIntoView = jest.fn();
+
 it("renders trip timetable", async () => {
   const { container, rerender } = render(<TripTimetable trip={trip} />);
 
@@ -166,4 +168,50 @@ it("renders trip timetable", async () => {
     />,
   );
   expect(container).toMatchSnapshot();
+});
+
+it("doesn't add an extra column when the next stop has no id or atco code", () => {
+  const stop = {
+    aimed_arrival_time: null,
+    timing_status: "PTP" as const,
+  };
+  const adHocTrip: Trip = {
+    times: [
+      {
+        ...stop,
+        id: 0,
+        stop: { atco_code: "490000144F", name: "Marylebone Station" },
+        aimed_departure_time: "02:34",
+      },
+      {
+        ...stop,
+        id: 0,
+        stop: { name: "Marylebone, Hayes Place" },
+        aimed_arrival_time: "02:35",
+        aimed_departure_time: "02:54",
+        actual_arrival_time: "2026-10-11T02:36:00+01:00",
+        actual_departure_time: "2026-10-11T02:37:00+01:00",
+      },
+    ],
+  };
+  const { container } = render(
+    <TripTimetable
+      trip={adHocTrip}
+      vehicle={{
+        ...vehicle,
+        datetime: "2026-10-11T02:37:21+01:00",
+        progress: {
+          id: 0,
+          sequence: 0,
+          prev_stop: "490000144F",
+          next_stop: "",
+          progress: 0.5,
+        },
+      }}
+    />,
+  );
+  const rows = container.querySelectorAll("tbody tr");
+  expect(rows[0].querySelectorAll("td")).toHaveLength(3); // name, aimed, actual
+  expect(rows[1].querySelectorAll("td")).toHaveLength(2); // name, aimed
+  expect(screen.queryByText("02:36")).toBeNull();
 });

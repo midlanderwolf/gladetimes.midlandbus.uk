@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import fakeredis
+import shapely
 import time_machine
 import vcr
 from django.core.management import call_command
@@ -17,9 +18,11 @@ from vehicles.management.tests.test_bod_avl import (
     distribute,
     patch_redis_client,
 )
-from vehicles.models import Vehicle, VehicleJourney
+from vehicles.models import Livery, VehicleJourney
+from vehicles.tasks import log_vehicle_journey
 
-from ...models import Route, Trip
+from ...gtfs_utils import get_end_dist, get_passes, is_implausible, is_straight
+from ...models import Route, RouteLink, Trip
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -45,10 +48,10 @@ class FlixbusTest(TestCase):
             ]
         )
 
-        service = Service.objects.create(line_name="004")
-        service.operator.add("FLIX")
+        cls.service = Service.objects.create(line_name="004")
+        cls.service.operator.add("FLIX")
         route = Route.objects.create(
-            line_name="004", code="UK004", service=service, source=sources[1]
+            line_name="004", code="UK004", service=cls.service, source=sources[1]
         )
         Trip.objects.create(
             route=route,
@@ -64,6 +67,7 @@ class FlixbusTest(TestCase):
             end="00:00",
             vehicle_journey_code="N401-1-1955102024-STB#VE-00",
         )
+        Livery.objects.create(name="FlixBus")
 
         StopPoint.objects.create(
             atco_code="6200247603", common_name="Aeropuerto d'Edinburgh", active=1
@@ -87,8 +91,51 @@ class FlixbusTest(TestCase):
         ):
             call_command("import_gtfs_flixbus")
 
+    def test_is_straight(self):
+        self.assertTrue(is_straight([(0, 0), (1, 1)]))
+        # straight line between distant stops, with a vertex near one end
+        self.assertTrue(is_straight([(-1.15, 52.95), (-1.149, 52.951), (-0.18, 51.55)]))
+        self.assertFalse(is_straight([(0, 0), (0.001, 0.002), (0.01, 0.01)]))
+        # a ferry crossing in the middle of a route link
+        self.assertFalse(
+            is_straight(
+                [(1.0, 50.0), (1.2, 50.0), (1.5, 50.0), (1.5, 50.2), (1.7, 50.2)]
+            )
+        )
+
+    def test_get_end_dist(self):
+        # out and back along the same road
+        line = shapely.LineString([(0, 0), (0.01, 0), (0.01, 0.0002), (0, 0.0002)])
+        point = shapely.Point(0.002, 0.00005)
+        self.assertAlmostEqual(get_end_dist(line, 0, point), 0.002)
+        self.assertAlmostEqual(get_end_dist(line, 0.005, point), 0.0182)
+        # not further along
+        self.assertIsNone(get_end_dist(line, 0.005, shapely.Point(0.002, -0.001)))
+
+        # passes the point on the way out and on the way back
+        passes = get_passes(line, point, 0)
+        self.assertEqual(len(passes), 2)
+        self.assertAlmostEqual(passes[0], 0.002)
+        self.assertAlmostEqual(passes[1], 0.0182)
+        self.assertEqual(len(get_passes(line, point, 0.005)), 1)
+
+        # 0.0182 degrees (~1.2km here) in 30 seconds
+        point_b = shapely.Point(0.003, 0)
+        self.assertTrue(is_implausible(point, point_b, 0.0182, 30))
+        self.assertFalse(is_implausible(point, point_b, 0.0182, 300))
+        self.assertFalse(is_implausible(point, point_b, 0.001, 30))
+        self.assertFalse(is_implausible(point, point_b, 0.0182, None))
+
     @time_machine.travel("2023-01-01")
     def test_import_gtfs_flixbus(self):
+        # left over from an old import
+        RouteLink.objects.create(
+            service=self.service,
+            from_stop_id="3390C11",
+            to_stop_id="6200247603",
+            geometry="LINESTRING(-1.15 52.95, -3.36 55.95)",
+        )
+
         with patch(
             "bustimes.management.commands.import_gtfs_flixbus.download_if_modified",
             return_value=(
@@ -101,13 +148,12 @@ class FlixbusTest(TestCase):
         response = self.client.get("/operators/flixbus")
 
         self.assertEqual(2, Service.objects.count())
+        self.assertEqual(8, RouteLink.objects.count())
 
         self.assertContains(response, "London - Northampton - Nottingham")
         self.assertContains(response, "London - Cambridge")
 
-        service = Service.objects.get(line_name="UK004")
-
-        response = self.client.get(service.get_absolute_url())
+        response = self.client.get(self.service.get_absolute_url())
         self.assertContains(
             response, "<td>10:30</td><td>15:00</td><td>19:15</td><td>23:40</td>"
         )
@@ -131,7 +177,9 @@ class FlixbusTest(TestCase):
         self.assertEqual(7, len(response.context["departures"]))
 
         # British Summer Time:
-        response = self.client.get(service.get_absolute_url(), [("date", "2024-04-01")])
+        response = self.client.get(
+            self.service.get_absolute_url(), [("date", "2024-04-01")]
+        )
         self.assertContains(
             response, "<td>10:30</td><td>15:00</td><td>19:15</td><td>23:40</td>"
         )
@@ -140,6 +188,58 @@ class FlixbusTest(TestCase):
 
         command = import_gtfsr_flixbus.Command()
         command.do_source()
+
+        log_vehicle_journey(
+            data={
+                "Delay": "PT0M0S",
+                "LineRef": "004",
+                "Monitored": "true",
+                "OriginRef": "6200600790",
+                "OriginName": "Bus Station",
+                "VehicleRef": "FLIX-0638",
+                "OperatorRef": "FLIX",
+                "DirectionRef": "I",
+                "DestinationRef": "6290DP01",
+                "DestinationName": "Livingston Deer Park",
+                "PublishedLineName": "090",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026_08_04_3210_285_40",
+                    "DatedVehicleJourneyRef": "3210_285_40",
+                },
+                "OriginAimedDepartureTime": "2024-04-01T15:00:00Z",
+                "DestinationAimedArrivalTime": "2026-04-01T18:00:00Z",
+            },
+            source_name="",
+            url="",
+        )
+
+        trip = Trip.objects.get(vehicle_journey_code="UK004-10-1500042024-LVC#NOT-00")
+
+        log_vehicle_journey(
+            service=self.service.id,
+            data={
+                "Delay": "PT0M0S",
+                "LineRef": "004",
+                "Monitored": "true",
+                "OriginRef": "6200600790",
+                "OriginName": "Bus Station",
+                "VehicleRef": "FLIX-0638",
+                "OperatorRef": "FLIX",
+                "DirectionRef": "I",
+                "DestinationRef": "6290DP01",
+                "DestinationName": "Livingston Deer Park",
+                "PublishedLineName": "090",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026_08_04_3210_285_40",
+                    "DatedVehicleJourneyRef": "3210_285_40",
+                },
+                "OriginAimedDepartureTime": "2024-04-01T15:00:00Z",
+                "DestinationAimedArrivalTime": "2026-04-01T18:00:00Z",
+            },
+            source_name="",
+            url="",
+            trip_id=trip.id,
+        )
 
         server = fakeredis.FakeServer()
         async_redis_client = fakeredis.FakeAsyncRedis(server=server, version=7)
@@ -155,35 +255,30 @@ class FlixbusTest(TestCase):
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "flixbus_gtfsr.yml")),
         ):
-            with self.assertNumQueries(17):
+            with self.assertNumQueries(27):
                 command.update()
-            with self.assertNumQueries(0):
+            with self.assertNumQueries(1):
                 command.update()
-
-            # journeys are tracked with no Vehicle records - we're not sure if
-            # the vehicle id maps to a bus or a driver's mobile phone or what
-            self.assertFalse(Vehicle.objects.exists())
 
             distribute(channel_layer, async_redis_client)
 
-            journeys = VehicleJourney.objects.filter(source=command.source)
+            journeys = VehicleJourney.objects.all()
             self.assertEqual(
                 [str(journey) for journey in journeys],
                 [
+                    "1 Apr 24 15:00 004 3210_285_40 ",
                     "1 Apr 24 10:45 004 UK004-3-1045042024-NOT#LVC-00  to London Victoria Coach Station",
-                    "1 Apr 24 15:00 004 UK004-10-1500042024-LVC#NOT-00  to Nottingham",
                     "1 Apr 24 15:00 004 UK004-7-1500042024-NOT#LVC-00  to London Victoria Coach Station",
                     "1 Apr 24 11:00 004 UK004-6-1100042024-LVC#NOT-00  to Nottingham",
                 ],
             )
-            self.assertFalse(journeys.exclude(vehicle=None).exists())
 
             # one location in each journey's history:
             for journey, polyline in zip(
                 journeys,
                 (
-                    b"t|[abhyH_b~i`eB",
                     b"r{[iihyH_o~i`eB",
+                    b"t|[abhyH_b~i`eB",
                     b"l|~EigdbI{m~i`eB",
                     b"|shDsdx}H}l~i`eB",
                 ),
@@ -193,8 +288,10 @@ class FlixbusTest(TestCase):
             with patch("vehicles.views.redis_client", redis_client):
                 response = self.client.get("/vehicles.json")
             items = response.json()
+
             self.assertEqual(
-                [item["id"] for item in items], [journey.id for journey in journeys]
+                [item["id"] for item in items],
+                sorted(journey.vehicle_id or -journey.id for journey in journeys),
             )
             self.assertIn("url", items[0]["service"])
             self.assertIsNone(items[0]["heading"])  # not moved yet
@@ -208,14 +305,14 @@ class FlixbusTest(TestCase):
             entity.vehicle.position.longitude = -0.14
             entity.vehicle.timestamp = 1711980350
             with self.assertNumQueries(0):
-                command.handle_item(entity, command.source.datetime)
+                command.handle_item(entity)
 
             distribute(channel_layer, async_redis_client)
 
-            item = json.loads(redis_client.get(f"vehicle{journeys[0].id}"))
+            item = json.loads(redis_client.get(f"vehicle{-journeys[1].id}"))
             self.assertEqual(item["heading"], 33)
             self.assertEqual(
-                redis_client.get(journeys[0].get_redis_key()),
+                redis_client.get(journeys[1].get_redis_key()),
                 b"t|[abhyH_b~i`eBuq@}n@{O",
             )
 
@@ -248,17 +345,33 @@ class FlixbusTest(TestCase):
         command = import_gtfsr_ember.Command()
         command.do_source()
 
+        redis_client = fakeredis.FakeStrictRedis()
         with (
             patch(
-                "vehicles.management.import_live_vehicles.redis_client",
-                fakeredis.FakeStrictRedis(),
+                "vehicles.management.import_live_vehicles.redis_client", redis_client
+            ),
+            override_settings(
+                CACHES={
+                    "default": {
+                        "BACKEND": "django.core.cache.backends.locmem.LocMemCache"
+                    }
+                }
             ),
             vcr.use_cassette(str(FIXTURES_DIR / "ember_gtfsr.yml")),
         ):
-            with self.assertNumQueries(71):
+            with self.assertNumQueries(81):
                 command.update()
-            with self.assertNumQueries(25):
+            with self.assertNumQueries(32):
                 command.update()
+
+            journey = service.vehiclejourney_set.first()
+            self.assertEqual(str(journey.trip), "15:35")
+            self.assertEqual(str(journey.datetime), "2024-01-18 15:35:00+00:00")
+            self.assertEqual(str(journey.date), "2024-01-18")
+            self.assertEqual(journey.code, "5WGNCip")
+
+            response = self.client.get(f"/vehicles/{journey.vehicle.slug}")
+            self.assertContains(response, '<tr class="prediction">', count=1)
 
         response = self.client.get(service.get_absolute_url())
         self.assertContains(
@@ -266,8 +379,7 @@ class FlixbusTest(TestCase):
             "Pre-book journey at least 10 minutes before the scheduled departure time",
         )
 
-        journey = service.vehiclejourney_set.first()
-        self.assertEqual(str(journey.trip), "15:35")
-        self.assertEqual(str(journey.datetime), "2024-01-18 15:35:00+00:00")
-        self.assertEqual(str(journey.date), "2024-01-18")
-        self.assertEqual(journey.code, "5WGNCip")
+        # stops from the trip update
+        journey = service.vehiclejourney_set.get(code="74inYiv")
+        item = json.loads(redis_client.get(f"vehicle{journey.vehicle_id}"))
+        self.assertEqual(item["stops"], ["6400L00019", "640017235"])

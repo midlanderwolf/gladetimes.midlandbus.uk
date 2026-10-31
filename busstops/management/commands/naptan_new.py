@@ -35,7 +35,7 @@ def get_point(element):
         easting = element.findtext("Translation/Easting")
         northing = element.findtext("Translation/Northing")
         grid_type = element.findtext("Translation/GridType")
-    if easting and not ((easting == "0" or easting == "7") and northing == "0"):
+    if easting and not ((easting in {"0", "7"}) and northing == "0"):
         match grid_type:
             case "ITM":
                 srid = 2157
@@ -77,26 +77,32 @@ nothings = {
 }
 
 
-def get_stop(element, atco_code):
+def get_stop(element: ET.Element, atco_code: str):
     point = get_point(element.find("Place/Location")) or get_point(
         element.find("Location")
     )
 
-    bearing = element.findtext(
-        "StopClassification/OnStreet/Bus/MarkedPoint/Bearing/CompassPoint"
-    )
+    bearing = element.find("StopClassification/OnStreet/Bus/MarkedPoint/Bearing")
     if bearing is None:
-        bearing = element.findtext(
-            "StopClassification/OnStreet/Bus/UnmarkedPoint/Bearing/CompassPoint"
+        bearing = element.find("StopClassification/OnStreet/Bus/UnmarkedPoint/Bearing")
+    if bearing is None:
+        bearing = element.find(
+            "StopClassification/OnStreet/Bus/HailAndRideSection/Bearing"
         )
-    if bearing is None:
+    if bearing is not None:
+        if degrees := bearing.findtext("Degrees") or None:
+            degrees = int(degrees)
+        bearing = bearing.findtext("CompassPoint") or ""
+    else:
         bearing = ""
+        degrees = None
 
     stop = StopPoint(
         atco_code=atco_code,
         naptan_code=element.findtext("NaptanCode") or element.findtext("PlateCode"),
         latlong=point,
         bearing=bearing,
+        heading=degrees,
         active=element.attrib.get("Status", "active") == "active",
     )
 
@@ -112,7 +118,7 @@ def get_stop(element, atco_code):
     return stop
 
 
-def get_stop_area(element):
+def get_stop_area(element: ET.Element):
     stop_area_code = element.findtext("StopAreaCode")
 
     point = get_point(element.find("Location"))
@@ -128,8 +134,8 @@ def get_stop_area(element):
 
 
 class Command(BaseCommand):
-    def handle_stop(self, element):
-        atco_code = element.findtext("AtcoCode")
+    def handle_stop(self, element: ET.Element):
+        atco_code: str = element.findtext("AtcoCode")
 
         stop = get_stop(element, atco_code)
 
@@ -139,9 +145,11 @@ class Command(BaseCommand):
         # a stop can be in multiple stop areas
         # we assume (dubiously) that it has no more than 1 active one
         for stop_area_ref in element.findall("StopAreas/StopAreaRef"):
-            if stop_area_ref.attrib.get("Modification") != "delete":
+            if (
+                stop_area_ref.attrib.get("Modification") != "delete"
+                and stop_area_ref.text not in self.inactive_stop_areas
+            ):
                 stop.stop_area_id = stop_area_ref.text or None
-                # break
 
         stop.locality_id = element.findtext("Place/NptgLocalityRef") or None
         if stop.locality_id and stop.locality_id not in self.localities:
@@ -178,12 +186,11 @@ class Command(BaseCommand):
                         # )
                         self.stops_to_update.append(stop)
                         break
-                    else:
-                        # logger.info(
-                        #     f"{atco_code} {key}: {getattr(existing, key)!r} → {getattr(stop, key)!r}"
-                        # )
-                        self.stops_to_update.append(stop)
-                        break
+                    # logger.info(
+                    #     f"{atco_code} {key}: {getattr(existing, key)!r} → {getattr(stop, key)!r}"
+                    # )
+                    self.stops_to_update.append(stop)
+                    break
         else:
             stop.created_at = stop.modified_at
             self.stops_to_create.append(stop)
@@ -193,6 +200,7 @@ class Command(BaseCommand):
         "naptan_code",
         "latlong",
         "bearing",
+        "heading",
         "common_name",
         "landmark",
         "street",
@@ -261,7 +269,7 @@ class Command(BaseCommand):
     def add_arguments(parser):
         parser.add_argument("source_name", nargs="?", default="NaPTAN")
 
-    def handle(self, *args, source_name, **options):
+    def handle(self, *args, source_name: str, **options):
         source = DataSource.objects.get(name=source_name)
         self.source = source
 
@@ -271,23 +279,22 @@ class Command(BaseCommand):
         if not modified:
             return
 
-        for event, element in ET.iterparse(path, ["start"]):
-            # the ModificationDateTime attribute of the root element
-            # seems to be a reliable way of telling if the data has changed
-            assert (
-                event == "start" and element.tag == "{http://www.naptan.org.uk/}NaPTAN"
-            )
-            modified_at = get_datetime(element.attrib["ModificationDateTime"])
-            if modified_at == source.datetime:
-                return
+        iterator = ET.iterparse(path, ["start"])
+        event, element = next(iterator)
+        iterator.close()
+        # the ModificationDateTime attribute of the root element
+        # seems to be a reliable way of telling if the data has changed
+        assert event == "start" and element.tag == "{http://www.naptan.org.uk/}NaPTAN"
+        modified_at = get_datetime(element.attrib["ModificationDateTime"])
+        if modified_at == source.datetime:
+            return
 
-            source.datetime = modified_at
-            break
+        source.datetime = modified_at
 
         # set up overrides/corrections
         overrides_path = settings.BASE_DIR / "fixtures" / "stops.yaml"
         with overrides_path.open() as open_file:
-            self.overrides = yaml.load(open_file, yaml.BaseLoader)
+            self.overrides: dict = yaml.load(open_file, yaml.BaseLoader)
 
         # do this now to detect invalid WKTs (stray commas etc)
         for atco_code in self.overrides:
@@ -305,18 +312,22 @@ class Command(BaseCommand):
         self.localities = {
             locality["pk"] for locality in Locality.objects.values("pk").order_by()
         }
+        self.inactive_stop_areas = set(
+            StopArea.objects.filter(active=False).values_list("pk", flat=True)
+        )
         atco_code_prefix = None
 
         self.stop_areas = {}
 
-        for event, element in ET.iterparse(path):
+        iterator = ET.iterparse(path)
+        for event, element in iterator:
             element.tag = element.tag.removeprefix("{http://www.naptan.org.uk/}")
 
             if element.text:
                 element.text = element.text.strip()
 
             if element.tag == "StopPoint":
-                atco_code = element.findtext("AtcoCode")
+                atco_code: str = element.findtext("AtcoCode")
                 if atco_code[:3] != atco_code_prefix:
                     # logger.info(f"{atco_code_prefix=}")
 
@@ -342,6 +353,7 @@ class Command(BaseCommand):
                 stop_area = get_stop_area(element)
                 self.stop_areas[stop_area.id] = stop_area
                 element.clear()
+        iterator.close()
 
         self.update_and_create()
 

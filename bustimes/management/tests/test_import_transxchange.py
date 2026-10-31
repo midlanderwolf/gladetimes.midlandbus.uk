@@ -31,6 +31,8 @@ from ...models import (
     BankHolidayDate,
     Calendar,
     CalendarDate,
+    DataQualityObservation,
+    DodgyRouteLink,
     Garage,
     Note,
     Route,
@@ -75,6 +77,7 @@ class ImportTransXChangeTest(TestCase):
         OperatorCode.objects.bulk_create(
             [
                 OperatorCode(operator=cls.megabus, source=cls.nocs, code="MEGA"),
+                OperatorCode(operator=cls.fecs, source=cls.nocs, code="FECS"),
                 OperatorCode(operator=cls.fabd, source=cls.nocs, code="FABD"),
                 OperatorCode(operator=cls.fabd, source=cls.nocs, code="SDVN"),
                 OperatorCode(operator=cls.fabd, source=cls.nocs, code="CBNL"),
@@ -381,11 +384,9 @@ class ImportTransXChangeTest(TestCase):
         self.assertFalse(timetable.groupings[0].rows[43].has_waittimes)
         # self.assertTrue(timetable.groupings[1].rows[44].has_waittimes)
         # self.assertFalse(timetable.groupings[1].rows[45].has_waittimes)
-        (
-            self.assertEqual(
-                str(timetable.groupings[1].rows[0].times[:6]),
-                "[05:20, 06:20, 07:15, 08:10, 09:10, 10:10]",
-            ),
+        self.assertEqual(
+            str(timetable.groupings[1].rows[0].times[:6]),
+            "[05:20, 06:20, 07:15, 08:10, 09:10, 10:10]",
         )
 
         self.assertEqual(149, service.stopusage_set.order_by().distinct("stop").count())
@@ -504,6 +505,25 @@ class ImportTransXChangeTest(TestCase):
         self.assertEqual(feet[4].span, 10)
 
         self.assertEqual(131, service.stopusage_set.count())
+
+    @time_machine.travel("2017-12-10")
+    def test_invalid_timing_status(self):
+        xml = (FIXTURES_DIR / "em_11-1-J-y08-1.xml").read_text()
+        for status in ("OTH", "PPT", "PTP", "TIP"):
+            xml = xml.replace(f">{status}<", f">{status.lower()}<")
+        with TemporaryDirectory() as directory:
+            (Path(directory) / "em_11-1-J-y08-1.xml").write_text(xml)
+            with patch(f"{__name__}.FIXTURES_DIR", Path(directory)):
+                self.handle_files("EA.zip", ["em_11-1-J-y08-1.xml"])
+
+        observation = DataQualityObservation.objects.get()
+        self.assertEqual(observation.file_name, "em_11-1-J-y08-1.xml")
+        self.assertEqual(observation.category, "invalid TimingStatus")
+        self.assertEqual(observation.comment, "'oth', 'ppt', 'ptp', 'tip'")
+
+        service = Service.objects.get()
+        self.assertTrue(service.stopusage_set.exists())
+        self.assertFalse(service.stopusage_set.filter(timing_point=False).exists())
 
     @time_machine.travel("2017-12-10")
     def test_timetable_derby_alvaston_circular(self):
@@ -817,14 +837,12 @@ class ImportTransXChangeTest(TestCase):
             service_code="SER22A", service=service_22a, source=self.nocs
         )
         service_22a.operator.add(self.fabd, self.fecs)
-        RouteLink.objects.create(
+        override = RouteLink.objects.create(
             from_stop_id="260006514a",
             to_stop_id="0260006515",
             service=service_22a,
-            geometry="SRID=4326;LINESTRING (-1.12267861 52.668932971, -1.122161887 52.669204097, "
-            "-1.121984987 52.669298697, -1.121571887 52.669561097, -1.121253687 52.669807497, "
-            "-1.120949487 52.670157297, -1.120839687 52.670452097, -1.120864987 52.670727597, "
-            "-1.120919287 52.670949997, -1.120982582 52.671208876)",
+            override=True,
+            geometry="SRID=4326;LINESTRING (-1.12267861 52.668932971, -1.120982582 52.671208876)",
         )
 
         garage = Garage.objects.create(code="LE", name="Leicester")
@@ -869,6 +887,10 @@ class ImportTransXChangeTest(TestCase):
 
         self.assertEqual(Service.objects.count(), 3)
         self.assertEqual(RouteLink.objects.count(), 271)
+        self.assertEqual(
+            RouteLink.objects.get(id=override.id).geometry.coords,
+            override.geometry.coords,
+        )
 
         # had 2 operators before running import_transxchange,
         # should now have just 1
@@ -1564,6 +1586,11 @@ class ImportTransXChangeTest(TestCase):
         self.assertEqual(3, Service.objects.filter(current=True).count())  # A, B, C
         self.assertEqual(6, Route.objects.count())
 
+        dodgy = DodgyRouteLink.objects.all()
+        self.assertEqual(len(dodgy), len({(d.file_name, d.comment) for d in dodgy}))
+        self.assertEqual(dodgy[0].category, "dodgy RouteLink")
+        self.assertTrue(dodgy[0].file_name.endswith("BODS_V1_1.xml"))
+
         service = Service.objects.first()
         response = self.client.get(service.get_absolute_url())
 
@@ -1571,12 +1598,13 @@ class ImportTransXChangeTest(TestCase):
         self.assertContains(response, "Peterborough Bus Station")
 
         trip = Trip.objects.first()
+        self.assertEqual(trip.route.service.trip_chaining, "merge")
         response = self.client.get(f"/trips/{trip.id}")
         self.assertContains(response, "Kings Lynn,Bus Station")
         self.assertContains(response, "Peterborough Bus Station")
 
         # test modern trip API too:
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(4):
             response = self.client.get(f"/api/trips/{trip.id}.json")
         self.assertEqual(response.json()["block"], "6001")
 
@@ -1586,21 +1614,37 @@ class ImportTransXChangeTest(TestCase):
 
         with self.assertNumQueries(2):
             response = self.client.get("/api/trips/?date=2025-10-12").json()
-            self.assertEqual(len(response["results"]), 46)
+            self.assertEqual(len(response["results"]), 24)
 
-        with self.assertNumQueries(6):
+        # all trips in block
+        with self.assertNumQueries(7):
             response = self.client.get(f"/trips/{trip.id}/block")
-        self.assertContains(response, "07:55")
+        self.assertContains(response, "07:00")
         self.assertContains(response, "12:25")
 
-        with self.assertNumQueries(6):
+        with self.assertNumQueries(7):
             response = self.client.get(f"/trips/{trip.id}/block?date=2025-01-26")
-        self.assertContains(response, "15:05")
+        self.assertContains(response, "07:25")
         self.assertContains(response, "16:00")
+
+        # operator block view
+        with self.assertNumQueries(2):
+            response = self.client.get(f"/operators/{self.fecs.slug}/blocks")
+            self.assertContains(response, "23 Oct 2023")
+            self.assertContains(response, ">6001</a>")
+
+        with self.assertNumQueries(2):
+            response = self.client.get(
+                f"/operators/{self.fecs.slug}/blocks?date=2025-10-12"
+            )
+            self.assertContains(response, "12 Oct 2025")
+            self.assertContains(response, ">6001</a>")
 
         # test "next trips in block"
         v = Vehicle.objects.create(code="BB69BUS")
-        trip_1 = Trip.objects.get(vehicle_journey_code="VJ2937")
+        # VJ2937 is now merged into VJ3065 (they're two declared parts of one
+        # physical journey - see Command.merge_split_trips)
+        trip_1 = Trip.objects.get(vehicle_journey_code="VJ3065")
         trip_2 = Trip.objects.get(vehicle_journey_code="VJ2938")
         vj_1 = VehicleJourney.objects.create(
             trip=trip_1,
@@ -1622,7 +1666,7 @@ class ImportTransXChangeTest(TestCase):
         v.save(update_fields=["latest_journey_id"])
 
         response = self.client.get(v.get_absolute_url())
-        self.assertEqual(5, len(response.context_data["predictions"]))
+        self.assertEqual(2, len(response.context_data["predictions"]))
 
         response = self.client.get(f"/api/vehiclejourneys/{vj_1.id}/details/").json()
 

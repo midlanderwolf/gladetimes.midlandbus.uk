@@ -4,7 +4,9 @@ Usage:
     ./manage.py import_transxchange EA.zip [EM.zip etc]
 """
 
+import contextlib
 import datetime
+import gc
 import hashlib
 import logging
 import os
@@ -18,7 +20,7 @@ from pathlib import Path
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry, Point
 from django.core.management.base import BaseCommand
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Exists, OuterRef, Q
 from django.db.models.functions import Now, Upper
 from django.utils.timezone import localdate
@@ -39,7 +41,8 @@ from busstops.models import (
     StopUsage,
 )
 from busstops.utils import get_coord_transform, get_datetime
-from vehicles.models import get_text_colour
+from disruptions.models import AffectedJourney
+from vehicles.models import VehicleJourney, get_text_colour
 from vosa.models import Registration
 
 from ...models import (
@@ -47,6 +50,7 @@ from ...models import (
     Calendar,
     CalendarBankHoliday,
     CalendarDate,
+    DataQualityObservation,
     DodgyRouteLink,
     Garage,
     ImportTask,
@@ -57,6 +61,9 @@ from ...models import (
     TimetableDataSource,
     Trip,
     VehicleType,
+    chain_split_trips,
+    get_end_stops,
+    get_trip_chaining,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,7 +90,7 @@ ________________________________________________________________________________
 |                 |                      | 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Jan2ndScotlandHoliday   |
 |                 |                      | 🏴󠁧󠁢󠁳󠁣󠁴󠁿 StAndrewsDayHoliday     |
 |_________________|______________________|____________________________|
-| EarlyRunOff     | ChristmasEve |
+| EarlyRunOffDays | ChristmasEve |
 |                 | NewYearsEve  |
 |_________________|______________|
 """
@@ -262,11 +269,10 @@ def route_link_is_dodgy(
                 f"{context}: {stop.atco_code} {stop.latlong.y},{stop.latlong.x} "
                 f"is {metres:.0f}m from {point.y},{point.x}"
             )
-            logger.warning(text)
-            return DodgyRouteLink(comment=text)
+            return DodgyRouteLink(category="dodgy RouteLink", comment=text)
 
 
-def do_route_links(journeys, transxchange, stops, service, task):
+def do_route_links(journeys, transxchange, stops, service, task, filename, seen):
     route_links = list(get_route_links(journeys, transxchange))
 
     # we're not interested in straight lines between stops
@@ -276,6 +282,12 @@ def do_route_links(journeys, transxchange, stops, service, task):
         route_links_to_create = {}  # or update
 
         for route_link in route_links:
+            # same stops can appear many times, with different RouteLink ids and lines
+            seen_key = (service.id, route_link.from_stop, route_link.to_stop)
+            if seen_key in seen:
+                continue
+            seen.add(seen_key)
+
             from_stop = stops.get(route_link.from_stop)
             to_stop = stops.get(route_link.to_stop)
 
@@ -299,7 +311,12 @@ def do_route_links(journeys, transxchange, stops, service, task):
                 if dodgy := route_link_is_dodgy(
                     start_point, from_stop, service.slug
                 ) or route_link_is_dodgy(end_point, to_stop, service.slug):
+                    if dodgy.comment in seen:
+                        continue
+                    seen.add(dodgy.comment)
+                    logger.warning(dodgy.comment)
                     dodgy.task = task
+                    dodgy.file_name = filename
                     dodgy.geometry = route_link.wkt()
                     dodgy.from_stop_id = from_stop.atco_code
                     dodgy.to_stop_id = to_stop.atco_code
@@ -322,6 +339,11 @@ def do_route_links(journeys, transxchange, stops, service, task):
                     to_stop.latlong = end_point
                     stops_to_update.append(to_stop)
 
+        for key in service.routelink_set.filter(override=True).values_list(
+            "from_stop", "to_stop"
+        ):
+            route_links_to_create.pop(key, None)
+
         RouteLink.objects.bulk_create(
             route_links_to_create.values(),
             update_conflicts=True,
@@ -332,7 +354,7 @@ def do_route_links(journeys, transxchange, stops, service, task):
         StopPoint.objects.bulk_update(stops_to_update, ["latlong"])
 
 
-def get_stop_time(trip, cell, stops: dict):
+def get_stop_time(trip, cell, stops: dict, invalid_timing_statuses: set):
     stop_time = StopTime(
         trip=trip,
         sequence=cell.stopusage.sequencenumber,
@@ -342,8 +364,10 @@ def get_stop_time(trip, cell, stops: dict):
             stop_time.timing_point = False
         case "timeInfoPoint" | "PTP" | "principleTimingPoint" | "principalTimingPoint":
             stop_time.timing_point = True
+        case None:
+            pass
         case _:
-            logger.warning("timing status %s", cell.stopusage.timingstatus)
+            invalid_timing_statuses.add(cell.stopusage.timingstatus)
 
     if (
         stop_time.sequence is not None and stop_time.sequence > 32767
@@ -426,10 +450,46 @@ def get_description(txc_service):
                     via = vias[0]
                     if "via " in via:
                         return f"{description} {via}"
-                    elif "," in via or " and " in via or "&" in via:
+                    if "," in via or " and " in via or "&" in via:
                         return f"{description} via {via}"
                 description = " - ".join([origin] + vias + [destination])
     return description
+
+
+def delete_unused_trips(routes) -> int:
+    """delete trips on routes no longer linked to a service,
+    unless a vehicle journey refers to them
+    """
+    unused_trips = Trip.objects.filter(
+        ~Exists(VehicleJourney.objects.filter(trip=OuterRef("pk")))
+    )
+    route_ids = list(
+        routes.filter(
+            Exists(unused_trips.filter(route=OuterRef("pk"))), service=None
+        ).values_list("id", flat=True)
+    )
+
+    total = 0
+    for route_id in route_ids:
+        with transaction.atomic():
+            route = (
+                Route.objects.select_for_update()
+                .filter(id=route_id, service=None)
+                .first()
+            )
+            if not route:
+                continue
+            deleted, _ = unused_trips.filter(route=route).delete()
+            total += deleted
+            if route.trip_set.exists():
+                # so a reimport of the same file reloads the trips
+                Route.objects.filter(id=route_id).update(file_hash=None)
+            else:
+                route.delete()
+
+    if total:
+        logger.info(f"  deleted {total} unused trips")
+    return total
 
 
 class Command(BaseCommand):
@@ -462,6 +522,8 @@ class Command(BaseCommand):
         return overrides
 
     def handle(self, *args, **options):
+        gc.set_threshold(50_000, 20, 100)
+
         self.set_up()
         self.show_progress = options["progress"]
 
@@ -592,6 +654,13 @@ class Command(BaseCommand):
         old_services = self.source.service_set.filter(current=True, route=None)
         if old_services.update(current=False):
             logger.info(f"  {old_services=}")
+
+        delete_unused_trips(self.source.route_set)
+
+        self.source.calendar_set.filter(
+            ~Exists(Trip.objects.filter(calendar=OuterRef("pk")))
+        ).delete()
+        self.calendar_cache = {}  # in case it held a calendar just deleted
 
     def handle_sub_archive(self, archive, sub_archive_name):
         if sub_archive_name.startswith("__MACOSX"):
@@ -727,6 +796,119 @@ class Command(BaseCommand):
 
         self.finish_task()
 
+    def merge_split_trips(self, service_id):
+        """Merge Trips that are part of the same physical journey,
+        but registered as separate services.
+
+        Trips with different calendars are dealt with "on the fly" later
+        (see get_parts and chain_split_trips).
+        """
+        trips = Trip.objects.filter(route__service=service_id).for_chaining()
+
+        by_calendar = defaultdict(list)
+        for trip in trips:
+            by_calendar[trip.calendar_id].append(trip)
+
+        merged_route_ids = set()
+        for calendar_trips in by_calendar.values():
+            for trip_a, *parts in chain_split_trips(calendar_trips, get_end_stops):
+                if parts:
+                    self.merge_trips(trip_a, parts)
+                    merged_route_ids.add(trip_a.route_id)
+                    merged_route_ids.update(trip.route_id for trip in parts)
+
+        # the database no longer matches the files, so don't skip them next time
+        if merged_route_ids:
+            Route.objects.filter(id__in=merged_route_ids).update(file_hash=None)
+
+        # detect after merging - before, trips might chain with another version's
+        trip_chaining = get_trip_chaining(list(trips.all()))
+        if trip_chaining != "split" and merged_route_ids:
+            return "merge"
+        return trip_chaining
+
+    def merge_trips(self, trip_a, parts):
+        stop_times_a = list(trip_a.stoptime_set.order_by("id"))
+
+        for trip_b in parts:
+            stop_times_b = list(trip_b.stoptime_set.order_by("id"))
+
+            if (
+                not stop_times_a
+                or not stop_times_b
+                or stop_times_a[-1].stop_id != stop_times_b[0].stop_id
+            ):
+                return
+
+            # splice trip_b onto the end of trip_a
+            last, first_b = stop_times_a[-1], stop_times_b[0]
+            last.departure = first_b.departure
+            last.pick_up = first_b.pick_up
+            last.save(update_fields=["departure", "pick_up"])
+
+            # Some things rely on sorting StopTimes by id (not time or sequence)
+            rest = stop_times_b[1:]
+            old_ids = [stop_time.id for stop_time in rest]
+            notes_by_old_id = defaultdict(list)
+            for through in StopTime.notes.through.objects.filter(
+                stoptime_id__in=old_ids
+            ):
+                notes_by_old_id[through.stoptime_id].append(through.note_id)
+
+            sequence = (last.sequence or 0) + 1
+            new_rest = []
+            for stop_time in rest:
+                new_stop_time = StopTime(
+                    trip=trip_a,
+                    stop_id=stop_time.stop_id,
+                    arrival=stop_time.arrival,
+                    departure=stop_time.departure,
+                    sequence=sequence if stop_time.sequence is not None else None,
+                    timing_point=stop_time.timing_point,
+                    pick_up=stop_time.pick_up,
+                    set_down=stop_time.set_down,
+                )
+                new_stop_time._old_id = stop_time.id
+                new_rest.append(new_stop_time)
+                if stop_time.sequence is not None:
+                    sequence += 1
+            StopTime.objects.bulk_create(new_rest)
+
+            note_links = [
+                StopTime.notes.through(stoptime=new_stop_time, note_id=note_id)
+                for new_stop_time in new_rest
+                for note_id in notes_by_old_id.get(new_stop_time._old_id, ())
+            ]
+            if note_links:
+                StopTime.notes.through.objects.bulk_create(note_links)
+
+            StopTime.objects.filter(id__in=[first_b.id, *old_ids]).delete()
+
+            stop_times_a = stop_times_a[:-1] + [last] + new_rest
+
+            trip_a.end = trip_b.end
+            trip_a.destination_id = trip_b.destination_id
+            if trip_b.headsign:
+                trip_a.headsign = trip_b.headsign
+            trip_a.save(update_fields=["end", "destination", "headsign"])
+
+            # reassign things that point at trip_b
+            existing_note_ids = set(
+                Trip.notes.through.objects.filter(trip_id=trip_a.id).values_list(
+                    "note_id", flat=True
+                )
+            )
+            Trip.notes.through.objects.filter(
+                trip_id=trip_b.id, note_id__in=existing_note_ids
+            ).delete()
+            Trip.notes.through.objects.filter(trip_id=trip_b.id).update(
+                trip_id=trip_a.id
+            )
+            VehicleJourney.objects.filter(trip_id=trip_b.id).update(trip_id=trip_a.id)
+            AffectedJourney.objects.filter(trip_id=trip_b.id).update(trip_id=trip_a.id)
+
+            trip_b.delete()
+
     def finish_services(self):
         """update/create StopUsages, search_vector and geometry fields"""
 
@@ -734,6 +916,13 @@ class Command(BaseCommand):
         services = services.annotate(operator_count=Count("operator"))
 
         for service in services:
+            trip_chaining = self.merge_split_trips(service.id)
+            if service.trip_chaining not in ("any", trip_chaining) and not (
+                service.trip_chaining == "merge" and not trip_chaining
+            ):
+                service.trip_chaining = trip_chaining
+                service.save(update_fields=["trip_chaining"])
+
             service.do_stop_usages()
 
             # using StopUsages
@@ -872,12 +1061,11 @@ class Command(BaseCommand):
                 else:
                     operation = not operation
                     dates = sodt.serviced_organisation.holidays
+            elif sodt.serviced_organisation.holidays:
+                dates = sodt.serviced_organisation.holidays
             else:
-                if sodt.serviced_organisation.holidays:
-                    dates = sodt.serviced_organisation.holidays
-                else:
-                    operation = not operation
-                    dates = sodt.serviced_organisation.working_days
+                operation = not operation
+                dates = sodt.serviced_organisation.working_days
 
             calendar_dates += [
                 get_calendar_date(date_range=date_range, operation=operation)
@@ -1008,7 +1196,9 @@ class Command(BaseCommand):
             blank = False
             previous_stop_time = None
             for sequence, cell in enumerate(journey.get_times()):
-                stop_time = get_stop_time(trip, cell, stops)
+                stop_time = get_stop_time(
+                    trip, cell, stops, self.invalid_timing_statuses
+                )
 
                 if (
                     previous_stop_time is not None
@@ -1095,7 +1285,9 @@ class Command(BaseCommand):
                         journey.departure_time = trip.start
                         previous_stop_time = None
                         for cell in journey.get_times():
-                            stop_time = get_stop_time(trip, cell, stops)
+                            stop_time = get_stop_time(
+                                trip, cell, stops, self.invalid_timing_statuses
+                            )
                             if (
                                 previous_stop_time is not None
                                 and previous_stop_time.stop_id == stop_time.stop_id
@@ -1187,7 +1379,7 @@ class Command(BaseCommand):
                 ).exists()
 
             return False
-        elif self.source.name == "L" or not operators:  # TfL data is always best
+        if self.source.name == "L" or not operators:  # TfL data is always best
             return False
 
         if self.source.name != "TfGM" and any(
@@ -1509,12 +1701,10 @@ class Command(BaseCommand):
                 ticket_machine_service_code
                 and ticket_machine_service_code != line.line_name
             ):
-                try:
+                with contextlib.suppress(IntegrityError):
                     ServiceCode.objects.create(
                         scheme="SIRI", code=ticket_machine_service_code, service=service
                     )
-                except IntegrityError:
-                    pass
 
             # a code used in Traveline Cymru URLs:
             if self.source.name == "W" and "_" not in txc_service.service_code:
@@ -1596,7 +1786,15 @@ class Command(BaseCommand):
 
             # route links (geometry between stops):
             if transxchange.route_sections:
-                do_route_links(journeys, transxchange, stops, service, self.task)
+                do_route_links(
+                    journeys,
+                    transxchange,
+                    stops,
+                    service,
+                    self.task,
+                    filename,
+                    self.seen_route_links,
+                )
 
             route_code = filename
             if len(transxchange.services) > 1:
@@ -1712,9 +1910,11 @@ class Command(BaseCommand):
                 elif atco_code[-1:].isdigit() and atco_code_upper[:-1] in stops:
                     stops[atco_code_upper] = stops[atco_code_upper[:-1]]
                 else:
-                    stoppoint = get_stop(
-                        stop.element, f"{self.source.id}:{atco_code_upper}"
-                    )
+                    if self.region_id == "NI":
+                        stop_code = atco_code_upper
+                    else:
+                        stop_code = f"{self.source.id}:{atco_code_upper}"
+                    stoppoint = get_stop(stop.element, stop_code)
                     stoppoint.common_name = str(stop)[:48]
                     stoppoint.source = self.source
                     stoppoint.timing_status = ""
@@ -1778,6 +1978,8 @@ class Command(BaseCommand):
             return
 
         self.vehicle_types = {}
+        self.invalid_timing_statuses = set()
+        self.seen_route_links = set()
 
         stops = self.do_stops(transxchange.stops)
 
@@ -1785,3 +1987,13 @@ class Command(BaseCommand):
 
         for txc_service in transxchange.services.values():
             self.handle_service(filename, transxchange, txc_service, stops, file_hash)
+
+        if self.invalid_timing_statuses:
+            comment = ", ".join(sorted(map(repr, self.invalid_timing_statuses)))
+            logger.warning(f"{filename} invalid TimingStatus {comment}")
+            DataQualityObservation.objects.create(
+                task=self.task,
+                file_name=filename,
+                category="invalid TimingStatus",
+                comment=comment,
+            )

@@ -207,8 +207,7 @@ class Livery(models.Model):
         div = f'<div style="height:1.5em;width:2.25em;background:{background}"'
         if name:
             return format_html(div + "></div> {}", self.name)
-        else:
-            return format_html(div + ' title="{}"></div>', self.name)
+        return format_html(div + ' title="{}"></div>', self.name)
 
     def save(self, *args, update_fields=None, **kwargs):
         if update_fields is None:
@@ -484,6 +483,13 @@ class Vehicle(models.Model):
             json["colour"] = colour
         return json
 
+    def is_tfl(self) -> bool:
+        try:
+            mvj = self.latest_journey_data["MonitoredVehicleJourney"]
+            return mvj["OperatorRef"] == "TFLO"
+        except (AttributeError, TypeError, KeyError, ValueError):
+            return False
+
 
 class VehicleHasFeature(models.Model):
     vehicle = models.ForeignKey(
@@ -690,7 +696,7 @@ class VehicleRevision(models.Model):
             for key in self.changes:
                 before, after = self.changes[key].split("\n+")
                 before = before[1:]
-                if key == "reg" or key == "name":
+                if key in {"reg", "name"}:
                     if getattr(vehicle, key) == after:
                         setattr(vehicle, key, before)
                         fields.append("reg")
@@ -735,8 +741,7 @@ class VehicleJourney(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False)
 
     def get_absolute_url(self):
-        # TODO: change to "/journeys/{self.id}" (actually using `reverse()`)
-        return f"/vehicles/{self.vehicle_id}?date={self.date}#journey-{self.id}"
+        return reverse("journey_detail", args=(self.id,))
 
     def __str__(self):
         date = f"{self.datetime:%-d %b %y %H:%M}" if self.datetime else ""
@@ -798,7 +803,17 @@ class VehicleLocation:
     but this code is still here for historical reasons
     """
 
-    def __init__(self, latlong, heading=None, delay=None, occupancy=None, block=None):
+    def __init__(
+        self,
+        latlong,
+        heading=None,
+        delay=None,
+        occupancy=None,
+        block=None,
+        prev_stop=None,
+        next_stop=None,
+        in_service=True,
+    ):
         self.latlong = latlong
         self.heading = heading
         self.delay = delay
@@ -807,18 +822,23 @@ class VehicleLocation:
         self.seated_capacity = None
         self.wheelchair_occupancy = None
         self.wheelchair_capacity = None
+        self.wheelchair = None  # "accessible" or "not accessible"
         self.occupancy_thresholds = None
         self.block = block
-        self.tfl_code = None
+        # the stops the data source says the vehicle is between (either can be None)
+        self.prev_stop = prev_stop
+        self.next_stop = next_stop
+        # False if the vehicle has finished its journey (eg heading back to the depot)
+        # - so don't work out its progress or delay
+        self.in_service = in_service
         self.datetime = None
+        # stop times (not a real Trip) for working out progress and delay
+        self.progress_journey = None
 
     def __str__(self):
         if self.datetime:
             return f"{self.datetime:%-d %b %Y %H:%M:%S}"
         return ""
-
-    class Meta:
-        ordering = ("id",)
 
     def get_heading(self):
         """Some sources give a float or a string - always return an int (or None)"""
@@ -882,9 +902,10 @@ class VehicleLocation:
         if self.delay is not None:
             json["delay"] = self.delay.total_seconds()
 
-        if self.tfl_code:
-            json["tfl_code"] = self.tfl_code
-        if journey.trip_id:
+        if self.prev_stop or self.next_stop:
+            json["stops"] = [self.prev_stop, self.next_stop]
+
+        if journey.trip_id and self.in_service:
             json["trip_id"] = journey.trip_id
         if journey.service_id:
             json["service_id"] = journey.service_id
@@ -903,6 +924,8 @@ class VehicleLocation:
                 json["wheelchair"] = "free"
             else:
                 json["wheelchair"] = "occupied"
+        elif self.wheelchair:
+            json["wheelchair"] = self.wheelchair
 
         return json
 
@@ -912,7 +935,6 @@ class SiriSubscription(models.Model):
         max_length=64,
         blank=True,
         unique=True,
-        help_text="There should be a DataSource with the same name as this",
     )
     source = models.ForeignKey(DataSource, models.DB_CASCADE)
     uuid = models.UUIDField(default=uuid.uuid4, editable=False)
@@ -929,4 +951,4 @@ class SiriSubscription(models.Model):
         return f"{self.name.replace(' ', '_')}_status"
 
     def get_absolute_url(self):
-        return reverse("siri_post", args=(self.uuid,))
+        return reverse("siri_get", args=(self.id,))

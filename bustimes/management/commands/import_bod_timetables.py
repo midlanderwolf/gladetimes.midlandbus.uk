@@ -1,7 +1,6 @@
 """Import timetable data "fresh from the cow" """
 
 import logging
-import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +16,10 @@ from django.db.models import Exists, OuterRef, Q
 from busstops.models import DataSource, Service
 
 from ...download_utils import download, download_if_modified
-from ...models import Route, TimetableDataSource, Trip
+from ...models import Route, TimetableDataSource, Trip, is_noc
 from ...utils import get_sha1, log_time_taken
 from .import_transxchange import Command as TransXChangeCommand
+from .import_transxchange import delete_unused_trips
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +65,13 @@ https://gladetimes.com/admin/busstops/service/?route__source__source={timetable_
     routes = Route.objects.filter(id__in=route_ids)
     # do this first to prevent IntegrityError
     routes.update(service=None)
-    # routes.delete()
+    delete_unused_trips(routes)
     Service.objects.filter(
         ~Q(source__url=""),
         operator__in=operators,
         current=True,
         route=None,
     ).update(current=False)
-
-
-def is_noc(search_term: str) -> bool:
-    assert str
-    return len(search_term) <= 4 and search_term.isupper()
 
 
 def get_operator_ids(source) -> list:
@@ -105,13 +100,16 @@ def handle_file(command, path, qualify_filename=False):
             for filename in archive.namelist():
                 if filename.endswith(".csv") or "__MACOSX/" in filename:
                     continue
+                if filename.endswith(".zip"):
+                    command.handle_sub_archive(archive, filename)
+                    continue
                 with archive.open(filename) as open_file:
                     if qualify_filename:
                         # source has multiple versions (Passsenger) so add a prefix like 'gonortheast_123.zip/'
                         filename = str(Path(path) / filename)
                     try:
                         command.handle_file(open_file, filename)
-                    except (ET.ParseError, ValueError, AttributeError, DataError):
+                    except (SyntaxError, ValueError, AttributeError, DataError):
                         if filename.endswith(".xml"):
                             logger.info(filename)
                             logger.exception("error handling file")
@@ -180,10 +178,16 @@ def bus_open_data(api_key, specific_operator):
 
     for params in get_bus_open_data_paramses(timetable_data_sources, api_key):
         url = f"{url_prefix}/api/v1/dataset/"
+        request_params = params
+        if "datasetID" in params:
+            request_params = params.copy()
+            url += f"{request_params.pop('datasetID')[0]}/"
         while url:
-            response = session.get(url, params=params, timeout=61)
+            response = session.get(url, params=request_params, timeout=61)
             response.raise_for_status()
             json = response.json()
+            if "datasetID" in params:
+                json = {"results": [json], "next": None}
             results = json["results"]
             if not results:
                 logger.warning(f"no results: {response.url}")
@@ -271,6 +275,7 @@ def bus_open_data(api_key, specific_operator):
 
         clean_up(source, sources, not source.complete)
 
+        command.source = None  # finish_services is for all this source's sources
         command.service_ids = service_ids
         command.finish_services()
         all_source_ids += [source.id for source in sources]
@@ -433,7 +438,7 @@ def stagecoach(specific_operator=None):
         modified, last_modified = download_if_modified(path, command.source, session)
         sha1 = get_sha1(path)
 
-        if command.source.datetime != last_modified:
+        if last_modified and command.source.datetime != last_modified:
             modified = True
 
         if modified:

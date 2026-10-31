@@ -1,4 +1,6 @@
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from difflib import Differ
 from itertools import pairwise
@@ -9,7 +11,6 @@ from django.db.models import (
     ExpressionWrapper,
     F,
     IntegerField,
-    OuterRef,
     Q,
     Value,
     When,
@@ -18,15 +19,7 @@ from django.db.models.functions import Abs, Least
 from django.utils import timezone
 from sql_util.utils import Exists
 
-from .models import (
-    Calendar,
-    CalendarBankHoliday,
-    CalendarDate,
-    Route,
-    StopTime,
-    Trip,
-    Version,
-)
+from .models import Calendar, StopTime, Trip
 
 differ = Differ(charjunk=lambda _: True)
 
@@ -48,163 +41,6 @@ class log_time_taken:
 
     def __exit__(self, _, __, ___):
         self.logger.info(f"  ⏱️ {datetime.now(UTC) - self.start}")
-
-
-def get_routes(routes, when):
-    filter_by_revision_number = True
-    if type(routes) is list:
-        filter_by_revision_number = any(route.revision_number for route in routes)
-
-        routes = Route.objects.filter(
-            id__in=[route.id for route in routes]
-        ).select_related("source")
-
-    if filter_by_revision_number:
-        routes = routes.filter(
-            Q(start_date=None) | Q(start_date__lte=when),
-            ~Exists(
-                Route.objects.filter(
-                    service__isnull=False,
-                    source=OuterRef("source"),
-                    service_code=OuterRef("service_code"),
-                    revision_number_context=OuterRef("revision_number_context"),
-                    start_date__lte=when,
-                    revision_number__gt=OuterRef("revision_number"),
-                )
-            ),
-        ).order_by("id")
-
-    # complicated way of working out which Passenger .zip applies.
-    # When multiple versions share the same start_date, prefer the one with the
-    # greater name - filenames are like 'lynxbus_<unix-timestamp>.zip' so this
-    # picks the most recently published.
-    routes = routes.filter(
-        Q(version=None)
-        | Q(
-            ~Exists(
-                Version.objects.filter(
-                    source=OuterRef("version__source"),
-                    start_date__lte=when,
-                    end_date__gte=when,
-                ).filter(
-                    Q(start_date__gt=OuterRef("version__start_date"))
-                    | Q(
-                        start_date=OuterRef("version__start_date"),
-                        name__gt=OuterRef("version__name"),
-                    )
-                )
-            ),
-            version__start_date__lte=when,
-            version__end_date__gte=when,
-        )
-    )
-
-    routes = routes.filter(
-        Q(start_date=None) | Q(start_date__lte=when),
-        Q(end_date=None) | Q(end_date__gte=when),
-    )
-
-    # TfL: try to pick the file with the highest Service Change Number, if there are multiple
-    # https://techforum.tfl.gov.uk/t/duplicate-files-in-journey-planner-datastore-is-there-a-way-to-choose-the-right-one/2571
-    # (actually using service_code order, which assumes that the SCNs have the same number of digits)
-    routes = routes.filter(
-        ~Q(code__contains="tfl_")
-        | ~Exists(
-            Route.objects.filter(
-                Q(end_date__gte=when) | Q(end_date__isnull=True),
-                service=OuterRef("service"),
-                source=OuterRef("source"),
-                service_code__gt=OuterRef("service_code"),
-                start_date__lte=when,
-            )
-        )
-    ).filter(
-        ~Exists(
-            Route.objects.filter(
-                file_hash=OuterRef("file_hash"),
-                file_hash__isnull=False,
-                code=OuterRef("code"),
-                id__gt=OuterRef("id"),
-            )
-        )
-    )
-    return routes
-
-
-def get_calendars(when: date | datetime, calendar_ids=None, scotland=None):
-    between_dates = Q(start_date__lte=when) & (Q(end_date__gte=when) | Q(end_date=None))
-
-    calendars = Calendar.objects.filter(between_dates)
-    calendar_calendar_dates = CalendarDate.objects.filter(calendar=OuterRef("id"))
-    calendar_dates = calendar_calendar_dates.filter(between_dates)
-
-    if calendar_ids is not None:
-        # cunningly make the query faster
-        calendars = calendars.filter(id__in=calendar_ids)
-        calendar_dates = calendar_dates.filter(calendar__in=calendar_ids)
-    exclusions = calendar_dates.filter(operation=False)
-    inclusions = calendar_dates.filter(operation=True)
-    special_inclusions = Exists(inclusions.filter(special=True))
-    only_certain_dates = Exists(
-        calendar_calendar_dates.filter(special=False, operation=True)
-    )
-
-    if scotland is None:
-        calendar_bank_holidays = CalendarBankHoliday.objects.filter(
-            bank_holiday__bankholidaydate__date=when,
-            calendar=OuterRef("id"),
-        )
-    else:
-        calendar_bank_holidays = CalendarBankHoliday.objects.filter(
-            Q(bank_holiday__bankholidaydate__scotland=None)
-            | Q(bank_holiday__bankholidaydate__scotland=scotland),
-            bank_holiday__bankholidaydate__date=when,
-            calendar=OuterRef("id"),
-        )
-
-    bank_holiday_inclusions = Exists(calendar_bank_holidays.filter(operation=True))
-
-    return calendars.annotate(
-        bank_holiday_exclusions=Exists(calendar_bank_holidays.filter(operation=False))
-    ).filter(
-        Q(
-            Q(**{f"{when:%a}".lower(): True}),  # day of week
-            ~only_certain_dates | Exists(inclusions),  # special dates of operation
-            bank_holiday_exclusions=False,
-        )
-        | special_inclusions
-        | bank_holiday_inclusions & Q(bank_holiday_exclusions=False),
-        ~Exists(exclusions),
-    )
-
-
-def get_calendar_ids(when: date, routes, scotland=None) -> list:
-    return list(
-        get_calendars(when, scotland=scotland)
-        .filter(id__in=Trip.objects.filter(route__in=routes).values("calendar_id"))
-        .values_list("id", flat=True)
-    )
-
-
-def get_other_trips_in_block(trip, date):
-    if not trip.route_id:
-        return Trip.objects.none()
-
-    trips = Trip.objects.filter(
-        block=trip.block,
-        route__source=trip.route.source_id,
-        route__version=trip.route.version_id,
-        garage=trip.garage_id,
-        operator=trip.operator_id,
-    )
-    if trip.route.service_id:
-        trips = trips.filter(route__service__isnull=False)
-
-    routes = Route.objects.filter(trip__in=trips).select_related("source")
-
-    calendars = get_calendars(date, [trip.calendar_id for trip in trips])
-    routes = get_routes(routes, date)
-    return trips.filter(calendar__in=calendars, route__in=routes).order_by("start")
 
 
 def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=None):
@@ -232,13 +68,17 @@ def get_stop_times(date: date, time: timedelta | None, stop, routes, trip_ids=No
             )
         )
     else:
-        routes = list(get_routes(routes, date))
+        routes = list(routes.active_on(date))
 
         scotland = stop.pk[:1] == "6" and ":" not in stop.pk and stop.pk[:4].isdigit()
 
         times = times.filter(
             trip__route__in=routes,
-            trip__calendar__in=get_calendar_ids(date, routes, scotland=scotland),
+            trip__calendar__in=list(
+                Calendar.objects.active_on(date, scotland=scotland)
+                .for_routes(routes)
+                .values_list("id", flat=True)
+            ),
         )
 
         if time is not None:
@@ -294,7 +134,7 @@ def get_descriptions(routes):
                     origins_and_destinations[i + j] = other_parts + parts[1:]
                     origins_and_destinations[i] = None
                     break
-                elif parts[-1] == other_parts[0]:
+                if parts[-1] == other_parts[0]:
                     origins_and_destinations[i + j] = parts + other_parts[1:]
                     origins_and_destinations[i] = None
                     break
@@ -325,6 +165,51 @@ def get_descriptions(routes):
     return inbound_outbound_descriptions, origins_and_destinations
 
 
+class RoutesCache(dict):
+    hits = 0
+    misses = 0
+
+
+_routes: ContextVar[RoutesCache | None] = ContextVar("routes_cache", default=None)
+_routes_cache = RoutesCache()
+
+
+@contextmanager
+def cache_routes():
+    """Reuse Route.objects.active_on results until the service is reimported"""
+    _routes_cache.hits = _routes_cache.misses = 0
+    token = _routes.set(_routes_cache)
+    try:
+        yield _routes_cache
+    finally:
+        _routes.reset(token)
+
+
+def get_service_routes(service, when) -> list:
+    """Route.objects.active_on for a service, maybe reusing an earlier result"""
+    cache = _routes.get()
+    if cache is None:
+        return list(service.route_set.select_related("source").active_on(when))
+
+    entry = cache.get(service.id)
+    if not entry or entry[0] != service.modified_at:
+        entry = (service.modified_at, {})
+        cache[service.id] = entry
+
+    routes_by_date = entry[1]
+    if when in routes_by_date:
+        cache.hits += 1
+    else:
+        cache.misses += 1
+        for stale in [date for date in routes_by_date if abs(date - when).days > 1]:
+            del routes_by_date[stale]
+        routes_by_date[when] = list(
+            service.route_set.select_related("source").active_on(when)
+        )
+
+    return routes_by_date[when]
+
+
 def get_trip(
     journey,
     datetime=None,
@@ -347,10 +232,17 @@ def get_trip(
     if not date:
         date = timezone.localdate(departure_time or datetime)
 
-    # TODO: get routes for previous day, in case journey starts after midnight
-    routes = get_routes(journey.service.route_set.select_related("source"), date)
-    if routes:
-        trips = Trip.objects.filter(route__in=routes)
+    routes = get_service_routes(journey.service, date)
+    if timezone.localtime(departure_time or datetime).hour < 7:
+        # might be timetabled as part of the previous day (start after 24:00)
+        yesterday_routes = get_service_routes(journey.service, date - timedelta(days=1))
+    else:
+        yesterday_routes = []
+    if routes or yesterday_routes:
+        trips = Trip.objects.filter(
+            Q(route__in=routes, start__lt=timedelta(days=1))
+            | Q(route__in=yesterday_routes, start__gte=timedelta(days=1))
+        )
     else:
         trips = Trip.objects.filter(route__service=journey.service)
 
@@ -379,7 +271,7 @@ def get_trip(
             start |= Exists(
                 "stoptime", filter=Q(stop=origin_ref, departure=start_timedelta)
             )
-        if start_time.hour < 6:
+        if start_time.hour < 7:
             start |= Q(start=start_timedelta + timedelta(days=1))
             if origin:
                 start |= Exists(
@@ -393,13 +285,15 @@ def get_trip(
         hours = int(journey_code[:-2])
         minutes = int(journey_code[-2:])
         start = Q(start=timedelta(hours=hours, minutes=minutes))
+        if hours < 7:
+            start |= Q(start=timedelta(days=1, hours=hours, minutes=minutes))
     else:
         start = Q()
 
     if arrival_time:
         arrival_time = timezone.localtime(arrival_time)
         end = Q(end=timedelta(hours=arrival_time.hour, minutes=arrival_time.minute))
-        if arrival_time.hour < 6:
+        if arrival_time.hour < 7:
             end |= Q(
                 end=timedelta(
                     days=1, hours=arrival_time.hour, minutes=arrival_time.minute
@@ -417,7 +311,7 @@ def get_trip(
                 )
                 return trips.get()
             except Trip.MultipleObjectsReturned:
-                trips = trips.filter(calendar__in=get_calendars(date))
+                trips = trips.active_on(date)
                 return trips.get()
         except (Trip.DoesNotExist, Trip.MultipleObjectsReturned):
             return
@@ -447,7 +341,7 @@ def get_trip(
         start_time = timezone.localtime(datetime)
         start_time = timedelta(hours=start_time.hour, minutes=start_time.minute)
 
-        if start_time < timedelta(hours=6):
+        if start_time < timedelta(hours=7):
             # might be timetabled as part of the previous day
             start_times = (start_time, start_time + timedelta(days=1))
         else:
@@ -497,7 +391,7 @@ def get_trip(
         ):
             date -= timedelta(days=1)
         if len(trips) > 1 and trips[0].score == trips[1].score:
-            filtered_trips = trips.filter(calendar__in=get_calendars(date))
+            filtered_trips = trips.active_on(date)
             if filtered_trips:
                 trips = filtered_trips
 
@@ -513,260 +407,10 @@ def contiguous_stoptimes_only(stoptimes, trip_id):
             if a.stop_id != b.stop_id:
                 # trips are not contiguous, return only the stops for trip_id
                 return [stop for stop in stoptimes if stop.trip_id == trip_id]
-            else:
-                # merge a and b - they describe the same stop
-                a.departure = b.departure
-                a.pick_up = b.pick_up
-                stoptimes_list.remove(b)
+            # merge a and b - they describe the same stop
+            a.departure = b.departure
+            a.pick_up = b.pick_up
+            stoptimes_list.remove(b)
 
     # trips were contiguous, return all stops
     return stoptimes_list
-
-
-def get_trips(trip, date=None) -> list:
-    """Get other parts of this trip (if the service has been split into parts)
-
-    counterpart to merge_split_trips
-    """
-
-    if trip.ticket_machine_code and trip.route and trip.route.service_id:
-        code_filter = Q(ticket_machine_code=trip.ticket_machine_code)
-        if trip.vehicle_journey_code:
-            code_filter |= Q(vehicle_journey_code=trip.vehicle_journey_code)
-
-        # don't match a superseded version of the timetable
-        route_filter = Q(
-            route__service=trip.route.service_id, route__source=trip.route.source_id
-        )
-        if trip.route.version_id:
-            route_filter &= Q(route__version=trip.route.version_id)
-        if date:
-            route_ids = list(
-                get_routes(
-                    Route.objects.filter(service=trip.route.service_id), date
-                ).values_list("id", flat=True)
-            )
-            route_filter &= Q(route__in=route_ids)
-        else:
-            # no date, so just exclude routes with a higher revision number
-            route_filter &= ~Q(
-                Exists(
-                    Route.objects.filter(
-                        service__isnull=False,
-                        source=OuterRef("route__source"),
-                        service_code=OuterRef("route__service_code"),
-                        revision_number_context=OuterRef(
-                            "route__revision_number_context"
-                        ),
-                        revision_number__gt=OuterRef("route__revision_number"),
-                    )
-                )
-            )
-
-        calendar_filter = Q(calendar=trip.calendar_id)
-        # annoyingly, sometimes different parts have different calendar ids
-        # (cos school day variations etc)
-        if date:
-            calendar_filter |= Q(calendar__in=get_calendar_ids(date, route_ids))
-        elif trip.calendar:
-            overlap = Q(calendar__end_date__gte=trip.calendar.start_date) | Q(
-                calendar__end_date=None
-            )
-            if trip.calendar.end_date:
-                overlap &= Q(calendar__start_date__lte=trip.calendar.end_date)
-            days = Q()
-            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
-                if getattr(trip.calendar, day):
-                    days |= Q(**{f"calendar__{day}": True})
-            calendar_filter |= overlap & days
-
-        trips = (
-            Trip.objects.filter(
-                Q(id=trip.id)
-                | Q(
-                    code_filter,
-                    calendar_filter,
-                    route_filter,
-                    Q(start__gte=trip.end) | Q(end__lte=trip.start),
-                    ~Q(destination_id=trip.destination_id),
-                    block=trip.block,
-                    inbound=trip.inbound,
-                    operator_id=trip.operator_id,
-                )
-            )
-            .order_by("start")
-            .distinct("start")
-        )
-        no_minutes = timedelta()
-        fifteen_minutes = timedelta(minutes=15)
-        trips_list = []
-        for trip_a, trip_b in pairwise(trips):
-            if no_minutes <= trip_b.start - trip_a.end < fifteen_minutes:
-                if not trips_list:
-                    trips_list.append(trip_a)
-                trips_list.append(trip_b)
-            elif trip in trips_list:
-                return trips_list
-            else:
-                trips_list = []
-        if trip in trips_list:
-            return trips_list
-    return [trip]
-
-
-def get_route_link_valhalla(
-    session, url, costing, service, from_atco, from_point, to_atco, to_point
-):
-    from bustimes.models import RouteLink
-    from django.contrib.gis.geos import LineString
-
-    try:
-        response = session.post(
-            f"{url}/route",
-            json={
-                "locations": [
-                    {"lat": from_point.y, "lon": from_point.x},
-                    {"lat": to_point.y, "lon": to_point.x},
-                ],
-                "costing": costing,
-                "directions_options": {"shape_format": "geojson", "units": "km"},
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        raise RuntimeError(f"Valhalla API error for {from_atco}->{to_atco}: {e}")
-
-    trip = data.get("trip")
-    if not trip:
-        raise RuntimeError(f"No 'trip' in Valhalla response for {from_atco}->{to_atco}")
-    
-    status = trip.get("status")
-    if status != 0:
-        status_msg = trip.get("status_message", "Unknown error")
-        raise RuntimeError(f"Valhalla error for {from_atco}->{to_atco}: {status_msg}")
-
-    legs = trip.get("legs", [])
-    if not legs:
-        raise RuntimeError(f"No legs in Valhalla response for {from_atco}->{to_atco}")
-
-    shape = legs[0].get("shape")
-    if not shape:
-        raise RuntimeError(f"No shape in Valhalla response for {from_atco}->{to_atco}")
-    
-    if isinstance(shape, dict):
-        coords = shape.get("coordinates")
-    elif isinstance(shape, str):
-        import polyline
-        decoded = polyline.decode(shape)
-        coords = [[lon / 10, lat / 10] for lat, lon in decoded]
-    else:
-        raise RuntimeError(f"Shape is not a GeoJSON dict or polyline string for {from_atco}->{to_atco}: {type(shape)}")
-    
-    if not coords:
-        raise RuntimeError(f"No coordinates in shape for {from_atco}->{to_atco}")
-
-    distance_km = legs[0].get("summary", {}).get("length", 0)
-
-    line_geometry = LineString(coords, srid=4326)
-
-    if line_geometry.length == 0:
-        return None
-
-    return RouteLink(
-        service=service,
-        from_stop_id=from_atco,
-        to_stop_id=to_atco,
-        distance_metres=int(distance_km * 1000),
-        geometry=line_geometry,
-    )
-
-
-def generate_route_links_for_service_valhalla(service, url="https://valhalla.midlandbus.uk", costing="bus"):
-    import requests
-
-    from bustimes.models import RouteLink
-
-    route_links = []
-    session = requests.Session()
-
-    stops = list(
-        service.stopusage_set.select_related("stop")
-        .order_by("order")
-        .values_list("stop__atco_code", "stop__latlong")
-    )
-
-    if len(stops) < 2:
-        raise ValueError(f"Service has fewer than 2 stops with coordinates")
-
-    for i in range(len(stops) - 1):
-        from_atco, from_point = stops[i]
-        to_atco, to_point = stops[i + 1]
-
-        if not from_point or not to_point:
-            continue
-
-        route_links.append(
-            get_route_link_valhalla(
-                session,
-                url,
-                costing,
-                service,
-                from_atco,
-                from_point,
-                to_atco,
-                to_point,
-            )
-        )
-
-    if len(stops) > 1:
-        from_atco, from_point = stops[-1]
-        to_atco, to_point = stops[0]
-        if from_point and to_point:
-            route_links.append(
-                get_route_link_valhalla(
-                    session,
-                    url,
-                    costing,
-                    service,
-                    from_atco,
-                    from_point,
-                    to_atco,
-                    to_point,
-                )
-            )
-
-    route_links = [rl for rl in route_links if rl is not None]
-
-    seen = set()
-    unique_route_links = []
-    for rl in route_links:
-        key = (rl.from_stop_id, rl.to_stop_id)
-        if key not in seen:
-            seen.add(key)
-            unique_route_links.append(rl)
-    route_links = unique_route_links
-
-    if route_links:
-        RouteLink.objects.bulk_create(
-            route_links,
-            update_conflicts=True,
-            update_fields=["geometry", "distance_metres"],
-            unique_fields=["service", "from_stop", "to_stop"],
-        )
-
-        from django.contrib.gis.geos import MultiLineString
-
-        geometries = list(
-            RouteLink.objects.filter(service=service).values_list("geometry", flat=True)
-        )
-        if geometries:
-            service.geometry = MultiLineString(geometries, srid=4326)
-            service.save(update_fields=["geometry"])
-        else:
-            service.update_geometry()
-
-        return True
-
-    raise ValueError(f"Valhalla returned no valid routes for any of the {len(stops)-1} stop pairs")

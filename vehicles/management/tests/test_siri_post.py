@@ -1,9 +1,12 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 import fakeredis
 import time_machine
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 from vcr import use_cassette
@@ -11,9 +14,22 @@ from vcr import use_cassette
 from busstops.models import DataSource
 
 from ...models import SiriSubscription, Vehicle
+from ...tasks import SIRI_CHANNEL, handle_siri_post
+from ...views import queue_device_location
 
 
+@override_settings(
+    CHANNEL_LAYERS={"bod_avl": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
 class SiriPostTest(TestCase):
+    @staticmethod
+    def handle_siri_posts(count):
+        """do what the import_bod_avl --siri worker would"""
+        receive = async_to_sync(get_channel_layer("bod_avl").receive)
+        for _ in range(count):
+            message = receive(SIRI_CHANNEL)
+            handle_siri_post.call_local(message["uuid"], message["data"])
+
     @classmethod
     def setUpTestData(cls):
         source = DataSource.objects.create(name="Transport for Whales")
@@ -85,6 +101,7 @@ class SiriPostTest(TestCase):
             content_type="text/xml",
         )
         self.assertEqual(200, response.status_code)
+        self.handle_siri_posts(1)
 
     @time_machine.travel("2023-12-15T08:24:05Z")
     def test_siri_post_data(self):
@@ -145,6 +162,7 @@ class SiriPostTest(TestCase):
                 content_type="text/xml",
             )
             self.assertEqual(200, response.status_code)
+            self.handle_siri_posts(1)
 
             response = self.client.get("/siri/475d1d1f-5708-4ee1-8f51-c63d948bc0b9")
             self.assertEqual(response.headers["Content-Type"], "text/xml")
@@ -199,6 +217,8 @@ class SiriPostTest(TestCase):
                 self.assertEqual(200, response.status_code)
                 self.assertEqual(response.text, """{"result":"ok"}""")
 
+            self.handle_siri_posts(2)
+
             with self.assertRaises(KeyError):
                 self.client.post("/overland", data, content_type="application/json")
 
@@ -207,3 +227,108 @@ class SiriPostTest(TestCase):
 
         vehicle = Vehicle.objects.get()
         self.assertEqual(str(vehicle), "MB182")
+
+    @time_machine.travel("2023-12-15T08:24:05Z")
+    def test_traccar(self):
+        redis_client = fakeredis.FakeStrictRedis(version=7)
+
+        # check that view is CSRF-exempt
+        client = Client(enforce_csrf_checks=True)
+
+        with (
+            mock.patch(
+                "vehicles.management.import_live_vehicles.redis_client", redis_client
+            ),
+            override_settings(
+                CACHES={
+                    "default": {
+                        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                        "LOCATION": "redis://",
+                        "OPTIONS": {"connection_class": fakeredis.FakeRedisConnection},
+                    }
+                },
+            ),
+        ):
+            url = "/traccar/475d1d1f-5708-4ee1-8f51-c63d948bc0b9"
+
+            for response in (
+                client.post(
+                    url,
+                    {"id": "NADT:MB183:34:1983", "notificationToken": "abc"},
+                ),
+                # current Traccar Client
+                client.post(
+                    url,
+                    {
+                        "device_id": "NADT:MB183:34:1983",
+                        "location": {
+                            "timestamp": "2023-12-15T08:24:05.000Z",
+                            "coords": {
+                                "latitude": 52.3,
+                                "longitude": -48.3,
+                                "heading": -1,
+                            },
+                        },
+                    },
+                    content_type="application/json",
+                ),
+                # older OsmAnd protocol clients
+                client.post(
+                    url,
+                    {
+                        "deviceid": "NADT:MB183:34:1983",
+                        "timestamp": "1702628645000",
+                        "lat": "52.3",
+                        "lon": "-48.3",
+                    },
+                ),
+                client.post(
+                    f"{url}?id=NADT:MB183:34:1983&timestamp=1702628655&lat=52.3&lon=-48.3&bearing=123",
+                    "",
+                    content_type="application/x-www-form-urlencoded",
+                ),
+            ):
+                self.assertEqual(200, response.status_code)
+
+            self.handle_siri_posts(3)
+
+            response = client.get(url.replace("traccar", "siri"))
+            self.assertEqual(
+                response.text,
+                "id=NADT:MB183:34:1983&timestamp=1702628655&lat=52.3&lon=-48.3&bearing=123",
+            )
+
+            vehicle = Vehicle.objects.get()
+            location = json.loads(redis_client.get(f"vehicle{vehicle.id}"))
+            self.assertEqual(location["heading"], 123)
+
+        self.assertEqual(str(vehicle), "MB183")
+
+    def test_queue_device_location(self):
+        for device_id, expected in (
+            ("YN51XMU", ("", "YN51XMU", "", "", None)),
+            ("NADT:MB183", ("NADT", "MB183", "", "", None)),
+            ("NADT:MB183:34", ("NADT", "MB183", "34", "", None)),
+            (
+                "NADT:MB183:34::Bus Station: Stand A",
+                ("NADT", "MB183", "34", "", "Bus Station: Stand A"),
+            ),
+        ):
+            with (
+                self.subTest(device_id),
+                mock.patch("vehicles.views.queue_siri_post") as queue_siri_post,
+            ):
+                queue_device_location("uuid", "2023-12-15T08:24:05Z", device_id, 0, 0)
+                mvj = queue_siri_post.call_args[0][1]["Siri"]["ServiceDelivery"][
+                    "VehicleMonitoringDelivery"
+                ]["VehicleActivity"][0]["MonitoredVehicleJourney"]
+                self.assertEqual(
+                    (
+                        mvj["OperatorRef"],
+                        mvj["VehicleRef"],
+                        mvj["PublishedLineName"],
+                        mvj["VehicleJourneyRef"],
+                        mvj.get("DestinationName"),
+                    ),
+                    expected,
+                )

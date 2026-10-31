@@ -1,11 +1,17 @@
 import asyncio
-from datetime import UTC, datetime
+import copy
+import json
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest import mock
 
 import fakeredis
 import time_machine
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.test import TestCase, override_settings
+from requests.exceptions import HTTPError
 from vcr import use_cassette
 
 from busstops.models import (
@@ -19,18 +25,25 @@ from busstops.models import (
     Service,
     StopPoint,
 )
-from bustimes.models import Calendar, Garage, Route, StopTime, Trip
+from bustimes.models import Calendar, Garage, Route, Trip
 
-from ...models import Livery, Vehicle, VehicleJourney
+from ...models import Livery, Vehicle, VehicleCode, VehicleJourney
+from ...utils import get_statuses
 from ..commands import distribute_vehicle_locations, import_bod_avl
+from ..import_live_vehicles import same_journey
 
 
+@contextmanager
 def patch_redis_client(redis_client=None):
     if redis_client is None:
         redis_client = fakeredis.FakeStrictRedis(version=7)
-    return mock.patch(
-        "vehicles.management.import_live_vehicles.redis_client", redis_client
-    )
+    with (
+        mock.patch(
+            "vehicles.management.import_live_vehicles.redis_client", redis_client
+        ),
+        mock.patch("vehicles.utils.redis_client", redis_client),
+    ):
+        yield redis_client
 
 
 class CapturingChannelLayer:
@@ -188,12 +201,17 @@ class BusOpenDataVehicleLocationsTest(TestCase):
 
         # 11s since it was published - check again shortly, don't wait it out
         with mock.patch.object(command.session, "get", return_value=response):
-            self.assertEqual(command.update(), 0.5)
+            self.assertEqual(command.update(), 1)
 
         # but if BODS has stalled, fall back to the 10 second grid
         command.last_modified = datetime(2020, 4, 30, 23, 59, 36, tzinfo=UTC)
         with mock.patch.object(command.session, "get", return_value=response):
-            self.assertEqual(command.update(), 5.5)
+            self.assertEqual(command.update(), 6)
+
+        # error page or old data
+        command.not_modified = False
+        with mock.patch.object(command, "get_items", return_value=None):
+            self.assertEqual(command.update(), 10)
 
     @time_machine.travel("2020-05-01", tick=False)
     def test_new_bod_avl_a(self):
@@ -201,19 +219,19 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         command.source = self.source
         # command.get_operator.cache_clear()
 
-        with override_settings(
-            CACHES={
-                "default": {
-                    "BACKEND": "django.core.cache.backends.redis.RedisCache",
-                    "LOCATION": "redis://",
-                    "OPTIONS": {"connection_class": fakeredis.FakeRedisConnection},
+        with (
+            override_settings(
+                CACHES={
+                    "default": {
+                        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                        "LOCATION": "redis://",
+                        "OPTIONS": {"connection_class": fakeredis.FakeRedisConnection},
+                    }
                 }
-            }
+            ),
+            patch_redis_client(),
         ):
-            with (
-                patch_redis_client(),
-                use_cassette(str(self.vcr_path / "bod_avl.yaml")) as cassette,
-            ):
+            with use_cassette(str(self.vcr_path / "bod_avl.yaml")) as cassette:
                 command.update()
 
                 cassette.rewind()
@@ -232,23 +250,24 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             """
             <tr>
                 <td>00:00:00</td>
+                <td></td>
                 <td>11:50:58</td>
                 <td>-7300258.0</td>
                 <td>50</td>
-                <td>50</td>
+                <td>2</td>
                 <td>0.00</td>
             </tr>
-"""
-            + "        "
-            + """
             <tr>
                 <td>00:00:00</td>
+                <td></td>
                 <td>11:50:58</td>
                 <td>-7300258.0</td>
                 <td>50</td>
                 <td>0</td>
                 <td>0.00</td>
-            </tr>""",
+            </tr>
+            """,
+            html=True,
         )
 
     @override_settings(
@@ -365,7 +384,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 return_value=channel_layer,
             ),
         ):
-            with self.assertNumQueries(42):
+            with self.assertNumQueries(44):
                 wait = command.update()
             self.assertEqual(11, wait)
 
@@ -411,6 +430,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                     "id": journey.vehicle_id,
                     "journey_id": journey.id,
                     "block": "503",
+                    "operator_id": "HAMS",
                     "coordinates": [0.285348, 51.2135],
                     "vehicle": {
                         "url": "/vehicles/hams-dw18-ham",
@@ -427,7 +447,7 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         )
 
         response = self.client.get("/operators/hams/map")
-        self.assertContains(response, 'OPERATOR_ID="HAMS";')
+        self.assertContains(response, '{"noc": "HAMS",')
         self.assertContains(response, "/operators/hams/map")
 
         # test other maps
@@ -443,35 +463,6 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             json = response.json()
             self.assertEqual(len(json), 3)
 
-            # trip progress
-
-            StopPoint.objects.create(
-                atco_code="a", latlong="POINT (0.14 52.17)", active=True
-            )
-            StopPoint.objects.create(
-                atco_code="b", latlong="POINT (0.15 52.20)", active=True
-            )
-
-            a = StopTime.objects.create(
-                trip=self.trip, stop_id="a", departure="25:00:00"
-            )
-            StopTime.objects.create(trip=self.trip, stop_id="b", arrival="25:01:00")
-
-            response = self.client.get(f"/vehicles.json?trip={self.trip.id}")
-            json = response.json()
-            self.assertEqual(len(json), 3)
-            self.assertEqual(
-                json[0]["progress"],
-                {
-                    "id": a.id,
-                    "sequence": 0,
-                    "prev_stop": a.stop_id,
-                    "next_stop": "b",
-                    "progress": 0.097,
-                },
-            )
-            self.assertEqual(json[0]["delay"], 30834)
-
             with self.assertNumQueries(0):
                 response = self.client.get("/vehicles.json?service=ff")
             self.assertEqual(response.status_code, 400)
@@ -480,14 +471,16 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             whippet_journey = VehicleJourney.objects.get(vehicle__operator="WHIP")
 
             with time_machine.travel("2020-10-15"), self.assertNumQueries(8):
-                response = self.client.get(whippet_journey.get_absolute_url())
+                response = self.client.get(
+                    f"/vehicles/{whippet_journey.vehicle_id}?date={whippet_journey.date}"
+                )
 
             self.assertContains(
                 response,
                 '<a href="/services/u/vehicles?date=2020-10-16" rel="nofollow">UU</a>',
             )
             self.assertContains(
-                response, f"""<a href="/journeys/{whippet_journey.id}">09:23</a>"""
+                response, f"""<a href="/map#journey={whippet_journey.id}">09:23</a>"""
             )
             self.assertContains(response, "<p>Great Yarmouth</p>")  # garage
 
@@ -612,7 +605,9 @@ class BusOpenDataVehicleLocationsTest(TestCase):
 
         with mock.patch("vehicles.views.redis_client", redis_client):
             with self.assertNumQueries(5):
-                response = self.client.get(journey.get_absolute_url())
+                response = self.client.get(
+                    f"/vehicles/{journey.vehicle_id}?date={journey.date}"
+                )
             self.assertContains(response, "146")
             self.assertContains(response, ">Southwold, Kings Head<")
             self.assertContains(response, f'<a href="#journeys/{journey.id}">Map</a>')
@@ -734,6 +729,340 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.assertEqual("502", vehicle.fleet_code)
         self.assertEqual("502", vehicle.fleet_number)
 
+    @override_settings(
+        CHANNEL_LAYERS={"bod_avl": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+    )
+    def test_shards(self):
+        item = {
+            "RecordedAtTime": "2020-11-28T12:58:25+00:00",
+            "MonitoredVehicleJourney": {
+                "LineRef": "146",
+                "VehicleRef": "BB62_BUS",
+                "OperatorRef": "BDRB",
+                "DirectionRef": "inbound",
+                "VehicleLocation": {"Latitude": "52.62269", "Longitude": "1.296443"},
+                "VehicleJourneyRef": "146_20201128_12_58",
+            },
+        }
+
+        fetcher = import_bod_avl.Command()
+        fetcher.source = self.source
+        fetcher.source.datetime = datetime(2020, 11, 28, 12, 58, 30, tzinfo=UTC)
+        fetcher.shards = 2
+        fetcher.duplicate_vehicles = set()
+        identity = fetcher.get_vehicle_identity(item)
+
+        fetcher.handle_items([item], [identity])
+        self.assertFalse(VehicleJourney.objects.exists())
+
+        self.assertEqual(fetcher.get_shard_key(item, identity), "BDRB:146")
+        shard = fetcher.get_shard("BDRB:146", 2)
+        message = async_to_sync(get_channel_layer("bod_avl").receive)(
+            f"bod_avl.{shard}"
+        )
+        self.assertEqual(message["identities"], [identity])
+
+        worker = import_bod_avl.Command()
+        worker.source = self.source
+        with (
+            patch_redis_client(),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=None,
+            ),
+        ):
+            worker.handle_message(message)
+
+            (status,) = get_statuses("bod_avl_workers_status")
+
+            self.assertEqual(fetcher.pending, 1)
+            for cycle in range(2):
+                worker.reply(message | {"cycle": cycle})
+                fetcher.pending = 1
+                fetcher.wait_for_workers(timeout=1)
+                self.assertEqual(fetcher.pending, 0)
+                self.assertEqual(fetcher.cycle, cycle + 1)
+        self.assertEqual(status.items, 1)
+        self.assertGreater(status.queries, 0)
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.route_name, "146")
+
+        # on 'two journeys at once' - keep both in one worker
+        fetcher.duplicate_vehicles = {identity}
+        self.assertEqual(fetcher.get_shard_key(item, identity), identity)
+        # no line
+        fetcher.duplicate_vehicles = set()
+        del item["MonitoredVehicleJourney"]["LineRef"]
+        self.assertEqual(fetcher.get_shard_key(item, identity), identity)
+
+    def test_trip_after_midnight_matched_later(self):
+        """journey created with no trip, matched to an after-midnight trip
+        by a later item - the date should be corrected to the service date"""
+        service = Service.objects.get(line_name="U")
+        route = Route.objects.create(service=service, source=self.source, code="u2")
+        trip = Trip.objects.create(
+            route=route, start="27:10:00", end="27:40:00", ticket_machine_code="1148"
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        def item(recorded_at, origin_aimed_departure_time=None):
+            mvj = {
+                "LineRef": "U",
+                "VehicleRef": "MF74NUO",
+                "OperatorRef": "WHIP",
+                "DirectionRef": "inbound",
+                "VehicleLocation": {"Latitude": "53.409849", "Longitude": "-2.219291"},
+                "PublishedLineName": "U",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2020-10-17",
+                    "DatedVehicleJourneyRef": "31",
+                },
+            }
+            if origin_aimed_departure_time:
+                mvj["OriginAimedDepartureTime"] = origin_aimed_departure_time
+            return {"RecordedAtTime": recorded_at, "MonitoredVehicleJourney": mvj}
+
+        with (
+            patch_redis_client(),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=None,
+            ),
+        ):
+            # no OriginAimedDepartureTime - no trip matched
+            with time_machine.travel("2020-10-17T02:00:49+00:00", tick=False):
+                command.handle_item(item("2020-10-17T02:00:49+00:00"))
+                command.save()
+            journey = VehicleJourney.objects.get()
+            self.assertIsNone(journey.trip_id)
+            self.assertEqual(str(journey.date), "2020-10-17")
+
+            with time_machine.travel("2020-10-17T02:08:26+00:00", tick=False):
+                command.handle_item(
+                    item("2020-10-17T02:08:26+00:00", "2020-10-17T02:10:00+00:00")
+                )
+                command.save()
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.trip_id, trip.id)
+        self.assertEqual(str(journey.date), "2020-10-16")
+
+    @time_machine.travel("2026-10-11T23:08:00+00:00")
+    def test_journey_code_after_midnight(self):
+        """given two trips with the same DatedVehicleJourneyRef,
+        journey with TicketMachine JourneyCode 0005 should use the 24:05 one"""
+        service = Service.objects.create(line_name="14")
+        service.operator.add("FECS")
+        route = Route.objects.create(service=service, source=self.source, code="14")
+        sunday = Calendar.objects.create(sun=True, start_date="2026-01-01")
+        monday = Calendar.objects.create(mon=True, start_date="2026-01-01")
+        Trip.objects.create(
+            route=route,
+            start="13:40:00",
+            end="14:40:00",
+            ticket_machine_code="63",
+            calendar=monday,
+        )
+        trip = Trip.objects.create(
+            route=route,
+            start="24:05:00",
+            end="25:05:00",
+            ticket_machine_code="63",
+            calendar=sunday,
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+        item = {
+            "Extensions": {
+                "VehicleJourney": {
+                    "Operational": {
+                        "TicketMachine": {
+                            "JourneyCode": "0005",
+                            "TicketMachineServiceCode": "14",
+                        }
+                    },
+                    "VehicleUniqueId": "63645",
+                }
+            },
+            "RecordedAtTime": "2026-10-11T23:08:00+00:00",
+            "MonitoredVehicleJourney": {
+                "LineRef": "14",
+                "BlockRef": "1504",
+                "OriginRef": "2900T1316",
+                "VehicleRef": "FECS-63645",
+                "OperatorRef": "FECS",
+                "DirectionRef": "outbound",
+                "DestinationRef": "2900A181",
+                "DestinationName": "Attleborough_Queens_Square",
+                "VehicleLocation": {"Latitude": "52.513313", "Longitude": "1.012213"},
+                "PublishedLineName": "14",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026-10-11",
+                    "DatedVehicleJourneyRef": "63",
+                },
+            },
+        }
+
+        with (
+            patch_redis_client(),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=None,
+            ),
+        ):
+            command.handle_item(item)
+            command.save()
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.trip_id, trip.id)
+        self.assertEqual(str(journey.date), "2026-10-11")
+
+    @time_machine.travel("2026-10-18T00:42:00+00:00")
+    def test_after_midnight_new_timetable(self):
+        """a new version of the timetable starts on the calendar date,
+        but the after-midnight trip belongs to the previous day's version"""
+        service = Service.objects.create(line_name="25")
+        service.operator.add("FECS")
+        saturday = Calendar.objects.create(sat=True, start_date="2026-09-13")
+        old_route = Route.objects.create(
+            service=service,
+            source=self.source,
+            code="25-old",
+            service_code="PF0000323:85",
+            revision_number=1,
+            start_date="2026-09-13",
+        )
+        old_trip = Trip.objects.create(
+            route=old_route,
+            start="25:40:00",
+            end="26:05:00",
+            ticket_machine_code="110",
+            block="2505",
+            calendar=saturday,
+        )
+        new_route = Route.objects.create(
+            service=service,
+            source=self.source,
+            code="25-new",
+            service_code="PF0000323:85",
+            revision_number=2,
+            start_date="2026-10-18",
+        )
+        Trip.objects.create(
+            route=new_route,
+            start="25:40:00",
+            end="26:05:00",
+            ticket_machine_code="110",
+            block="2505",
+            calendar=Calendar.objects.create(sat=True, start_date="2026-10-18"),
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+        item = {
+            "RecordedAtTime": "2026-10-18T00:42:00+00:00",
+            "MonitoredVehicleJourney": {
+                "LineRef": "25",
+                "BlockRef": "2505",
+                "VehicleRef": "FECS-36575",
+                "OperatorRef": "FECS",
+                "OriginAimedDepartureTime": "2026-10-18T00:40:00+00:00",
+                "VehicleLocation": {"Latitude": "52.627", "Longitude": "1.306"},
+                "PublishedLineName": "25",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026-10-17",
+                    "DatedVehicleJourneyRef": "110",
+                },
+            },
+        }
+
+        with (
+            patch_redis_client(),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=None,
+            ),
+        ):
+            command.handle_item(item)
+            command.save()
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.trip_id, old_trip.id)
+        self.assertEqual(str(journey.date), "2026-10-17")
+
+    @time_machine.travel("2026-10-13T13:30:00+00:00")
+    def test_origin_aimed_departure_time_corrected(self):
+        """OriginAimedDepartureTime changes but the same trip is matched -
+        should update the existing journey, not create a second one"""
+        service = Service.objects.create(line_name="36A")
+        service.operator.add("FECS")
+        route = Route.objects.create(service=service, source=self.source, code="36A")
+        trip = Trip.objects.create(
+            route=route, start="14:25:00", end="16:18:00", ticket_machine_code="143"
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        def item(recorded_at, origin_aimed_departure_time, longitude):
+            return {
+                "Extensions": {
+                    "VehicleJourney": {
+                        "Operational": {
+                            "TicketMachine": {
+                                "JourneyCode": "1425",
+                                "TicketMachineServiceCode": "36A",
+                            }
+                        },
+                        "VehicleUniqueId": "69544",
+                    }
+                },
+                "RecordedAtTime": recorded_at,
+                "MonitoredVehicleJourney": {
+                    "LineRef": "36A",
+                    "BlockRef": "3602",
+                    "OriginRef": "2900R241",
+                    "VehicleRef": "FECS-69544",
+                    "OperatorRef": "FECS",
+                    "DirectionRef": "inbound",
+                    "DestinationRef": "2900H468",
+                    "VehicleLocation": {
+                        "Latitude": "52.488948",
+                        "Longitude": longitude,
+                    },
+                    "PublishedLineName": "36A",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-10-13",
+                        "DatedVehicleJourneyRef": "143",
+                    },
+                    "OriginAimedDepartureTime": origin_aimed_departure_time,
+                },
+            }
+
+        with (
+            patch_redis_client(),
+            mock.patch(
+                "vehicles.management.import_live_vehicles.get_channel_layer",
+                return_value=None,
+            ),
+        ):
+            command.handle_item(
+                item("2026-10-13T13:20:00+00:00", "2026-10-13T13:17:00+00:00", "1.23")
+            )
+            command.save()
+            command.handle_item(
+                item("2026-10-13T13:30:00+00:00", "2026-10-13T13:25:00+00:00", "1.24")
+            )
+            command.save()
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.trip_id, trip.id)
+        self.assertEqual(str(journey.datetime), "2026-10-13 13:25:00+00:00")
+
     @time_machine.travel("2021-03-05T14:20:40+00:00")
     def test_handle_extensions(self):
         command = import_bod_avl.Command()
@@ -810,6 +1139,62 @@ class BusOpenDataVehicleLocationsTest(TestCase):
                 }
             ],
         )
+
+    def test_stops(self):
+        def get_stops(**journey):
+            location = import_bod_avl.Command.create_vehicle_location(
+                {
+                    "MonitoredVehicleJourney": {
+                        "VehicleLocation": {"Longitude": "-3.88", "Latitude": "51.62"},
+                    }
+                    | journey
+                }
+            )
+            return location.prev_stop, location.next_stop
+
+        onward_calls = {"OnwardCall": [{"StopPointRef": "5810AWC50679"}]}
+        self.assertEqual(
+            get_stops(
+                MonitoredCall={"StopPointRef": "5820WDB48439", "VehicleAtStop": "true"},
+                OnwardCalls=onward_calls,
+            ),
+            ("5820WDB48439", "5810AWC50679"),
+        )
+        # between stops
+        self.assertEqual(
+            get_stops(
+                MonitoredCall={
+                    "StopPointRef": "5820WDB48439",
+                    "VehicleAtStop": "false",
+                    "ActualDepartureTime": "2026-10-10T05:28:32+01:00",
+                },
+                OnwardCalls=onward_calls,
+            ),
+            ("5820WDB48439", "5810AWC50679"),
+        )
+        # not got to the stop yet
+        self.assertEqual(
+            get_stops(
+                MonitoredCall={
+                    "StopPointRef": "5820WDB48439",
+                    "VehicleAtStop": "false",
+                },
+                OnwardCalls=onward_calls,
+            ),
+            (None, None),
+        )
+        self.assertEqual(
+            get_stops(
+                MonitoredCall={"StopPointRef": "5820WDB48439", "VehicleAtStop": "true"},
+                OnwardCalls={"OnwardCall": []},
+            ),
+            ("5820WDB48439", None),
+        )
+        self.assertEqual(
+            get_stops(MonitoredCall={"VisitNumber": "2"}),  # Scotland
+            (None, None),
+        )
+        self.assertEqual(get_stops(), (None, None))
 
     @time_machine.travel("2021-05-08T13:00+00:00")
     @patch_redis_client()
@@ -1003,6 +1388,82 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.assertEqual(vehicle.livery, livery)
         self.assertEqual(vehicle.reg, "SN16OLO")
 
+        # BODS adds TfL's seconds to local midnight, not noon minus 12 hours,
+        # so is an hour out on the days the clocks change
+        for vehicle_ref, recorded_at, departure, expected in (
+            (
+                "LJ16NAC",  # random day
+                "2026-10-24T09:05:00+00:00",
+                "2026-10-24T09:00:00.000Z",
+                "2026-10-24 09:00:00+00:00",
+            ),
+            (
+                "LJ16NAA",  # clocks went back at midnight
+                "2026-10-25T10:05:00+00:00",
+                "2026-10-25T09:00:00.000Z",
+                "2026-10-25 10:00:00+00:00",
+            ),
+            (
+                "LJ16NAB",  # clocks went forward at midnight
+                "2026-03-29T09:05:00+00:00",
+                "2026-03-29T10:00:00.000Z",
+                "2026-03-29 09:00:00+00:00",
+            ),
+        ):
+            item["RecordedAtTime"] = recorded_at
+            item["MonitoredVehicleJourney"]["VehicleRef"] = vehicle_ref
+            item["MonitoredVehicleJourney"]["OriginAimedDepartureTime"] = departure
+            with patch_redis_client():
+                command.handle_item(item)
+                command.save()
+            journey = VehicleJourney.objects.get(vehicle__reg=vehicle_ref)
+            self.assertEqual(str(journey.datetime), expected)
+
+    def test_tfl_stops_corrected(self):
+        """first item for a new journey has the previous journey's stops,
+        so no trip is matched until a later item corrects them"""
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        service = Service.objects.create(line_name="205", current=True)
+        route = Route.objects.create(
+            service=service, source=DataSource.objects.create(name="L")
+        )
+        trip = Trip.objects.create(route=route, start="17:13:00", end="18:30:00")
+        for atco_code in ("490004206J", "490000144P"):
+            trip.stoptime_set.create(
+                stop=StopPoint.objects.create(atco_code=atco_code, active=True)
+            )
+        vehicle = Vehicle.objects.create(code="MF25HKP")
+
+        item = {
+            "RecordedAtTime": "2026-10-20T16:13:33+00:00",
+            "MonitoredVehicleJourney": {
+                "PublishedLineName": "205",
+                "OperatorRef": "TFLO",
+                "OriginRef": "490004215M",
+                "DestinationRef": "490004206J",
+                "OriginAimedDepartureTime": "2026-10-20T16:13:00+00:00",
+            },
+        }
+        journey = command.get_journey(item, vehicle)
+        self.assertEqual(journey.service, service)
+        self.assertIsNone(journey.trip)
+
+        journey.date = date(2026, 10, 20)
+        vehicle.latest_journey = journey
+        vehicle.latest_journey_data = copy.deepcopy(item)
+        item["MonitoredVehicleJourney"]["OriginRef"] = "490004206J"
+        item["MonitoredVehicleJourney"]["DestinationRef"] = "490000144P"
+        journey = command.get_journey(item, vehicle)
+        self.assertEqual(journey.trip, trip)
+        self.assertIsNone(journey.date)  # for handle_item to work out from the trip
+
+        # latest_journey_data from another source
+        journey.trip = None
+        vehicle.latest_journey_data = {"foo": "bar"}
+        self.assertIsNone(command.get_journey(item, vehicle).trip)
+
     @patch_redis_client()
     def test_nottingham(self):
         command = import_bod_avl.Command()
@@ -1152,6 +1613,169 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.assertEqual(journey_2.vehicle.reg, "")
         self.assertEqual(journey_2.vehicle.operator.name, "National Express Coventry")
 
+    def test_placeholder_stop_refs(self):
+        # Ticketer briefly sends the line name as OriginRef and DestinationRef,
+        # and no OriginAimedDepartureTime, at the start of a journey
+        Operator.objects.create(noc="TMSB")
+        harlow = Service.objects.create(
+            line_name="23",
+            current=True,
+            geometry="MULTILINESTRING((0.0937 51.762, 0.1449 51.781))",
+        )
+        peterborough = Service.objects.create(
+            line_name="23",
+            current=True,
+            geometry="MULTILINESTRING((-0.3231 52.535, -0.2465 52.575))",
+        )
+        harlow.operator.add("TMSB")
+        peterborough.operator.add("TMSB")
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        def item(recorded_at_time, **kwargs):
+            return {
+                "RecordedAtTime": recorded_at_time,
+                "MonitoredVehicleJourney": {
+                    "LineRef": "23",
+                    "DirectionRef": "clockwise",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-10-28",
+                        "DatedVehicleJourneyRef": "23012",
+                    },
+                    "PublishedLineName": "23",
+                    "OperatorRef": "TMSB",
+                    "VehicleLocation": {
+                        "Longitude": "0.09328",
+                        "Latitude": "51.772031",
+                    },
+                    "BlockRef": "4121",
+                    "VehicleRef": "CE71_GAL_330",
+                    **kwargs,
+                },
+                "Extensions": None,
+            }
+
+        with patch_redis_client(), time_machine.travel("2026-10-28T09:48:30Z"):
+            command.handle_item(
+                item(
+                    "2026-10-28T09:48:08+00:00",
+                    OriginRef="23",
+                    DestinationRef="23",
+                    DestinationName="Church_Langley",
+                )
+            )
+            command.save()
+        with patch_redis_client(), time_machine.travel("2026-10-28T09:50:00Z"):
+            command.handle_item(
+                item(
+                    "2026-10-28T09:49:37+00:00",
+                    OriginAimedDepartureTime="2026-10-28T09:45:00+00:00",
+                    DestinationName="Temp_Bus_Station",
+                )
+            )
+            command.save()
+
+        journey = VehicleJourney.objects.get()
+        self.assertEqual(journey.service, harlow)
+        self.assertEqual(journey.datetime, datetime(2026, 10, 28, 9, 45, tzinfo=UTC))
+
+    def test_destination_not_in_timetable(self):
+        group = OperatorGroup.objects.create(name="Transdev", slug="transdev")
+        operator = Operator.objects.create(noc="VISB", group=group)
+        clitheroe = Service.objects.create(line_name="5", current=True)
+        ormskirk = Service.objects.create(line_name="5", current=True)
+        clitheroe.operator.add(operator)
+        ormskirk.operator.add(operator)
+        clitheroe.stops.add(
+            StopPoint.objects.create(atco_code="25001657", active=True),
+            through_defaults={"order": 1},
+        )
+        ormskirk.stops.add(
+            StopPoint.objects.create(atco_code="2500IMG3", active=True),
+            through_defaults={"order": 1},
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+        item = {
+            "MonitoredVehicleJourney": {
+                "LineRef": "5",
+                "OperatorRef": "VISB",
+                "OriginRef": "25001657",
+                "DestinationRef": "2500IMG2340",
+            }
+        }
+        self.assertEqual(
+            command.get_service(command.get_operator("VISB"), item, "5", "VISB"),
+            clitheroe,
+        )
+
+    def test_destination_missing_leading_zero(self):
+        group = OperatorGroup.objects.create(name="Arriva", slug="arriva")
+        operator = Operator.objects.create(noc="GPLM", group=group)
+        luton = Service.objects.create(line_name="A", current=True)
+        manchester = Service.objects.create(line_name="A", current=True)
+        luton.operator.add(operator)
+        manchester.operator.add(operator)
+        luton.stops.add(
+            StopPoint.objects.create(atco_code="02900040", active=True),
+            through_defaults={"order": 1},
+        )
+        manchester.stops.add(
+            StopPoint.objects.create(atco_code="1800AMIC0D1", active=True),
+            through_defaults={"order": 1},
+        )
+
+        command = import_bod_avl.Command()
+        command.source = self.source
+        item = {
+            "MonitoredVehicleJourney": {
+                "LineRef": "A",
+                "OperatorRef": "GPLM",
+                "DestinationRef": "2900040",
+            }
+        }
+        self.assertEqual(
+            command.get_service(command.get_operator("GPLM"), item, "A", "GPLM"),
+            luton,
+        )
+
+    def test_get_stop_ref(self):
+        mvj = {
+            "LineRef": "1066",
+            "PublishedLineName": "1066",
+            "OriginRef": "1066",
+            "DestinationRef": "1400HS0001",
+        }
+        self.assertIsNone(import_bod_avl.get_stop_ref(mvj, "OriginRef"))
+        self.assertEqual(
+            import_bod_avl.get_stop_ref(mvj, "DestinationRef"), "1400HS0001"
+        )
+        self.assertIsNone(import_bod_avl.get_stop_ref({}, "OriginRef"))
+
+    def test_same_journey_no_service(self):
+        service = Service.objects.create(line_name="23")
+        other_service = Service.objects.create(line_name="23")
+        now = datetime(2026, 10, 28, 9, 50, tzinfo=UTC)
+        last_journey = VehicleJourney(
+            route_name="23",
+            code="23012",
+            datetime=datetime(2026, 10, 28, 9, 48, 8, tzinfo=UTC),
+        )
+        journey = VehicleJourney(
+            route_name="23",
+            code="23012",
+            service=service,
+            datetime=datetime(2026, 10, 28, 9, 45, tzinfo=UTC),
+        )
+        self.assertTrue(same_journey(journey, last_journey, now))
+        last_journey.service = service
+        journey.service = None
+        self.assertTrue(same_journey(journey, last_journey, now))
+        journey.service = other_service
+        self.assertFalse(same_journey(journey, last_journey, now))
+
     def test_debugger(self):
         service = Service.objects.create(line_name="21C")
         service.operator.add("NIBS")
@@ -1222,10 +1846,9 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.source.url = "https://bustimes.org/404"
         with (
             use_cassette(str(self.vcr_path / "bod_avl_error.yaml")),
-            self.assertLogs("vehicles.management.commands.import_bod_avl", "WARNING"),
+            self.assertRaises(HTTPError),
         ):
-            items = command.get_items()
-        self.assertIsNone(items)
+            command.get_items()
 
     def test_tfw_bods_coexistence(self):
         tfw = DataSource.objects.create(name="Transport for Wales")
@@ -1299,3 +1922,330 @@ class BusOpenDataVehicleLocationsTest(TestCase):
         self.assertEqual(journey.route_name, "T3")
         self.assertEqual(journey.source, bods)
         self.assertEqual(journey.code, "0732")
+
+    def test_stale_position_from_second_feed(self):
+        # (like Stagecoach) the vehicle is in the feed twice, under two VehicleRefs,
+        # and one of them keeps reporting the same old position with new timestamps
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        vehicle = Vehicle.objects.create(code="10070", reg="SK63AUT")
+        VehicleCode.objects.bulk_create(
+            [
+                VehicleCode(code="SCOX:10070", scheme="BODS", vehicle=vehicle),
+                VehicleCode(code="SCOX:SK63AUT", scheme="BODS", vehicle=vehicle),
+            ]
+        )
+
+        def item(vehicle_ref, recorded_at, longitude, latitude):
+            return {
+                "RecordedAtTime": recorded_at,
+                "MonitoredVehicleJourney": {
+                    "LineRef": "S4",
+                    "PublishedLineName": "S4",
+                    "DirectionRef": "outbound",
+                    "OperatorRef": "SCOX",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-10-16",
+                        "DatedVehicleJourneyRef": "1001",
+                    },
+                    "OriginAimedDepartureTime": "2026-10-16T05:45:00+01:00",
+                    "VehicleLocation": {"Longitude": longitude, "Latitude": latitude},
+                    "VehicleRef": vehicle_ref,
+                },
+            }
+
+        def cycle(items, when):
+            command.source.datetime = datetime.fromisoformat(when)
+            (changed, changed_journey, ci, cj, _) = command.get_changed_items(items)
+            command.handle_items(changed_journey, cj)
+            command.handle_items(changed, ci)
+
+        with patch_redis_client() as redis_client:
+
+            def coordinates():
+                return json.loads(redis_client.get(f"vehicle{vehicle.id}"))[
+                    "coordinates"
+                ]
+
+            cycle(
+                [
+                    item(
+                        "SK63AUT", "2026-10-16T05:54:04+01:00", "-1.33022", "52.04579"
+                    ),
+                    item("10070", "2026-10-16T05:54:13+01:00", "-1.33057", "52.04478"),
+                ],
+                "2026-10-16T05:54:30+01:00",
+            )
+            self.assertEqual(coordinates(), [-1.33057, 52.04478])
+
+            cycle(
+                [
+                    item("10070", "2026-10-16T05:54:28+01:00", "-1.32886", "52.04319"),
+                    item(
+                        "SK63AUT", "2026-10-16T05:54:24+01:00", "-1.33022", "52.04579"
+                    ),
+                ],
+                "2026-10-16T05:54:40+01:00",
+            )
+            self.assertEqual(coordinates(), [-1.32886, 52.04319])
+
+            cycle(
+                [item("SK63AUT", "2026-10-16T05:54:44+01:00", "-1.33022", "52.04579")],
+                "2026-10-16T05:54:50+01:00",
+            )
+            self.assertEqual(coordinates(), [-1.32886, 52.04319])
+
+    def test_stale_position_after_many_live_ones(self):
+        # (Stagecoach Merseyside 80555) the stale feed repeats its old position
+        # only every few minutes - after the live feed has reported many more
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        vehicle = Vehicle.objects.create(code="80555", reg="SN26XZO")
+        VehicleCode.objects.bulk_create(
+            [
+                VehicleCode(code="SCMY:80555", scheme="BODS", vehicle=vehicle),
+                VehicleCode(code="SCMY:SCMY-80555", scheme="BODS", vehicle=vehicle),
+            ]
+        )
+
+        def item(vehicle_ref, recorded_at, longitude, latitude):
+            return {
+                "RecordedAtTime": f"2026-10-28T{recorded_at}+00:00",
+                "MonitoredVehicleJourney": {
+                    "LineRef": "17A",
+                    "PublishedLineName": "17A",
+                    "DirectionRef": "outbound",
+                    "OperatorRef": "SCMY",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-10-28",
+                        "DatedVehicleJourneyRef": "1562",
+                    },
+                    "OriginAimedDepartureTime": "2026-10-28T22:04:00+00:00",
+                    "VehicleLocation": {"Longitude": longitude, "Latitude": latitude},
+                    "VehicleRef": vehicle_ref,
+                },
+            }
+
+        stale = item("SCMY-80555", "22:43:50", "-2.93471", "53.44181")
+        live = [
+            item("80555", "22:43:46", "-2.93484", "53.44160"),
+            item("80555", "22:44:01", "-2.93761", "53.44097"),
+            item("80555", "22:44:31", "-2.93863", "53.44068"),
+            item("80555", "22:44:46", "-2.94013", "53.44008"),
+            item("80555", "22:45:01", "-2.94201", "53.43952"),
+            item("80555", "22:45:16", "-2.94398", "53.43901"),
+            item("80555", "22:45:31", "-2.94602", "53.43853"),
+        ]
+
+        def cycle(items, when):
+            command.source.datetime = datetime.fromisoformat(f"2026-10-28T{when}+00:00")
+            (changed, changed_journey, ci, cj, _) = command.get_changed_items(items)
+            command.handle_items(changed_journey, cj)
+            command.handle_items(changed, ci)
+
+        with patch_redis_client() as redis_client:
+
+            def coordinates():
+                return json.loads(redis_client.get(f"vehicle{vehicle.id}"))[
+                    "coordinates"
+                ]
+
+            cycle([live[0], stale], "22:43:55")
+            self.assertEqual(coordinates(), [-2.93471, 53.44181])
+
+            for live_item in live[1:]:
+                cycle([live_item, stale], live_item["RecordedAtTime"][11:19])
+            self.assertEqual(coordinates(), [-2.94602, 53.43853])
+
+            # the same old position again, with a new timestamp
+            stale = item("SCMY-80555", "22:47:34", "-2.93471", "53.44181")
+            cycle([live[-1], stale], "22:47:40")
+            self.assertEqual(coordinates(), [-2.94602, 53.43853])
+
+    def test_alternating_journeys(self):
+        # (trentbarton 116) successive updates alternate between two journeys
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        vehicle = Vehicle.objects.create(code="0116_-_YX67_UXV", reg="YX67UXV")
+
+        def item(line_ref, journey_ref, departure, recorded_at, latitude):
+            return {
+                "RecordedAtTime": recorded_at,
+                "MonitoredVehicleJourney": {
+                    "LineRef": line_ref,
+                    "PublishedLineName": line_ref,
+                    "DirectionRef": "inbound",
+                    "OperatorRef": "BRTB",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-10-26",
+                        "DatedVehicleJourneyRef": journey_ref,
+                    },
+                    "OriginAimedDepartureTime": departure,
+                    "VehicleLocation": {"Longitude": "-1.2535", "Latitude": latitude},
+                    "VehicleRef": "0116_-_YX67_UXV",
+                },
+            }
+
+        def cycle(items, when):
+            command.source.datetime = datetime.fromisoformat(when)
+            (changed, changed_journey, ci, cj, _) = command.get_changed_items(items)
+            command.handle_items(changed_journey, cj)
+            command.handle_items(changed, ci)
+
+        with patch_redis_client():
+            for i in range(6):
+                when = f"2026-10-27T00:3{i}:00+00:00"
+                if i % 2:
+                    items = [
+                        item(
+                            "mln",
+                            "112407",
+                            "2026-10-27T00:07:00+00:00",
+                            when,
+                            f"52.9{i}",
+                        )
+                    ]
+                else:
+                    items = [
+                        item(
+                            "sky",
+                            "112358",
+                            "2026-10-26T23:58:00+00:00",
+                            when,
+                            f"52.9{i}",
+                        )
+                    ]
+                cycle(items, when)
+
+        self.assertEqual(
+            sorted(vehicle.vehiclejourney_set.values_list("route_name", flat=True)),
+            ["mln", "sky"],
+        )
+
+    def test_vehicle_in_two_places_at_once(self):
+        # The same vehicle (a globally-unique registration) is reported by two
+        # ticket machines at once: a spare/handheld one left switched on and
+        # stationary at the bus station, and the one on the bus that's actually
+        # out on the road. They resolve to the same Vehicle, so the stationary
+        # one mustn't be allowed to drag the vehicle back to the bus station.
+        command = import_bod_avl.Command()
+        command.source = self.source
+
+        vehicle = Vehicle.objects.create(
+            code="2427_-_BF62UXX", reg="BF62UXX", fleet_code="2427"
+        )
+        VehicleCode.objects.bulk_create(
+            [
+                VehicleCode(
+                    code="HRGT:2427_-_BF62UXX:2427", scheme="BODS", vehicle=vehicle
+                ),
+                VehicleCode(
+                    code="YCST:2427_-_BF62UXX:2427", scheme="BODS", vehicle=vehicle
+                ),
+            ]
+        )
+
+        def handheld(recorded_at, item_identifier):
+            # stationary "Handheld" ticket machine at Harrogate Bus Station
+            return {
+                "RecordedAtTime": recorded_at,
+                "ItemIdentifier": item_identifier,
+                "MonitoredVehicleJourney": {
+                    "LineRef": "Harrogate_Bus_Station",
+                    "DirectionRef": "outbound",
+                    "FramedVehicleJourneyRef": {
+                        "DataFrameRef": "2026-06-05",
+                        "DatedVehicleJourneyRef": "0415",
+                    },
+                    "PublishedLineName": "Harrogate_Bus_Station",
+                    "OperatorRef": "HRGT",
+                    "OriginRef": "Harrogate_Bus_Station",
+                    "OriginName": "Handheld",
+                    "DestinationRef": "Harrogate_Bus_Station",
+                    "DestinationName": "Machine",
+                    "VehicleLocation": {
+                        "Longitude": "-1.538119",
+                        "Latitude": "53.993554",
+                    },
+                    "BlockRef": "0",
+                    "VehicleRef": "2427_-_BF62UXX",
+                },
+                "Extensions": {
+                    "VehicleJourney": {
+                        "Operational": {
+                            "TicketMachine": {
+                                "TicketMachineServiceCode": "S_HGT",
+                                "JourneyCode": "0415",
+                            }
+                        },
+                        "VehicleUniqueId": "2427",
+                    }
+                },
+            }
+
+        # the bus actually out on the road, working the 840
+        actual = {
+            "RecordedAtTime": "2026-06-05T11:10:51+00:00",
+            "ItemIdentifier": "fb399e13-9752-42f0-80c4-961a947fa7ff",
+            "MonitoredVehicleJourney": {
+                "LineRef": "840",
+                "DirectionRef": "outbound",
+                "FramedVehicleJourneyRef": {
+                    "DataFrameRef": "2026-06-05",
+                    "DatedVehicleJourneyRef": "0069",
+                },
+                "PublishedLineName": "840",
+                "OperatorRef": "YCST",
+                "OriginRef": "450030240",
+                "OriginName": "Leeds_City_Bus_Station",
+                "DestinationRef": "3200YNA90763",
+                "DestinationName": "Thornton_Cross",
+                "OriginAimedDepartureTime": "2026-06-05T09:00:00+00:00",
+                "DestinationAimedArrivalTime": "2026-06-05T11:49:00+00:00",
+                "VehicleLocation": {"Longitude": "-0.861806", "Latitude": "54.104675"},
+                "Bearing": "65",
+                "BlockRef": "5019",
+                "VehicleRef": "2427_-_BF62UXX",
+            },
+            "Extensions": {
+                "VehicleJourney": {
+                    "Operational": {
+                        "TicketMachine": {
+                            "TicketMachineServiceCode": "1840",
+                            "JourneyCode": "1000",
+                        }
+                    },
+                    "VehicleUniqueId": "2427",
+                }
+            },
+        }
+
+        def cycle(items, when):
+            command.source.datetime = datetime.fromisoformat(when)
+            (changed, changed_journey, ci, cj, _) = command.get_changed_items(items)
+            command.handle_items(changed_journey, cj)
+            command.handle_items(changed, ci)
+
+        with patch_redis_client():
+            # first the bus reports from both machines at once
+            cycle(
+                [handheld("2026-06-05T11:10:20+00:00", "bf87afe5"), actual],
+                "2026-06-05T11:11:14+00:00",
+            )
+
+            vehicle = Vehicle.objects.get(code="2427_-_BF62UXX")
+            self.assertEqual(vehicle.latest_journey.route_name, "840")
+
+            # then only the stationary handheld refreshes (the bus is mid-update)
+            cycle(
+                [handheld("2026-06-05T11:11:50+00:00", "aa000000")],
+                "2026-06-05T11:12:00+00:00",
+            )
+
+        # the vehicle should still be shown on the 840, not dragged back to
+        # the bus station by the stationary handheld
+        vehicle = Vehicle.objects.get(code="2427_-_BF62UXX")
+        self.assertEqual(vehicle.latest_journey.route_name, "840")

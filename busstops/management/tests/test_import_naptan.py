@@ -53,7 +53,7 @@ class NaptanTest(TestCase):
                 self.assertFalse((temp_dir_path / "NaPTAN.xml").exists())
 
                 with (
-                    self.assertNumQueries(25),
+                    self.assertNumQueries(27),
                     self.assertLogs(
                         "busstops.management.commands.naptan_new", "WARNING"
                     ) as cm,
@@ -91,7 +91,7 @@ class NaptanTest(TestCase):
                 source.save()
 
                 with (
-                    self.assertNumQueries(11),
+                    self.assertNumQueries(14),
                     self.assertLogs(
                         "busstops.management.commands.naptan_new", "WARNING"
                     ) as cm,
@@ -139,9 +139,22 @@ class NaptanTest(TestCase):
         self.assertAlmostEqual(stop.latlong.y, 54.48934185786758)
         self.assertEqual(str(stop), "Great Ayton Rail Station (entrance)")
 
+        stop = StopPoint.objects.get(atco_code="07605394")
+        self.assertEqual(stop.heading, 270)
+
         # overriden stop
         stop = StopPoint.objects.get(atco_code="2900B482")
         self.assertEqual(str(stop), "green (adj) \u2199")
+
+        # ignore stop areas deleted in a previous import
+        self.assertEqual(
+            dict(
+                StopPoint.objects.filter(
+                    atco_code__in=["2900N12666", "2900N12396"]
+                ).values_list("atco_code", "stop_area")
+            ),
+            {"2900N12666": "290G2603", "2900N12396": None},
+        )
 
         # stop area
         stop = StopArea.objects.get(id="701GA00001")

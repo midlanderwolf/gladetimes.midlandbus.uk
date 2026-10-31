@@ -1,17 +1,24 @@
+import asyncio
+import contextlib
 import functools
 import io
 import logging
 import re
 import zipfile
+import zlib
+from collections import Counter, defaultdict, namedtuple
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
+from itertools import batched
+from time import monotonic
 
 import requests
 import sentry_sdk
+from asgiref.sync import async_to_sync, sync_to_async
+from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
-from django.core.cache import cache
-from django.db import IntegrityError
+from django.db import IntegrityError, close_old_connections, connection
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_duration
@@ -26,13 +33,55 @@ from busstops.models import (
     StopPoint,
 )
 from bustimes.models import Route, Trip
+from bustimes.utils import cache_routes
+from tfl import utils as tfl_utils
 
+from ... import utils
 from ...models import Vehicle, VehicleJourney, VehicleLocation
+from ...rtpi import stop_times_cache_stats
+from ...utils import append_status
 from ..import_live_vehicles import ImportLiveVehiclesCommand, Status
+
+WorkerStatus = namedtuple(
+    "WorkerStatus",
+    (
+        "shard",
+        "started_at",
+        "age",
+        "items",
+        "time_taken",
+        "queries",
+        "routes_hits",
+        "routes_misses",
+        "stop_times_hits",
+        "stop_times_misses",
+    ),
+)
 
 logger = logging.getLogger(__name__)
 
+
+_TABLE = re.compile(r'(?:FROM|INTO|UPDATE)\s+"(\w+)"')
+
+
+class QueryCounter:
+    """counts queries, by table, even when DEBUG is off"""
+
+    def __init__(self):
+        self.count = 0
+        self.tables = Counter()
+
+    def __call__(self, execute, sql, params, many, context):
+        self.count += 1
+        if match := _TABLE.search(sql):
+            self.tables[match.group(1)] += 1
+        return execute(sql, params, many)
+
+
 _SIRI_NS = "http://www.siri.org.uk/siri"
+
+# like at the start of each request - so a worker survives the database restarting
+reconnect_if_broken = sync_to_async(close_old_connections, thread_sensitive=True)
 
 
 def _elem_to_dict(elem):
@@ -75,7 +124,21 @@ def get_destination_ref(destination_ref: str) -> str | None:
     #     # destination ref is not in the expected ATCO code format - maybe a postcode or other placeholder
     #     return
 
-    return destination_ref
+    stop_ref = stop_ref.removeprefix("NT")  # Nottingham City Transport
+
+    if (
+        " " in stop_ref
+        or len(stop_ref) < 4
+        or not stop_ref[:4].isdigit()
+        or stop_ref[:3] == "000"
+        or stop_ref[:3] == "999"
+        or stop_ref[:3] == "980"
+        or stop_ref[:3] == "900"
+    ):
+        # not in the expected ATCO code format - maybe a postcode or other placeholder
+        return
+
+    return stop_ref
 
 
 @functools.cache
@@ -151,6 +214,153 @@ class Command(ImportLiveVehiclesCommand):
         super().__init__(*args, **kwargs)
         self.last_modified = None
         self.not_modified = False
+        self.fetched_at = None
+        self.shards = 0
+        self.shard = None
+        self.reply_key = f"bod_avl_done:{uuid.uuid4()}"
+        self.cycle = 0
+        self.pending = 0
+
+    @staticmethod
+    def add_arguments(parser):
+        parser.add_argument("--immediate", action="store_true")
+        parser.add_argument(
+            "--shards", type=int, default=0, help="fetch, and send items to workers"
+        )
+        parser.add_argument("--shard", type=int, help="handle items for one shard")
+        parser.add_argument("--siri", action="store_true", help="handle SIRI posts")
+
+    def handle(
+        self, immediate=False, shards=0, shard=None, siri=False, *args, **options
+    ):
+        if siri:
+            asyncio.run(self.run_siri_worker())
+        elif shard is not None:
+            self.shard = shard
+            self.do_source()
+            asyncio.run(self.run_worker(shard))
+        else:
+            self.shards = shards
+            super().handle(immediate, *args, **options)
+
+    @staticmethod
+    def get_shard(key, shards):
+        # not hash() - that's randomised per process
+        return zlib.crc32(key.encode()) % shards
+
+    def get_shard_key(self, item, vehicle_identity):
+        # by line, so each worker only needs some services' stop times and route links
+        # - but a vehicle on 'two journeys at once' must stay in one worker
+        if vehicle_identity not in self.duplicate_vehicles:
+            monitored_vehicle_journey = item["MonitoredVehicleJourney"]
+            if line_ref := monitored_vehicle_journey.get("LineRef"):
+                return f"{monitored_vehicle_journey['OperatorRef']}:{line_ref}"
+        return vehicle_identity
+
+    def handle_items(self, items, identities):
+        if not self.shards:
+            return super().handle_items(items, identities)
+
+        sharded = defaultdict(list)
+        for item, identity in zip(items, identities):
+            key = self.get_shard_key(item, identity)
+            sharded[self.get_shard(key, self.shards)].append((item, identity))
+            self.identifiers[identity] = self.get_item_identity(item)
+
+        send = async_to_sync(get_channel_layer("bod_avl").send)
+        for shard, shard_items in sharded.items():
+            for chunk in batched(shard_items, 500):
+                send(
+                    f"bod_avl.{shard}",
+                    {
+                        "type": "bod_avl.items",
+                        "datetime": self.source.datetime.isoformat(),
+                        "items": [item for item, _ in chunk],
+                        "identities": [identity for _, identity in chunk],
+                        "duplicates": [
+                            identity
+                            for _, identity in chunk
+                            if identity in self.duplicate_vehicles
+                        ],
+                        "reply_key": self.reply_key,
+                        "cycle": self.cycle,
+                    },
+                )
+                self.pending += 1
+
+    def wait_for_workers(self, timeout=60):
+        # (a plain Redis list - the channel layer can't receive from a new
+        # event loop each time, as async_to_sync would give us)
+        deadline = monotonic() + timeout
+        while self.pending and (remaining := deadline - monotonic()) > 0:
+            # short blocks - the client has a 3 second socket timeout
+            reply = utils.redis_client.blpop(self.reply_key, min(remaining, 2))
+            if reply and int(reply[1]) == self.cycle:
+                self.pending -= 1
+        if self.pending:
+            logger.warning(f"{self.pending} batches still pending after {timeout}s")
+        self.pending = 0
+        self.cycle += 1
+
+    def handle_message(self, message):
+        started = timezone.now()
+        self.source.datetime = datetime.fromisoformat(message["datetime"])
+        self.duplicate_vehicles = set(message["duplicates"])
+        queries = QueryCounter()
+        stop_times_cache_stats.clear()
+        with cache_routes() as routes_cache, connection.execute_wrapper(queries):
+            super().handle_items(message["items"], message["identities"])
+
+        append_status(
+            "bod_avl_workers_status",
+            WorkerStatus(
+                self.shard,
+                started,
+                started - self.source.datetime,
+                len(message["items"]),
+                (timezone.now() - started).total_seconds(),
+                queries.count,
+                routes_cache.hits,
+                routes_cache.misses,
+                stop_times_cache_stats["hits"],
+                stop_times_cache_stats["misses"],
+            ),
+            maxlen=200,
+        )
+
+    async def run_worker(self, shard):
+        channel_layer = get_channel_layer("bod_avl")
+        handle_message = sync_to_async(self.handle_message, thread_sensitive=True)
+        while True:
+            message = await channel_layer.receive(f"bod_avl.{shard}")
+            await reconnect_if_broken()
+            try:
+                await handle_message(message)
+            except Exception:
+                logger.exception("error handling items")
+            self.reply(message)
+
+    @staticmethod
+    def reply(message):
+        if key := message.get("reply_key"):
+            pipeline = utils.redis_client.pipeline(transaction=False)
+            pipeline.rpush(key, message["cycle"])
+            pipeline.expire(key, 300)
+            pipeline.execute()
+
+    @staticmethod
+    async def run_siri_worker():
+        from ...tasks import SIRI_CHANNEL, handle_siri_post
+
+        channel_layer = get_channel_layer("bod_avl")
+        handle = sync_to_async(handle_siri_post.call_local, thread_sensitive=True)
+        while True:
+            message = await channel_layer.receive(SIRI_CHANNEL)
+            await reconnect_if_broken()
+            try:
+                await handle(message["uuid"], message["data"])
+            except Exception:
+                logger.exception("error handling SIRI post")
 
     @staticmethod
     def get_datetime(item):
@@ -257,7 +467,7 @@ class Command(ImportLiveVehiclesCommand):
         try:
             vehicle, created = vehicles.get_or_create(defaults)
         except (Vehicle.MultipleObjectsReturned, IntegrityError) as e:
-            print(e, operator_ref, vehicle_ref)
+            logger.warning("%s %s %s", e, operator_ref, vehicle_ref)
             vehicle = vehicles.first()
             created = False
         else:
@@ -272,8 +482,7 @@ class Command(ImportLiveVehiclesCommand):
     def get_service(self, operators, item, line_ref, vehicle_operator_id):
         monitored_vehicle_journey = item["MonitoredVehicleJourney"]
 
-        if destination_ref := monitored_vehicle_journey.get("DestinationRef"):
-            destination_ref = get_destination_ref(destination_ref)
+        destination_ref = get_stop_ref(monitored_vehicle_journey, "DestinationRef")
 
         # filter by LineRef or (if present and different) TicketMachineServiceCode
         line_name_query = get_line_name_query(line_ref)
@@ -369,24 +578,34 @@ class Command(ImportLiveVehiclesCommand):
                         service=OuterRef("pk"), atco_code=destination_ref
                     )
                 )
-                origin_ref = monitored_vehicle_journey.get("OriginRef")
+                origin_ref = get_stop_ref(monitored_vehicle_journey, "OriginRef")
                 if origin_ref:
-                    condition &= Exists(
+                    origin_condition = Exists(
                         StopPoint.objects.filter(
                             service=OuterRef("pk"), atco_code=origin_ref
                         )
                     )
-                try:
-                    return services.get(condition)
-                except Service.DoesNotExist:
-                    pass
-                except Service.MultipleObjectsReturned:
-                    services = services.filter(condition)
+                    try:
+                        return services.get(condition & origin_condition)
+                    except Service.DoesNotExist:
+                        # e.g. timetable uses a different stop at the bus station
+                        condition |= origin_condition
+                    except Service.MultipleObjectsReturned:
+                        services = services.filter(condition & origin_condition)
+                        condition = None
+                if condition is not None:
+                    try:
+                        return services.get(condition)
+                    except Service.DoesNotExist:
+                        pass
+                    except Service.MultipleObjectsReturned:
+                        services = services.filter(condition)
 
         else:
             latlong = self.create_vehicle_location(item).latlong
             try:
-                return services.get(geometry__bboverlaps=latlong)
+                # buffer for vehicles parked at a bus station just outside the route
+                return services.get(geometry__bboverlaps=latlong.buffer(0.005))
             except (Service.DoesNotExist, Service.MultipleObjectsReturned):
                 pass
 
@@ -412,12 +631,10 @@ class Command(ImportLiveVehiclesCommand):
         journey_ref = monitored_vehicle_journey.get("VehicleJourneyRef")
 
         if not journey_ref:
-            try:
+            with contextlib.suppress(KeyError, ValueError):
                 journey_ref = monitored_vehicle_journey["FramedVehicleJourneyRef"][
                     "DatedVehicleJourneyRef"
                 ]
-            except (KeyError, ValueError):
-                pass
 
         if journey_ref == "UNKNOWN":
             journey_ref = None
@@ -459,12 +676,18 @@ class Command(ImportLiveVehiclesCommand):
 
         # treat the weird Nottingham City Transport data specially
         if operator_ref == "NCTR" and origin_aimed_departure_time is None:
-            try:
+            with contextlib.suppress(ValueError):
                 origin_aimed_departure_time = timezone.make_aware(
                     datetime.fromisoformat(journey_ref[-30:-11])
                 )
-            except ValueError:
-                pass
+
+        if operator_ref == "TFLO" and origin_aimed_departure_time:
+            # BODS adds TfL's seconds to local midnight, not noon minus 12 hours,
+            # so is an hour out on the days the clocks change
+            local = timezone.localtime(origin_aimed_departure_time)
+            origin_aimed_departure_time += (
+                local.replace(hour=0).utcoffset() - local.replace(hour=12).utcoffset()
+            )
 
         if origin_aimed_departure_time:
             difference = origin_aimed_departure_time - dt
@@ -513,27 +736,23 @@ class Command(ImportLiveVehiclesCommand):
         if journey_ref:
             journey.code = journey_ref
 
-        if destination_ref := monitored_vehicle_journey.get("DestinationRef"):
-            destination_ref = get_destination_ref(destination_ref)
+        destination_ref = get_stop_ref(monitored_vehicle_journey, "DestinationRef")
 
         if operator_ref == "TFLO":
             journey.destination = monitored_vehicle_journey.get("DestinationName", "")
+        elif destination_ref and (destination := get_destination_name(destination_ref)):
+            # stop locality name - usually more descriptive than "Bus_Station"
+            journey.destination = destination
+
+        elif destination_name := monitored_vehicle_journey.get("DestinationName", ""):
+            journey.destination = destination_name.replace("_", " ")
+
         else:
-            if destination_ref and (
-                destination := get_destination_name(destination_ref)
-            ):
-                # stop locality name - usually more descriptive than "Bus_Station"
-                journey.destination = destination
+            journey.direction = monitored_vehicle_journey.get("DirectionRef", "")
 
-            elif destination_name := monitored_vehicle_journey.get(
-                "DestinationName", ""
-            ):
-                journey.destination = destination_name.replace("_", " ")
-
-            else:
-                journey.direction = monitored_vehicle_journey.get("DirectionRef", "")
-
+        first_attempt = False
         if not journey.service_id and route_name:
+            first_attempt = True
             operators = self.get_operator(operator_ref)
             journey.service = self.get_service(
                 operators, item, route_name, vehicle.operator_id
@@ -541,71 +760,99 @@ class Command(ImportLiveVehiclesCommand):
 
             if not operators and journey.service and journey.service.operator.all().distinct():
                 # create new OperatorCode
-                operator = journey.service.operator.all().distinct()[0]
-                try:
+                operator = journey.service.operator.all()[0]
+                with contextlib.suppress(IntegrityError):
                     OperatorCode.objects.create(
                         source=self.source, operator=operator, code=operator_ref
                     )
-                except IntegrityError:
-                    pass
 
                 if not vehicle.operator_id:
                     vehicle.operator = operator
-                    try:
+                    with contextlib.suppress(IntegrityError):
                         vehicle.save(update_fields=["operator"])
-                    except IntegrityError:
-                        pass
 
-            # match trip (timetable) to journey:
-            if journey.service and (origin_aimed_departure_time or journey_ref):
-                block_ref = monitored_vehicle_journey.get("BlockRef")
+        # match trip (timetable) to journey:
+        if (
+            journey.service_id
+            and not journey.trip_id
+            and (origin_aimed_departure_time or journey_ref)
+            and (first_attempt or self.stops_changed(item, vehicle))
+        ):
+            block_ref = monitored_vehicle_journey.get("BlockRef")
 
-                arrival_time = monitored_vehicle_journey.get(
-                    "DestinationAimedArrivalTime"
-                )
-                if arrival_time:
-                    arrival_time = datetime.fromisoformat(arrival_time)
+            arrival_time = monitored_vehicle_journey.get("DestinationAimedArrivalTime")
+            if arrival_time:
+                arrival_time = datetime.fromisoformat(arrival_time)
 
-                if trip := journey.get_trip(
-                    datetime=dt,
-                    operator_ref=operator_ref,
-                    origin_ref=monitored_vehicle_journey.get("OriginRef"),
-                    destination_ref=destination_ref,
-                    departure_time=origin_aimed_departure_time,
-                    arrival_time=arrival_time,
-                    journey_code=journey_code,
-                    block_ref=block_ref,
+            if trip := journey.get_trip(
+                datetime=dt,
+                operator_ref=operator_ref,
+                origin_ref=get_stop_ref(monitored_vehicle_journey, "OriginRef"),
+                destination_ref=destination_ref,
+                departure_time=origin_aimed_departure_time,
+                arrival_time=arrival_time,
+                journey_code=journey_code,
+                block_ref=block_ref,
+            ):
+                journey.trip = trip
+                if not first_attempt:
+                    journey.date = None  # work out again from the trip
+
+                if (
+                    not (destination_ref and journey.destination)
+                    and trip.destination_id
                 ):
-                    journey.trip = trip
+                    journey.destination = (
+                        trip.headsign
+                        or get_destination_name(trip.destination_id)
+                        or journey.destination
+                    )
 
-                    if (
-                        not (destination_ref and journey.destination)
-                        and trip.destination_id
-                    ):
-                        journey.destination = (
-                            trip.headsign
-                            or get_destination_name(trip.destination_id)
-                            or journey.destination
-                        )
+                if (
+                    (vehicle.operator_id is None or vehicle.operator_id == "TFLO")
+                    and trip.operator_id
+                    or (
+                        vehicle.operator_id == "PLYC"
+                        and trip.operator_id == "TFCN"
+                        or vehicle.operator_id == "TFCN"
+                        and trip.operator_id == "PLYC"
+                    )
+                ):
+                    vehicle.operator_id = trip.operator_id
+                    vehicle.save(update_fields=["operator"])
 
-                    if (
-                        (vehicle.operator_id is None or vehicle.operator_id == "TFLO")
-                        and trip.operator_id
-                        or (
-                            vehicle.operator_id == "PLYC"
-                            and trip.operator_id == "TFCN"
-                            or vehicle.operator_id == "TFCN"
-                            and trip.operator_id == "PLYC"
-                        )
-                    ):
-                        old_operator = vehicle.operator_id
-                        vehicle.operator_id = trip.operator_id
-                        try:
-                            vehicle.save(update_fields=["operator"])
-                        except IntegrityError:
-                            vehicle.operator_id = old_operator
+        if (
+            not journey.date
+            and not journey.trip
+            and (progress_journey := self.get_progress_journey(item, journey))
+        ):
+            # the service date - the start time can be after 24:00
+            # (if there's a trip, its start time determines the date instead)
+            journey.date = progress_journey.date
 
         return journey
+
+    @staticmethod
+    def stops_changed(item, vehicle):
+        # e.g. TfL briefly giving a new journey the previous journey's stops
+        # (latest_journey_data might be from another source, in another format)
+        previous = (vehicle.latest_journey_data or {}).get("MonitoredVehicleJourney")
+        if not previous:
+            return False
+        current = item["MonitoredVehicleJourney"]
+        return any(
+            current.get(key) != previous.get(key)
+            for key in ("OriginRef", "DestinationRef")
+        )
+
+    def get_progress_journey(self, item, journey):
+        if (
+            item["MonitoredVehicleJourney"]["OperatorRef"] == "TFLO"
+            and journey.code
+            and journey.code.isdigit()
+            and journey.datetime
+        ):
+            return tfl_utils.get_progress_journey(journey, journey.service_id)
 
     @staticmethod
     def create_vehicle_location(item):
@@ -626,8 +873,19 @@ class Command(ImportLiveVehiclesCommand):
             occupancy=occupancies.get(monitored_vehicle_journey.get("Occupancy")),
             block=monitored_vehicle_journey.get("BlockRef"),
         )
-        if monitored_vehicle_journey["OperatorRef"] == "TFLO":
-            location.tfl_code = monitored_vehicle_journey["VehicleRef"]
+        # (TfW) the stop the vehicle is at or has just left, and the next stop
+        # (not if it hasn't got there yet - probably not in service)
+        call = monitored_vehicle_journey.get("MonitoredCall")
+        if call and (
+            call.get("VehicleAtStop") == "true" or "ActualDepartureTime" in call
+        ):
+            location.prev_stop = call.get("StopPointRef")
+            if onward_calls := monitored_vehicle_journey.get("OnwardCalls"):
+                onward_call = onward_calls.get("OnwardCall")
+                if type(onward_call) is list:
+                    onward_call = onward_call[0] if onward_call else None
+                if onward_call:
+                    location.next_stop = onward_call.get("StopPointRef")
         extensions = item.get("Extensions")
         if extensions:
             extensions = extensions.get("VehicleJourney") or extensions.get(
@@ -650,16 +908,14 @@ class Command(ImportLiveVehiclesCommand):
         if self.last_modified:
             headers["if-modified-since"] = http_date(self.last_modified.timestamp())
 
-        response = self.session.get(self.source.url, headers=headers, timeout=61)
-        fetched_at = timezone.now()
+        response = self.session.get(self.source.url, headers=headers, timeout=35)
+        self.fetched_at = timezone.now()
 
         self.not_modified = response.status_code == HTTPStatus.NOT_MODIFIED
         if self.not_modified:
             return
 
-        if not response.ok:
-            logger.warning("%s %s %s", response, response.headers, response.content)
-            return
+        response.raise_for_status()
 
         # when this archive was published - a steadier guide to when to poll
         # next than the ResponseTimestamp inside it, which lags it by a
@@ -698,7 +954,7 @@ class Command(ImportLiveVehiclesCommand):
         )
 
         items = None
-        if not self.source.datetime or self.source.datetime > fetched_at:
+        if not self.source.datetime or self.source.datetime > self.fetched_at:
             # ResponseTimestamp is missing, or implausibly fresh -
             # fall back to the newest RecordedAtTime
             items = [
@@ -765,8 +1021,16 @@ class Command(ImportLiveVehiclesCommand):
     def update(self):
         with sentry_sdk.start_transaction(name="bod_avl_update"):
             now = timezone.now()
+            # refined by get_items, once we know when the data actually arrived
+            self.fetched_at = now
 
-            with sentry_sdk.start_span(name="get changed items"):
+            queries = QueryCounter()
+
+            with (
+                connection.execute_wrapper(queries),
+                sentry_sdk.start_span(name="get changed items"),
+            ):
+                fetch_started = monotonic()
                 try:
                     (
                         changed_items,
@@ -779,65 +1043,104 @@ class Command(ImportLiveVehiclesCommand):
                     logger.exception("error getting changed items")
                     self.session.close()
                     self.session = requests.Session()
-                    return 30
+                    self.errors += 1
+                    return min(2**self.errors, 30)
+                self.errors = 0
 
             if self.not_modified:
                 # nothing new published yet, and the 304 cost us nothing,
-                # so try again shortly rather than waiting out the cycle
+                # so try again in a second rather than waiting out the cycle
                 since = (timezone.now() - self.last_modified).total_seconds()
                 if since < 20:
-                    return 0.5
-                return 10 - (since % 10) + 0.5
+                    return 1
+                return 10 - (since % 10) + 1
 
-            age = int((now - self.source.datetime).total_seconds())
+            if not total_items:
+                # error page or old data
+                return 10
+
+            age = int((self.fetched_at - self.source.datetime).total_seconds())
             if age > 0:
                 logger.info(
-                    f"{now.second=} {age=}  {total_items=}  {len(changed_items)=}  {len(changed_journey_items)=}"
+                    f"{total_items=}	{len(changed_items)=}	{len(changed_journey_items)=}"
                 )
 
-            with sentry_sdk.start_span(name="handle quick items") as span:
+            fetch_took = monotonic() - fetch_started
+            fetch_queries = queries.count
+
+            handling_started = timezone.now()
+
+            with (
+                connection.execute_wrapper(queries),
+                sentry_sdk.start_span(name="handle quick items") as span,
+            ):
                 span.set_data("count", len(changed_items))
                 self.handle_items(changed_items, changed_item_identities)
-            with sentry_sdk.start_span(name="handle changed journey items") as span:
+            quick_took = monotonic() - fetch_started - fetch_took
+            quick_queries = queries.count - fetch_queries
+
+            with (
+                cache_routes() as routes_cache,
+                connection.execute_wrapper(queries),
+                sentry_sdk.start_span(name="handle changed journey items") as span,
+            ):
                 span.set_data("count", len(changed_journey_items))
                 self.handle_items(changed_journey_items, changed_journey_identities)
+            if self.pending:
+                self.wait_for_workers()
+            journey_took = monotonic() - fetch_started - fetch_took - quick_took
+            journey_queries = queries.count - fetch_queries - quick_queries
 
-            time_taken = (timezone.now() - now).total_seconds()
+            time_taken = (timezone.now() - handling_started).total_seconds()
 
-            # stats for last 50 updates:
-            bod_status = cache.get("bod_avl_status", [])
-            bod_status.append(
-                Status(
-                    now,
-                    self.source.datetime,
-                    now - self.source.datetime,
-                    total_items,
-                    len(changed_items) + len(changed_journey_items),
-                    time_taken,
-                )
+            # does the cost scale with total_items or with changed items?
+            logger.info(
+                f"{fetch_took=:.1f} {quick_took=:.1f} {journey_took=:.1f}	"
+                f"{fetch_queries=} {quick_queries=} {journey_queries=}	"
+                f"routes_cached={routes_cache.hits}/"
+                f"{routes_cache.hits + routes_cache.misses}	"
+                f"{dict(queries.tables.most_common(6))}"
             )
-            bod_status = bod_status[-50:]
-            cache.set("bod_avl_status", bod_status, 800)
+
+            status = Status(
+                self.fetched_at,
+                self.source.datetime,
+                self.fetched_at - self.source.datetime,
+                total_items,
+                len(changed_items) + len(changed_journey_items),
+                time_taken,
+                self.last_modified,
+            )
+            append_status("bod_avl_status", status)
+
+            attributes = {"source": self.source_name}
 
             sentry_sdk.metrics.count(
-                "vehicle_locations",
-                bod_status[-1].changed_items,
-                attributes={"source": self.source_name},
+                "vehicle_locations", status.changed_items, attributes=attributes
             )
 
-            logger.info(f"{time_taken=}")
+            # how stale the data was when we got it - the number that matters
+            sentry_sdk.metrics.gauge(
+                "avl_age",
+                status.age.total_seconds(),
+                unit="second",
+                attributes=attributes,
+            )
 
             # BODS `create_siri_zip` runs every 10 seconds
             # - aim for just after the next run
             if self.last_modified:
                 since = (timezone.now() - self.last_modified).total_seconds()
-                wait = 10 - (since % 10) + 0.5
+                wait = (10.5 - since) % 10
+                if wait > 5:
+                    wait = 0
                 logger.info(
-                    f"last-modified={self.last_modified:%H:%M:%S} "
-                    f"ResponseTimestamp={self.source.datetime:%H:%M:%S} "
-                    f"age={bod_status[-1].age.total_seconds():.1f} "
-                    f"{since=:.1f} {wait=:.1f}"
+                    f"last-modified={self.last_modified:%H:%M:%S}	"
+                    f"ResponseTimestamp={self.source.datetime:%H:%M:%S}	"
+                    f"age={status.age.total_seconds():.1f}	"
+                    f"{since=:.1f} {wait=:.1f}\n	"
                 )
-                return wait
+            else:
+                wait = 11 - (timezone.now() - now).total_seconds()
 
-            return max(0, 11 - time_taken)
+            return max(0, wait)

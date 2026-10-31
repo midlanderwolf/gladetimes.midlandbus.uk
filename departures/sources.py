@@ -21,7 +21,8 @@ from xmltodict import unparse
 
 from bustimes.utils import get_stop_times
 from disruptions.models import Call
-from vehicles.models import VehicleJourney
+from tfl import countdown
+from vehicles.models import VehicleCode, VehicleJourney
 
 TIMEZONE = ZoneInfo("Europe/London")
 
@@ -145,7 +146,7 @@ class TflDepartures(RemoteDepartures):
         return settings.TFL
 
     def get_request_url(self) -> str:
-        if self.stop.stop_type == "FBT" or self.stop.stop_type == "PLT":
+        if self.stop.stop_type in {"FBT", "PLT"}:
             assert self.stop.stop_area_id
             return f"https://api.tfl.gov.uk/StopPoint/{self.stop.stop_area_id}/arrivals"
         return f"https://api.tfl.gov.uk/StopPoint/{self.stop.pk}/arrivals"
@@ -154,24 +155,42 @@ class TflDepartures(RemoteDepartures):
         return {"User-Agent": "bustimes.org"}
 
     def get_row(self, item):
-        if item["modeName"] == "tube":
-            vehicle = None
-            link = None
-        else:
-            vehicle = item["vehicleId"]
-            link = f"/vehicles/tfl/{vehicle}"
-        return {
+        row = {
             "live": parse_datetime(item.get("expectedArrival")),
             "service": self.get_service(item.get("lineName")),
             "destination": item.get("destinationName"),
-            "link": link,
-            "vehicle": vehicle,
         }
+        if item["modeName"] == "bus":
+            row["vehicle"] = item["vehicleId"]
+        return row
+
+    def get_departures(self):
+        if (
+            self.stop.stop_type not in {"FBT", "PLT"}
+            and (data := countdown.get_stop_predictions(self.stop.pk)) is not None
+        ):
+            return self.departures_from_data(data)
+        return super().get_departures()
 
     def departures_from_response(self, res) -> list:
-        return sorted(
-            [self.get_row(item) for item in res.json()], key=lambda row: row["live"]
-        )
+        return self.departures_from_data(res.json())
+
+    def departures_from_data(self, data) -> list:
+        rows = [self.get_row(item) for item in data]
+        prefix = "TFLO:"
+        codes = [f"{prefix}{row['vehicle']}" for row in rows if "vehicle" in row]
+        codes = VehicleCode.objects.filter(scheme="BODS", code__in=codes)
+        vehicles = {
+            code.code.removeprefix(prefix): code.vehicle
+            for code in codes.select_related("vehicle")
+        }
+        for row in rows:
+            if (vehicle := row.get("vehicle")) and (vehicle := vehicles.get(vehicle)):
+                row["vehicle"] = vehicle
+                if vehicle.latest_journey_id:
+                    row["link"] = f"/map#journey={vehicle.latest_journey_id}"
+        rows.sort(key=lambda row: row["live"])
+        return rows
 
 
 class TimetableDepartures(Departures):
@@ -267,7 +286,9 @@ class TimetableDepartures(Departures):
             [time["stop_time"].trip for time in times],
             Prefetch(
                 "vehiclejourney_set",
-                VehicleJourney.objects.filter(date__in=dates).select_related("vehicle"),
+                VehicleJourney.objects.filter(date__in=dates)
+                .select_related("vehicle")
+                .order_by("-id"),  # if a trip has multiple journeys, prefer the latest
                 to_attr="vehicle_journeys",
             ),
         )
@@ -276,7 +297,7 @@ class TimetableDepartures(Departures):
             for journey in time["stop_time"].trip.vehicle_journeys:
                 if journey.date == trip_date:
                     time["vehicle"] = journey.vehicle
-                    time["link"] = f"/journeys/{journey.id}"
+                    time["link"] = f"/map#journey={journey.id}"
                     break
 
         # # add tomorrow's times until there are 10, or the next day until there more than 0
@@ -352,11 +373,11 @@ class SiriSmDepartures(RemoteDepartures):
     def get_poorly_key(self):
         return self.source.get_poorly_key()
 
-    def departures_from_response(self, response):
-        if not response.text or "Client.AUTHENTICATION_FAILED" in response.text:
+    def departures_from_response(self, res):
+        if not res.text or "Client.AUTHENTICATION_FAILED" in res.text:
             self.set_poorly(1800)  # back off for 30 minutes
             return
-        data = xmltodict.parse(response.text)
+        data = xmltodict.parse(res.text)
         try:
             data = data["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][
                 "MonitoredStopVisit"

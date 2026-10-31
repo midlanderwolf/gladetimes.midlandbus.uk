@@ -1,14 +1,34 @@
 from datetime import timedelta
+from urllib.parse import parse_qs
 
 from django.contrib.gis.db import models
-from django.db.models import Q
+from django.core.exceptions import ValidationError
+from django.db.models import OuterRef, Q, Subquery
 from django.db.models.functions import Upper
 from django.urls import reverse
 from django.utils.timezone import localdate
+from sql_util.utils import Exists
 from timezone_field import TimeZoneField
 
 from .fields import SecondsField
 from .formatting import format_timedelta, time_datetime
+
+# https://data.bus-data.dft.gov.uk/guidance/requirements/?section=apireference
+BODS_API_PARAMETERS = (
+    "adminArea",
+    "datasetID",
+    "endDateEnd",
+    "endDateStart",
+    "modifiedDate",
+    "noc",
+    "search",
+    "startDateEnd",
+    "startDateStart",
+)
+
+
+def is_noc(search_term: str) -> bool:
+    return len(search_term) <= 4 and search_term.isupper()
 
 
 class TimetableDataSource(models.Model):
@@ -16,7 +36,9 @@ class TimetableDataSource(models.Model):
     search = models.CharField(
         max_length=255,
         blank=True,
-        help_text="for BODS sources, usually one of the operator's NOCs. But remember that searching for 'ANEA' for example will return *all* Arriva datasets, not just the ANEA one",
+        help_text="for BODS sources, usually just one of the operator's NOCs. "
+        "But remember that 'ANEA' for example will return *all* Arriva datasets, not just the ANEA one. "
+        "Valid search parameters are: " + (", ".join(BODS_API_PARAMETERS)),
     )
     url = models.URLField(
         blank=True,
@@ -28,7 +50,10 @@ class TimetableDataSource(models.Model):
         "busstops.Operator", blank=True, through="TimetableDataSourceOperator"
     )
     settings = models.JSONField(null=True, blank=True)
-    complete = models.BooleanField(default=True)
+    complete = models.BooleanField(
+        default=True,
+        help_text="if not, may fill in missing services using Traveline data",
+    )
     active = models.BooleanField(default=True)
     region = models.ForeignKey(
         "busstops.Region", models.DB_SET_NULL, null=True, blank=True
@@ -37,6 +62,21 @@ class TimetableDataSource(models.Model):
 
     def __str__(self):
         return self.name
+
+    def clean(self):
+        if not self.search or is_noc(self.search):
+            return
+        query = parse_qs(self.search)
+        if not query:
+            raise ValidationError(
+                {"search": f"'{self.search}' is not a NOC or a query string"}
+            )
+        if wrong := [key for key in query if key not in BODS_API_PARAMETERS]:
+            raise ValidationError(
+                {
+                    "search": f"{', '.join(wrong)} is not one of {', '.join(BODS_API_PARAMETERS)}"
+                }
+            )
 
 
 class TimetableDataSourceOperator(models.Model):
@@ -72,6 +112,80 @@ class Version(models.Model):
         return self.name or ""
 
 
+class RouteQuerySet(models.QuerySet):
+    def active_on(self, when, revisions=True):
+        routes = self
+        if revisions:
+            routes = routes.filter(
+                Q(start_date=None) | Q(start_date__lte=when),
+                ~Exists(
+                    Route.objects.filter(
+                        service__isnull=False,
+                        source=OuterRef("source"),
+                        service_code=OuterRef("service_code"),
+                        revision_number_context=OuterRef("revision_number_context"),
+                        start_date__lte=when,
+                        revision_number__gt=OuterRef("revision_number"),
+                    )
+                ),
+            ).order_by("id")
+
+        # complicated way of working out which Passenger .zip applies.
+        # When multiple versions share the same start_date, prefer the one with the
+        # greater name - filenames are like 'lynxbus_<unix-timestamp>.zip' so this
+        # picks the most recently published.
+        routes = routes.filter(
+            Q(version=None)
+            | Q(
+                ~Exists(
+                    Version.objects.filter(
+                        source=OuterRef("version__source"),
+                        start_date__lte=when,
+                        end_date__gte=when,
+                    ).filter(
+                        Q(start_date__gt=OuterRef("version__start_date"))
+                        | Q(
+                            start_date=OuterRef("version__start_date"),
+                            name__gt=OuterRef("version__name"),
+                        )
+                    )
+                ),
+                version__start_date__lte=when,
+                version__end_date__gte=when,
+            )
+        )
+
+        routes = routes.filter(
+            Q(start_date=None) | Q(start_date__lte=when),
+            Q(end_date=None) | Q(end_date__gte=when),
+        )
+
+        # TfL: try to pick the file with the highest Service Change Number, if there are multiple
+        # https://techforum.tfl.gov.uk/t/duplicate-files-in-journey-planner-datastore-is-there-a-way-to-choose-the-right-one/2571
+        # (actually using service_code order, which assumes that the SCNs have the same number of digits)
+        return routes.filter(
+            ~Q(code__contains="tfl_")
+            | ~Exists(
+                Route.objects.filter(
+                    Q(end_date__gte=when) | Q(end_date__isnull=True),
+                    service=OuterRef("service"),
+                    source=OuterRef("source"),
+                    service_code__gt=OuterRef("service_code"),
+                    start_date__lte=when,
+                )
+            )
+        ).filter(
+            ~Exists(
+                Route.objects.filter(
+                    file_hash=OuterRef("file_hash"),
+                    file_hash__isnull=False,
+                    code=OuterRef("code"),
+                    id__gt=OuterRef("id"),
+                )
+            )
+        )
+
+
 class Route(models.Model):
     source = models.ForeignKey("busstops.DataSource", models.DB_CASCADE)
     version = models.ForeignKey(Version, models.DB_CASCADE, null=True, blank=True)
@@ -101,6 +215,8 @@ class Route(models.Model):
     public_use = models.BooleanField(null=True)
     file_hash = models.CharField(max_length=40, null=True, blank=True, db_index=True)
     timezone = TimeZoneField(null=True, blank=True)
+
+    objects = RouteQuerySet.as_manager()
 
     class Meta:
         unique_together = ("source", "code")
@@ -197,6 +313,63 @@ day_keys = (
 )
 
 
+class CalendarQuerySet(models.QuerySet):
+    def active_on(self, when, calendar_ids=None, scotland=None):
+        between_dates = Q(start_date__lte=when) & (
+            Q(end_date__gte=when) | Q(end_date=None)
+        )
+
+        calendars = self.filter(between_dates)
+        calendar_calendar_dates = CalendarDate.objects.filter(calendar=OuterRef("id"))
+        calendar_dates = calendar_calendar_dates.filter(between_dates)
+
+        if calendar_ids is not None:
+            # cunningly make the query faster
+            calendars = calendars.filter(id__in=calendar_ids)
+            calendar_dates = calendar_dates.filter(calendar__in=calendar_ids)
+        exclusions = calendar_dates.filter(operation=False)
+        inclusions = calendar_dates.filter(operation=True)
+        special_inclusions = Exists(inclusions.filter(special=True))
+        only_certain_dates = Exists(
+            calendar_calendar_dates.filter(special=False, operation=True)
+        )
+
+        if scotland is None:
+            calendar_bank_holidays = CalendarBankHoliday.objects.filter(
+                bank_holiday__bankholidaydate__date=when,
+                calendar=OuterRef("id"),
+            )
+        else:
+            calendar_bank_holidays = CalendarBankHoliday.objects.filter(
+                Q(bank_holiday__bankholidaydate__scotland=None)
+                | Q(bank_holiday__bankholidaydate__scotland=scotland),
+                bank_holiday__bankholidaydate__date=when,
+                calendar=OuterRef("id"),
+            )
+
+        bank_holiday_inclusions = Exists(calendar_bank_holidays.filter(operation=True))
+
+        return calendars.annotate(
+            bank_holiday_exclusions=Exists(
+                calendar_bank_holidays.filter(operation=False)
+            )
+        ).filter(
+            Q(
+                Q(**{f"{when:%a}".lower(): True}),  # day of week
+                ~only_certain_dates | Exists(inclusions),  # special dates of operation
+                bank_holiday_exclusions=False,
+            )
+            | special_inclusions
+            | bank_holiday_inclusions & Q(bank_holiday_exclusions=False),
+            ~Exists(exclusions),
+        )
+
+    def for_routes(self, routes):
+        return self.filter(
+            id__in=Trip.objects.filter(route__in=routes).values("calendar_id")
+        )
+
+
 class Calendar(models.Model):
     mon = models.BooleanField(default=False)
     tue = models.BooleanField(default=False)
@@ -212,6 +385,8 @@ class Calendar(models.Model):
     source = models.ForeignKey(
         "busstops.DataSource", models.DB_CASCADE, null=True, blank=True
     )
+
+    objects = CalendarQuerySet.as_manager()
 
     def contains(self, date):
         if (not self.start_date or self.start_date <= date) and (
@@ -273,7 +448,7 @@ class Calendar(models.Model):
         start_date = self.start_date
         end_date = self.end_date
 
-        for i in range(6):
+        for _ in range(6):
             if not self.allows(start_date):
                 start_date += timedelta(days=1)
 
@@ -289,7 +464,7 @@ class Calendar(models.Model):
                     # "until 30 may 2020, but not from 20 may to 30 may" - simplify to "until 19 may"
                     end_date = calendar_date.start_date - timedelta(days=1)
 
-            for i in range(6):
+            for _ in range(6):
                 if not self.allows(end_date):
                     end_date -= timedelta(days=1)
 
@@ -388,6 +563,99 @@ class Note(models.Model):
         return self.trip_set.first().get_absolute_url()
 
 
+SPLIT_TRIP_MAX_GAP = timedelta(minutes=15)
+
+
+def is_split_trip_continuation(a, b, a_stops, b_stops, loose=False) -> bool:
+    """is trip b the next part of a journey that's been split across two trips?
+    a_stops and b_stops are (first stop, last stop) pairs.
+    loose: also if the route, line name or journey number changes
+    """
+    a_first, a_last = a_stops
+    b_first, b_last = b_stops
+    return (
+        (
+            loose
+            or a.route_id != b.route_id
+            and a.route.line_name == b.route.line_name
+            and (
+                a.route.service_code != b.route.service_code
+                or bool(a.ticket_machine_code)
+                and a.ticket_machine_code == b.ticket_machine_code
+            )
+        )
+        and a.route.source_id == b.route.source_id
+        and a.operator_id == b.operator_id
+        and a.inbound == b.inbound
+        and a_first != a_last
+        and b_first == a_last
+        and b_last not in (a_first, a_last)
+        and timedelta() <= b.start - a.end <= SPLIT_TRIP_MAX_GAP
+    )
+
+
+def chain_split_trips(trips, get_stops, loose=False) -> list[list]:
+    """group trips (sorted by start time) into chains of parts of the same journey -
+    each trip joins the first (earliest starting) chain it continues
+    """
+    chains = []
+    joined = set()
+    for i, trip in enumerate(trips):
+        if id(trip) in joined:
+            continue
+        chain = [trip]
+        for j in range(i + 1, len(trips)):
+            other = trips[j]
+            if other.start - chain[-1].end > SPLIT_TRIP_MAX_GAP:
+                break
+            if id(other) not in joined and is_split_trip_continuation(
+                chain[-1], other, get_stops(chain[-1]), get_stops(other), loose
+            ):
+                chain.append(other)
+                joined.add(id(other))
+        chains.append(chain)
+    return chains
+
+
+def get_end_stops(trip):
+    return trip.first_stop, trip.last_stop
+
+
+def get_trip_chaining(trips) -> str:
+    """returns "split" if some trips (from TripQuerySet.for_chaining) are parts of
+    the same journey but have different calendars, so can't be merged on import,
+    or "merge" if they all have the same calendars, so will be merged
+    """
+    if len({trip.route_id for trip in trips}) > 1:
+        chains = [
+            chain for chain in chain_split_trips(trips, get_end_stops) if len(chain) > 1
+        ]
+        if any(len({trip.calendar_id for trip in chain}) > 1 for chain in chains):
+            return "split"
+        if chains:
+            return "merge"
+    return ""
+
+
+class TripQuerySet(models.QuerySet):
+    def active_on(self, date):
+        return self.filter(calendar__in=Calendar.objects.active_on(date))
+
+    def for_chaining(self):
+        # (Timetable only considers stops where passengers can get on or off)
+        stops = StopTime.objects.filter(
+            Q(pick_up=True) | Q(set_down=True), trip=OuterRef("id")
+        ).values("stop")
+        return (
+            self.select_related("route")
+            .annotate(
+                first_stop=Subquery(stops.order_by("id")[:1]),
+                last_stop=Subquery(stops.order_by("-id")[:1]),
+            )
+            .order_by("start")
+        )
+
+
 class Trip(models.Model):
     route = models.ForeignKey(Route, models.DB_CASCADE, null=True, blank=True)
     inbound = models.BooleanField(default=False)
@@ -412,6 +680,8 @@ class Trip(models.Model):
         "busstops.Operator", models.DB_SET_NULL, null=True, blank=True
     )
     next_trip = models.OneToOneField("Trip", models.DB_SET_NULL, null=True, blank=True)
+
+    objects = TripQuerySet.as_manager()
 
     def __str__(self):
         return format_timedelta(self.start, plus_one=True) or ""
@@ -465,6 +735,98 @@ class Trip(models.Model):
     def get_absolute_url(self):
         return reverse("trip_detail", args=(self.id,))
 
+    def get_trips_in_block(self, date):
+        if not self.route_id:
+            return Trip.objects.none()
+
+        trips = Trip.objects.filter(
+            block=self.block,
+            route__source=self.route.source_id,
+            route__version=self.route.version_id,
+            garage=self.garage_id,
+            operator=self.operator_id,
+        )
+        if self.route.service_id:
+            trips = trips.filter(route__service__isnull=False)
+
+        routes = Route.objects.filter(trip__in=trips).select_related("source")
+
+        calendars = Calendar.objects.active_on(
+            date, [trip.calendar_id for trip in trips]
+        )
+        routes = routes.active_on(date)
+        return trips.filter(calendar__in=calendars, route__in=routes).order_by("start")
+
+    def get_parts(self, date=None) -> list:
+        """Get other parts of this trip (if the service has been split into parts)
+
+        uses the same rules as Timetable (see chain_split_trips),
+        if the service's trip_chaining is set
+        """
+
+        if not (
+            self.route
+            and self.route.service_id
+            and (trip_chaining := self.route.service.trip_chaining) in ("split", "any")
+        ):
+            return [self]
+        loose = trip_chaining == "any"
+
+        # don't match a superseded version of the timetable
+        route_filter = Q(
+            route__service=self.route.service_id, route__source=self.route.source_id
+        )
+        if not loose:
+            route_filter &= Q(route__line_name=self.route.line_name)
+        if self.route.version_id:
+            route_filter &= Q(route__version=self.route.version_id)
+        # no date: the versions current today (or when this trip's version starts)
+        route_ids = list(
+            Route.objects.filter(service=self.route.service_id)
+            .active_on(date or max(localdate(), self.route.start_date or localdate()))
+            .values_list("id", flat=True)
+        )
+        if self.route_id not in route_ids:
+            return [self]
+        route_filter &= Q(route__in=route_ids)
+
+        calendar_filter = Q(calendar=self.calendar_id)
+        # annoyingly, sometimes different parts have different calendar ids
+        # (cos school day variations etc)
+        if date:
+            calendar_filter |= Q(
+                calendar__in=list(
+                    Calendar.objects.active_on(date)
+                    .for_routes(route_ids)
+                    .values_list("id", flat=True)
+                )
+            )
+        elif self.calendar:
+            overlap = Q(calendar__end_date__gte=self.calendar.start_date) | Q(
+                calendar__end_date=None
+            )
+            if self.calendar.end_date:
+                overlap &= Q(calendar__start_date__lte=self.calendar.end_date)
+            days = Q()
+            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+                if getattr(self.calendar, day):
+                    days |= Q(**{f"calendar__{day}": True})
+            calendar_filter |= overlap & days
+
+        trips = Trip.objects.filter(
+            Q(id=self.id)
+            | Q(
+                calendar_filter,
+                route_filter,
+                inbound=self.inbound,
+                operator_id=self.operator_id,
+            )
+        ).for_chaining()
+        for chain in chain_split_trips(list(trips), get_end_stops, loose):
+            if any(trip.id == self.id for trip in chain):
+                return chain
+        return [self]
+
 
 class TripNote(models.Model):
     trip = models.ForeignKey(Trip, models.DB_CASCADE, related_name="tripnote+")
@@ -478,7 +840,7 @@ class TripNote(models.Model):
 class StopTime(models.Model):
     id = models.BigAutoField(primary_key=True)
     trip = models.ForeignKey(Trip, models.DB_CASCADE, db_index=False)
-    stop = models.ForeignKey("busstops.StopPoint", models.DO_NOTHING)
+    stop = models.ForeignKey("busstops.StopPoint", models.DO_NOTHING, db_index=False)
     arrival = SecondsField(null=True, blank=True)
     departure = SecondsField(null=True, blank=True)
     sequence = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -493,7 +855,6 @@ class StopTime(models.Model):
             models.Index(
                 fields=["stop", "departure"],
                 include=["trip"],
-                condition=Q(pick_up=True),
                 name="stoptime_stop_dep_covering",
             ),
             models.Index(
@@ -579,6 +940,17 @@ class ImportTask(models.Model):
     source = models.ForeignKey("busstops.DataSource", models.DB_CASCADE)
     started_at = models.DateTimeField()
     finished_at = models.DateTimeField(null=True, blank=True)
+    # routes = models.PositiveSmallIntegerField(null=True, blank=True)
+    # services = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    def get_absolute_url(self):
+        return reverse(
+            "importtask_detail",
+            args=(
+                self.source_id,
+                self.id,
+            ),
+        )
 
 
 class DataQualityObservation(models.Model):

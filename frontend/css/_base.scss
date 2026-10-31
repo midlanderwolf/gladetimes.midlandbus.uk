@@ -100,6 +100,11 @@ a {
     }
 }
 
+a[href^="https://www.awin1.com/"]::before,
+a[href^="https://nationalexpress.prf.hn/"]::before {
+    content: "(ad) ";
+}
+
 abbr {
     cursor: help;
     font-weight: bold;
@@ -830,6 +835,49 @@ table {
     margin-top: 100px;
 }
 
+.map-button {
+    cursor: pointer;
+    margin: 10px;
+    font: inherit;
+    font-size: 14px;
+}
+
+.map-button,
+.map-select-services {
+    color: var(--text-color);
+    background: var(--background-color);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+    position: absolute;
+    z-index: 3;
+    padding: 5px 7px;
+    border-radius: 4px;
+    border: 0;
+}
+
+.map-button:hover {
+    background: #f2f2f2;
+}
+
+.map-select-services {
+    top: 50px;
+    left: 10px;
+}
+
+.map-select-services label {
+    display: block;
+}
+
+.dark-mode {
+    .map-button,
+    .map-select-services {
+        box-shadow: 0 0 0 2px #fff5;
+    }
+
+    .map-button:hover {
+        background: var(--background-color);
+    }
+}
+
 .sorry {  // "Loading..." or "Sorry no buses tracking"
     display: flex;
     height: 100%;
@@ -1237,12 +1285,18 @@ input:not(:checked) + label {
     height: 132px;
 }
 
+.map-sidebar:only-child {
+    top: 0;
+}
+
 .map-sidebar .navigation {
     overflow: hidden;
     margin: 1em 0;
 }
 
 .trip-timetable {
+    scroll-padding-bottom: 100px;
+
     .breadcrumb {
         border: 0;
         margin: -1em -1em 1em;
@@ -1279,19 +1333,17 @@ input:not(:checked) + label {
         border-bottom: 1px solid var(--border-color);
     }
 
-    .stop-name {
-        width: auto;
-    }
-
     td {
-        border-left: 1px solid var(--border-color);
+        text-align: center;
     }
 
-    td:last-child {
+    th:last-child {
        padding-right: 0;
     }
 
     .stop-name {
+        text-align: left;
+        width: auto;
         border-left: 0;
         padding-left: 0;
 
@@ -1382,12 +1434,6 @@ input:not(:checked) + label {
         margin: 0;
     }
 
-    .credit {
-        font-size: .75em;
-        margin: .3em 0 0;
-        text-align: right;
-    }
-
      // datetime picker
     form {
         display: flex;
@@ -1401,6 +1447,13 @@ input:not(:checked) + label {
 
     .vehicle {
         font-size: .75em;
+
+        a {
+            display: inline;
+            margin: 0;
+            padding: 0;
+            color: inherit;
+        }
     }
 }
 
@@ -1410,11 +1463,6 @@ input:not(:checked) + label {
 .aside td,
 .trip-timetable td {
     font-variant-numeric: tabular-nums;
-}
-
-.stop-popup-times td {
-    border: 0;
-    padding: 0;
 }
 
 .message {
@@ -1564,9 +1612,14 @@ nav {
         position: absolute;
         bottom: 0;
         left: 0;
+        right: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        pointer-events: none;
 
         a {
             color: inherit;
+            pointer-events: auto;
         }
     }
 }
@@ -1661,13 +1714,13 @@ body.has-overlay {
             display: inline;
         }
 
-        &::after {
+        &::before {
             color: var(--border-color-darker);
-            content: '  \00B7  ';
+            content: '  \00B7  '; // bullet
             font-weight: bold;
         }
 
-        &:last-child::after {
+        &:first-child::before {
             display: none;
         }
     }
@@ -1737,6 +1790,15 @@ footer {
             padding: 1.2em .25em;
         }
     }
+}
+
+// USA 'Do Not Sell MY Personal Information'
+#footer:empty {
+    display: none;
+}
+
+#footer a {
+    display: inline!important;
 }
 
 .no-ads {

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def parse_date(date_string: str):
     if date_string:
-        return datetime.strptime(date_string, "%d/%m/%y").date()  # noqa: DTZ007
+        return datetime.strptime(date_string, "%d/%m/%y").date()
 
 
 def download_if_modified(path: str):
@@ -161,13 +161,9 @@ class Command(BaseCommand):
                 status = line["Registration Status"]
                 registration.registration_status = status
 
-                if status == "New" or status == "Registered" or status == "Variation":
+                if status in {"New", "Registered", "Variation"}:
                     registration.registered = True
-                elif (
-                    status == "Admin Cancelled"
-                    or status == "Cancellation"
-                    or status == "Cancelled"
-                ):
+                elif status in {"Admin Cancelled", "Cancellation", "Cancelled"}:
                     registration.registered = False
 
                 registration.start_point = line["start_point"]

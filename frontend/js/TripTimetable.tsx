@@ -17,7 +17,7 @@ export type TripTime = {
   expected_departure_time?: string | null;
   actual_arrival_time?: string | null;
   actual_departure_time?: string;
-  timing_status: string;
+  timing_status: "PTP" | "OTH";
   pick_up?: boolean;
   set_down?: boolean;
   call_condition?: string | null;
@@ -50,59 +50,54 @@ export type Trip = {
   notes?: Note[];
 };
 
+// distance (number of stops) between bus and this stop
+function getDiff(stop: TripTime, vehicle?: Vehicle | null) {
+  if (vehicle?.progress) {
+    if (stop.id && vehicle.progress.id) {
+      return stop.id - vehicle.progress.id;
+    }
+    if (stop.stop.atco_code) {
+      if (vehicle.progress.prev_stop === stop.stop.atco_code) {
+        return 0;
+      }
+      if (vehicle.progress.next_stop === stop.stop.atco_code) {
+        return 1;
+      }
+    }
+  }
+  return null;
+}
+
 function Row({
   stop,
-  onMouseEnter,
+  onHover,
   vehicle,
   aimedColumn,
+  expectedColumn,
   highlightedStop,
+  diff,
+  covered,
+  rowRef,
   first = false,
   last = false,
 }: {
   stop: TripTime;
-  onMouseEnter?: (stop: TripTime) => void;
+  onHover?: (stop: TripTime) => void;
   vehicle?: Vehicle | null;
-  aimedColumn?: boolean;
+  aimedColumn: boolean;
+  expectedColumn: boolean;
   highlightedStop?: string;
+  diff: number | null;
+  covered: boolean; // actual column taken by the previous row's vehicle cell
+  rowRef?: React.Ref<HTMLTableRowElement>;
   first: boolean;
   last: boolean;
 }) {
-  const handlePointerEnter = React.useCallback(
-    (event: React.PointerEvent) => {
-      // on touch there's no hover, so a tap on the stop-name link should follow
-      // it rather than open the popup (otherwise iOS treats the first tap as a
-      // hover and you have to tap a second time). tapping elsewhere on the row
-      // still opens the popup
-      if (
-        event.pointerType === "touch" &&
-        event.target instanceof HTMLElement &&
-        event.target.closest("a")
-      ) {
-        return;
-      }
-      if (onMouseEnter) {
-        if (stop.stop.location) {
-          onMouseEnter(stop);
-        }
-      }
-    },
-    [stop, onMouseEnter],
-  );
-
-  let className: string | undefined;
-
-  let stopName: string | ReactElement = stop.stop.name;
-  if (stop.stop.atco_code) {
-    const url = `/stops/${stop.stop.atco_code}`;
-    if (url === highlightedStop) {
-      className = "is-highlighted";
+  const handlePointerEnter = React.useCallback(() => {
+    if (onHover && stop.stop.location) {
+      onHover(stop);
     }
-    stopName = <a href={url}>{stopName}</a>;
-  }
-
-  if (stop.timing_status && stop.timing_status !== "PTP") {
-    className = className ? `${className} minor` : "minor";
-  }
+  }, [stop, onHover]);
 
   let rowSpan: number | undefined;
   if (
@@ -114,20 +109,44 @@ function Row({
     rowSpan = 2;
   }
 
+  let aimed: ReactElement | null | string = null;
+  if (aimedColumn) {
+    aimed = formatTime(stop.aimed_arrival_time || stop.aimed_departure_time);
+    aimed = <td>{aimed}</td>;
+  }
+
   let actual: string | null | ReactElement | undefined;
   let actualRowSpan = rowSpan;
   let actualDeparture: string | null = null; // shown on the second row, when split
 
-  const liveActual = stop.expected_departure_time || stop.expected_arrival_time; // Irish live departures
+  let expected = null;
+  let expectedDeparture = null;
 
-  if (liveActual) {
-    actual = liveActual.slice(11, 16);
-  } else if (vehicle?.progress && vehicle.progress.id === stop.id) {
-    actual = vehicle.datetime.slice(11, 16);
+  if (expectedColumn) {
+    expected = formatTime(
+      stop.expected_arrival_time || stop.expected_departure_time,
+    );
+    if (rowSpan === 2) {
+      if (
+        stop.expected_departure_time &&
+        stop.expected_departure_time !== stop.expected_arrival_time
+      ) {
+        expected = <td>{expected}</td>;
+        expectedDeparture = <td>{formatTime(stop.expected_departure_time)}</td>;
+      } else {
+        expected = <td rowSpan={2}>{expected}</td>;
+      }
+    } else {
+      expected = <td>{expected}</td>;
+    }
+  }
+
+  if (vehicle?.progress && diff === 0) {
+    actual = <strong>{vehicle.datetime.slice(11, 16)}</strong>;
     if (vehicle.progress.progress > 0.1) {
       actualRowSpan = (actualRowSpan || 1) + 1;
     }
-  } else if (!vehicle?.progress || vehicle.progress.id + 1 !== stop.id) {
+  } else if (diff !== 1 && !covered) {
     // vehicle history
     if (
       rowSpan === 2 &&
@@ -164,30 +183,56 @@ function Row({
     <strong key={note_code}>{note_code}</strong>
   ));
 
-  let aimed: ReactElement | null | string = null;
-  if (aimedColumn) {
-    aimed = formatTime(stop.aimed_arrival_time || stop.aimed_departure_time);
-    aimed = (
-      <td>
-        {aimed}
+  if (caveat || notes?.length) {
+    caveat = (
+      <div className="note">
         {caveat}
         {notes}
-      </td>
+      </div>
     );
+  }
+
+  let className: string | undefined;
+
+  let stopName: string | ReactElement = stop.stop.name;
+  if (stop.call_condition === "notStopping") {
+    stopName = <s>{stopName}</s>;
+  }
+  if (stop.stop.atco_code) {
+    const url = `/stops/${stop.stop.atco_code}`;
+    if (url === highlightedStop) {
+      className = "is-highlighted";
+    }
+    stopName = (
+      <a href={url}>
+        {caveat}
+        {stopName}
+      </a>
+    );
+  }
+
+  if (stop.timing_status === "OTH") {
+    className = className ? `${className} minor` : "minor";
   }
 
   return (
     <React.Fragment>
-      <tr className={className} onPointerEnter={handlePointerEnter}>
+      <tr
+        className={className}
+        onPointerEnter={handlePointerEnter}
+        ref={rowRef}
+      >
         <td className="stop-name" rowSpan={rowSpan}>
           {stopName}
         </td>
         {aimed}
+        {expected}
         {actual}
       </tr>
       {rowSpan ? (
         <tr className={className} onPointerEnter={handlePointerEnter}>
           <td>{formatTime(stop.aimed_departure_time)}</td>
+          {expectedDeparture}
           {actualDeparture ? <td>{actualDeparture}</td> : null}
         </tr>
       ) : null}
@@ -197,62 +242,80 @@ function Row({
 
 const TripTimetable = React.memo(function TripTimetable({
   trip,
-  onMouseEnter,
+  onHover,
   vehicle,
   highlightedStop,
 }: {
   trip: Trip;
-  onMouseEnter?: (stop: TripTime) => void;
+  onHover?: (stop: TripTime) => void;
   vehicle?: Vehicle | null;
   highlightedStop?: string;
 }) {
-  const [showEarlierStops, setShowEarlierStops] = React.useState(false);
-
-  const aimedColumn: boolean = trip.times?.some(
-    (item: TripTime) => item.aimed_arrival_time || item.aimed_departure_time,
+  const aimedColumn: boolean = trip.times.some(
+    (item) => item.aimed_arrival_time || item.aimed_departure_time,
   );
 
-  let actualColumn: string | null = null;
-  if (
-    trip.times?.some(
-      (item) => item.expected_arrival_time || item.expected_departure_time,
-    )
-  ) {
-    actualColumn = "Ex\u00ADpected";
-  } else if (vehicle || trip.times.some((item) => item.actual_departure_time)) {
-    actualColumn = "Actual";
-  }
+  const expectedColumn: boolean = trip.times.some(
+    (item) => item.expected_arrival_time || item.expected_departure_time,
+  );
 
-  let earlierStops = false;
+  const actualColumn =
+    vehicle || trip.times.some((item) => item.actual_departure_time);
 
-  let times = trip.times;
-  if (!showEarlierStops && vehicle && vehicle.progress) {
-    const index = times.findIndex((item) => item.id === vehicle.progress?.id);
-    if (index > 0) {
-      times = times.slice(index);
-      earlierStops = true;
-    }
-  }
+  const times = trip.times;
   const indexOfLastRow = times.length - 1;
+  const diffs = times.map((stop) => getDiff(stop, vehicle));
+  const vehicleIndex = diffs.indexOf(0);
+  const coveredIndex =
+    vehicleIndex !== -1 && vehicle?.progress && vehicle.progress.progress > 0.1
+      ? vehicleIndex + 1
+      : -1;
+
+  const tableRef = React.useRef<HTMLTableElement>(null);
+  const progressRowRef = React.useRef<HTMLTableRowElement>(null);
+
+  // scroll a stop clicked on the map into view (but not the initial one, from
+  // the referrer)
+  const prevHighlightedStop = React.useRef(highlightedStop);
+  React.useEffect(() => {
+    if (highlightedStop === prevHighlightedStop.current) {
+      return;
+    }
+    prevHighlightedStop.current = highlightedStop;
+    if (highlightedStop) {
+      tableRef.current
+        ?.querySelector(".is-highlighted")
+        ?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedStop]);
+
+  // on navigating to a new trip, scroll to the vehicle's progress (once known),
+  // or else to the top
+  const scrolledToTop = React.useRef<Trip>(undefined);
+  const scrolledToProgress = React.useRef<Trip>(undefined);
+  const progressKnown = vehicleIndex !== -1;
+  React.useLayoutEffect(() => {
+    if (scrolledToProgress.current === trip) {
+      return;
+    }
+    if (progressKnown && progressRowRef.current) {
+      scrolledToProgress.current = trip;
+      progressRowRef.current.scrollIntoView({ block: "center" });
+    } else if (scrolledToTop.current !== trip) {
+      scrolledToTop.current = trip;
+      tableRef.current?.closest(".map-sidebar")?.scrollTo(0, 0);
+    }
+  }, [trip, progressKnown]);
 
   return (
     <React.Fragment>
-      {earlierStops || showEarlierStops ? (
-        <label>
-          <input
-            type="checkbox"
-            checked={showEarlierStops}
-            onChange={() => setShowEarlierStops(!showEarlierStops)}
-          />
-          {" Show previous stops"}
-        </label>
-      ) : null}
-      <table>
+      <table ref={tableRef}>
         <thead>
           <tr>
             <th className="stop-name" />
             {aimedColumn ? <th>Sched&shy;uled</th> : null}
-            {actualColumn ? <th>{actualColumn}</th> : null}
+            {expectedColumn ? <th>Ex&shy;pected</th> : null}
+            {actualColumn ? <th>Actual</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -260,11 +323,15 @@ const TripTimetable = React.memo(function TripTimetable({
             <Row
               key={stop.id || i}
               aimedColumn={aimedColumn}
+              expectedColumn={expectedColumn}
               stop={stop}
-              onMouseEnter={onMouseEnter}
+              onHover={onHover}
               vehicle={vehicle}
               highlightedStop={highlightedStop}
-              first={i === 0 && !earlierStops}
+              diff={diffs[i]}
+              covered={i === coveredIndex}
+              rowRef={i === vehicleIndex ? progressRowRef : undefined}
+              first={i === 0}
               last={i === indexOfLastRow}
             />
           ))}

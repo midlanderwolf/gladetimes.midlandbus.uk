@@ -5,12 +5,20 @@ import zipfile
 from datetime import datetime
 
 import requests
+from django.db import transaction
 from django.db.backends.postgresql.psycopg_any import DateTimeTZRange
 from django.db.models import Q
+from django.utils.dateparse import parse_duration
 
-from busstops.models import DataSource, Operator, Service, StopPoint
+from busstops.models import AdminArea, DataSource, Operator, Service, StopPoint
 
-from .models import Consequence, Link, Situation, ValidityPeriod
+from .models import (
+    Consequence,
+    Link,
+    Situation,
+    ValidityPeriod,
+    delete_old_situations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +78,22 @@ def handle_item(item: ET.Element, sources: dict, current_situations: dict):
 
     assert item.findtext("Progress") == "open"
 
-    reason = item.findtext("MiscellaneousReason")
+    reason = (
+        item.findtext("MiscellaneousReason")
+        or item.findtext("EquipmentReason")
+        or item.findtext("EnvironmentReason")
+        or item.findtext("PersonnelReason")
+    )
     if reason:
         situation.reason = reason
 
     situation.participant_ref = item.find("ParticipantRef").text
     situation.summary = item.find("Summary").text
     situation.text = item.find("Description").text
+    if situation.text == situation.summary:
+        situation.text = ""
+    else:
+        situation.text = situation.text.removeprefix(f"{situation.summary}\n\n")
     situation.save()
 
     for i, link_element in enumerate(item.findall("InfoLinks/InfoLink/Uri")):
@@ -110,9 +127,38 @@ def handle_item(item: ET.Element, sources: dict, current_situations: dict):
             except Consequence.DoesNotExist:
                 pass
 
+        had_places = "<AffectedPlace>" in consequence.data
+
         consequence.text = consequence_element.find("Advice/Details").text
         consequence.data = ET.tostring(consequence_element, encoding="unicode")
+        consequence.severity = consequence_element.findtext("Severity") or ""
+        consequence.vehicle_mode = (
+            consequence_element.findtext("Affects/Networks/AffectedNetwork/VehicleMode")
+            or ""
+        )
+        consequence.direction = (
+            consequence_element.findtext(
+                "Affects/Networks/AffectedNetwork/AffectedLine/Direction/DirectionRef"
+            )
+            or ""
+        )
+        if delay := consequence_element.findtext("Delays/Delay"):
+            consequence.delay = parse_duration(delay)
+        else:
+            consequence.delay = None
         consequence.save()
+
+        area_refs = [
+            place.findtext("PlaceRef")
+            for place in consequence_element.findall("Affects/Places/AffectedPlace")
+            if place.findtext("PlaceCategory") == "AdministrativeArea"
+        ]
+        if area_refs or had_places:
+            consequence.admin_areas.set(
+                AdminArea.objects.filter(
+                    id__in=[int(ref) for ref in area_refs if ref.isdigit()]
+                )
+            )
 
         stops = consequence_element.findall("Affects/StopPoints/AffectedStopPoint")
         stops = [stop.find("StopPointRef").text for stop in stops]
@@ -203,13 +249,14 @@ def bods_disruptions():
     }
 
     for element in elements:
-        situations.append(handle_item(element, sources, current_situations))
+        situation_number = element.findtext("SituationNumber")
+        try:
+            with transaction.atomic():
+                situations.append(handle_item(element, source, current_situations))
+        except Exception:
+            logger.exception("situation %s", situation_number)
+            # keep showing the previous version
+            if situation := current_situations.get(situation_number):
+                situations.append(situation.id)
 
-    stale_sources = set(sources.values())
-    if legacy_source := DataSource.objects.filter(name="Bus Open Data").first():
-        stale_sources.add(legacy_source)
-
-    for source in stale_sources:
-        source.situation_set.filter(current=True).exclude(id__in=situations).update(
-            current=False
-        )
+    delete_old_situations(source, situations)

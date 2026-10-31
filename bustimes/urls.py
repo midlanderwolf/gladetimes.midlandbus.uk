@@ -11,6 +11,11 @@ urlpatterns = [
     path("services/<slug>/debug", views.ServiceDebugView.as_view()),
     path("sources", views.SourceListView.as_view()),
     path("sources/<int:pk>", views.SourceDetailView.as_view(), name="source_detail"),
+    path(
+        "sources/<int:source_id>/updates/<int:pk>",
+        views.ImportTaskDetailView.as_view(),
+        name="importtask_detail",
+    ),
     re_path(
         r"^sources/(?P<source>\d+)/routes/(?P<code>.*)",
         views.route_xml,
@@ -23,10 +28,12 @@ urlpatterns = [
     path("trips/<int:pk>/block", views.trip_block, name="block_detail"),
     path("trip_updates", views.trip_updates),
     path("trip_updates/<slug:feed_name>.json", views.trip_updates_json),
+    path("routelinks/snap", views.snap),
     path(
         "routelinks/<int:pk>",
         views.route_link_view,
         name="routelink_detail",
     ),
     path("upload", views.upload_gtfs),
+    path("bank_holidays", views.bank_holidays),
 ]

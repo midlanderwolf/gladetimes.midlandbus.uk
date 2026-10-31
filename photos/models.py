@@ -7,6 +7,15 @@ from imagekit.specs import ImageSpec
 
 from .processors import SmartCrop
 
+LICENSES = {
+    "4": ("CC BY 2.0", "https://creativecommons.org/licenses/by/2.0/"),
+    "5": ("CC BY-SA 2.0", "https://creativecommons.org/licenses/by-sa/2.0/"),
+    "6": ("CC BY-ND 2.0", "https://creativecommons.org/licenses/by-nd/2.0/"),
+    "11": ("CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/"),
+    "12": ("CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/"),
+    "13": ("CC BY-ND 4.0", "https://creativecommons.org/licenses/by-nd/4.0/"),
+}
+
 
 class SmartSpec(ImageSpec):
     """An image spec that crops around the vehicle, if we've detected one.
@@ -64,7 +73,9 @@ class Photo(models.Model):
     credit = models.CharField(max_length=255, blank=True)
     caption = models.CharField(max_length=255, blank=True)
     url = models.URLField(blank=True, verbose_name="URL")
-    license = models.CharField(null=True, blank=True)
+    license = models.CharField(
+        null=True, blank=True, choices=[(a, b) for a, (b, _) in LICENSES.items()]
+    )
     taken_at = models.DateTimeField(null=True, blank=True)
     location = models.PointField(null=True, blank=True)
     metadata = models.JSONField(blank=True, default=dict)
@@ -89,6 +100,9 @@ class Photo(models.Model):
 
     def __str__(self):
         return self.caption
+
+    def get_license(self):
+        return LICENSES.get(self.license)
 
     def get_absolute_url(self):
         if vehicle := self.vehicles.first():

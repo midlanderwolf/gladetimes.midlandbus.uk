@@ -1,12 +1,12 @@
-import os
 from datetime import date, datetime, timedelta, timezone
 
-from django.test import TestCase, override_settings
-from vcr import use_cassette
+from django.core.exceptions import ValidationError
+from django.test import TestCase
 
-from busstops.models import DataSource, Service
+from busstops.models import DataSource, Service, StopPoint
 from vehicles.models import Livery, Vehicle, VehicleCode
 
+from .management.commands import import_transxchange
 from .models import (
     Calendar,
     CalendarDate,
@@ -17,8 +17,11 @@ from .models import (
     Trip,
     Version,
 )
-from .utils import get_routes
 from .views import stop_time_json
+
+
+def active_routes(routes, when):
+    return Route.objects.filter(id__in=[route.id for route in routes]).active_on(when)
 
 
 class BusTimesTest(TestCase):
@@ -28,32 +31,9 @@ class BusTimesTest(TestCase):
         v = Vehicle.objects.create(code="LTZ1243", reg="LTZ1243")
         VehicleCode.objects.create(vehicle=v, code="TFLO:LTZ1243", scheme="BODS")
 
-        with (
-            override_settings(TFL={}),
-            use_cassette(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "vcr",
-                    "tfl_vehicle.yaml",
-                ),
-                decode_compressed_response=True,
-            ),
-        ):
-            with self.assertNumQueries(5):
-                response = self.client.get("/vehicles/tfl/LTZ1243")
-
-            self.assertEqual("LTZ1243", response.context["object"].reg)
-            self.assertContains(response, "Old Ford Road")
-            self.assertContains(response, '"OB"')
-            self.assertContains(response, '"2021-03-17T18:56:00Z"')
-
-            response = self.client.get("/vehicles/tfl/LJ53NHP")
-            self.assertEqual(response.status_code, 404)
-
-            # Vehicle.objects.create(code="LJ53NHP", reg="LJ53NHP")
-            # cassette.rewind()
-            # response = self.client.get("/vehicles/tfl/LJ53NHP")
-            # self.assertContains(response, "LJ53 NHP")
+        with self.assertNumQueries(1):
+            response = self.client.get("/vehicles/tfl/LTZ1243")
+        self.assertRedirects(response, f"/vehicles/{v.slug}")
 
     def test_calendar(self):
         calendar = Calendar(
@@ -225,6 +205,73 @@ class BusTimesTest(TestCase):
             json["aimed_departure_time"].isoformat(), "2026-09-18T13:30:00+01:00"
         )
 
+    def test_get_parts(self):
+        source = DataSource.objects.create(name="FECS")
+        service = Service.objects.create(line_name="1")
+        route_1 = Route.objects.create(
+            source=source, service=service, line_name="1", code="1", service_code="A"
+        )
+        route_2 = Route.objects.create(
+            source=source, service=service, line_name="1", code="2", service_code="B"
+        )
+        weekdays = Calendar.objects.create(
+            mon=True, tue=True, wed=True, thu=True, fri=True, start_date="2026-01-01"
+        )
+        mondays = Calendar.objects.create(mon=True, start_date="2026-01-01")
+        stops = StopPoint.objects.bulk_create(
+            [StopPoint(atco_code=code, active=True) for code in "abc"]
+        )
+        trip_1 = Trip.objects.create(
+            route=route_1,
+            calendar=weekdays,
+            start=timedelta(hours=9),
+            end=timedelta(hours=9, minutes=30),
+        )
+        trip_2 = Trip.objects.create(
+            route=route_2,
+            calendar=mondays,
+            start=timedelta(hours=9, minutes=35),
+            end=timedelta(hours=10),
+        )
+        StopTime.objects.bulk_create(
+            [
+                StopTime(trip=trip_1, stop=stops[0], departure=trip_1.start),
+                StopTime(trip=trip_1, stop=stops[1], arrival=trip_1.end),
+                StopTime(trip=trip_2, stop=stops[1], departure=trip_2.start),
+                StopTime(trip=trip_2, stop=stops[2], arrival=trip_2.end),
+            ]
+        )
+        monday = date(2026, 10, 12)
+
+        def get_parts():
+            trip = Trip.objects.select_related("calendar", "route__service").get(
+                id=trip_1.id
+            )
+            with self.assertNumQueries(3 if trip.route.service.trip_chaining else 0):
+                return trip.get_parts(monday)
+
+        self.assertEqual(get_parts(), [trip_1])
+
+        # detected on import (but not merged, because different calendars)
+        command = import_transxchange.Command()
+        command.source = source
+        self.assertEqual(command.merge_split_trips(service.id), "split")
+        Service.objects.filter(id=service.id).update(trip_chaining="split")
+        self.assertEqual(get_parts(), [trip_1, trip_2])
+
+        # route number and journey number change, same registration
+        Route.objects.filter(id=route_2.id).update(line_name="2", service_code="A")
+        self.assertEqual(command.merge_split_trips(service.id), "")
+        self.assertEqual(get_parts(), [trip_1])
+        Service.objects.filter(id=service.id).update(trip_chaining="any")
+        self.assertEqual(get_parts(), [trip_1, trip_2])
+
+        # same calendar - merged into one trip
+        Route.objects.filter(id=route_2.id).update(line_name="1", service_code="B")
+        Trip.objects.filter(id=trip_2.id).update(calendar=weekdays)
+        self.assertEqual(command.merge_split_trips(service.id), "merge")
+        self.assertEqual(Trip.objects.get().stoptime_set.count(), 3)
+
     def test_get_routes(self):
         sources = DataSource.objects.bulk_create(
             [
@@ -304,24 +351,24 @@ class BusTimesTest(TestCase):
 
         # maximum revision number for each source
         self.assertEqual(
-            list(get_routes(routes[:5], when=date(2022, 4, 4))), routes[1:5]
+            list(active_routes(routes[:5], when=date(2022, 4, 4))), routes[1:5]
         )
 
         # Ticketer filename - treat '5B' and '5BH' despite having the same service_code
         self.assertEqual(
-            list(get_routes(routes[5:7], when=date(2022, 4, 4))), routes[5:7]
+            list(active_routes(routes[5:7], when=date(2022, 4, 4))), routes[5:7]
         )
 
         # # from_date - include future versions
         # self.assertEqual(
-        #     get_routes(routes[2:4], from_date=date(2022, 4, 3)), routes[2:4]
+        #     active_routes(routes[2:4], from_date=date(2022, 4, 3)), routes[2:4]
         # )
         # self.assertEqual(
-        #     get_routes(routes[2:4], from_date=date(2022, 4, 4)), routes[2:4]
+        #     active_routes(routes[2:4], from_date=date(2022, 4, 4)), routes[2:4]
         # )
         # # ignore old versions:
         # self.assertEqual(
-        #     get_routes(routes[2:4], from_date=date(2022, 4, 5)), routes[3:4]
+        #     active_routes(routes[2:4], from_date=date(2022, 4, 5)), routes[3:4]
         # )
 
         routes = [
@@ -350,9 +397,11 @@ class BusTimesTest(TestCase):
         Route.objects.bulk_create(routes)
 
         self.assertQuerySetEqual(
-            get_routes(routes, when=date(2023, 2, 22)), routes[1:2]
+            active_routes(routes, when=date(2023, 2, 22)), routes[1:2]
         )
-        self.assertQuerySetEqual(get_routes(routes, when=date(2023, 3, 22)), routes[2:])
+        self.assertQuerySetEqual(
+            active_routes(routes, when=date(2023, 3, 22)), routes[2:]
+        )
 
         # a soft-deleted route (no service) with a higher revision number
         # should not suppress the current route
@@ -364,7 +413,7 @@ class BusTimesTest(TestCase):
             start_date=date(2023, 3, 5),
         )
         self.assertQuerySetEqual(
-            get_routes(routes, when=date(2023, 3, 22)),
+            active_routes(routes, when=date(2023, 3, 22)),
             routes[2:],
         )
 
@@ -400,7 +449,7 @@ class BusTimesTest(TestCase):
         ]
         Route.objects.bulk_create(routes)
 
-        gotten_routes = get_routes(routes, when=date(2023, 2, 12))
+        gotten_routes = active_routes(routes, when=date(2023, 2, 12))
         self.assertEqual(len(gotten_routes), 1)
         self.assertEqual(gotten_routes[0].code, "tfl_86-683-_-y05-60197")
         self.assertEqual(gotten_routes[0], routes[1])
@@ -453,10 +502,10 @@ class BusTimesTest(TestCase):
             ]
         )
 
-        self.assertQuerySetEqual(get_routes(routes, date(2024, 4, 1)), [])
-        self.assertQuerySetEqual(get_routes(routes, date(2024, 4, 29)), [routes[2]])
-        self.assertQuerySetEqual(get_routes(routes, date(2024, 5, 6)), [routes[0]])
-        self.assertQuerySetEqual(get_routes(routes, date(2024, 5, 14)), [routes[1]])
+        self.assertQuerySetEqual(active_routes(routes, date(2024, 4, 1)), [])
+        self.assertQuerySetEqual(active_routes(routes, date(2024, 4, 29)), [routes[2]])
+        self.assertQuerySetEqual(active_routes(routes, date(2024, 5, 6)), [routes[0]])
+        self.assertQuerySetEqual(active_routes(routes, date(2024, 5, 14)), [routes[1]])
 
         # two versions covering the same dates - the one with the higher
         # timestamp in its name wins (most recently published .zip)
@@ -481,7 +530,7 @@ class BusTimesTest(TestCase):
             ]
         )
         self.assertQuerySetEqual(
-            get_routes(routes + extra_routes, date(2024, 4, 29)), [extra_routes[0]]
+            active_routes(routes + extra_routes, date(2024, 4, 29)), [extra_routes[0]]
         )
 
     def test_garage(self):
@@ -489,3 +538,27 @@ class BusTimesTest(TestCase):
         self.assertEqual(str(garage), "Lowestoft Town")
         garage.name = "LOW"
         self.assertEqual(str(garage), "LOW")
+
+    def test_timetable_data_source_search(self):
+        source = TimetableDataSource(name="Lynx")
+
+        for search in (
+            "",
+            "LYNX",
+            "noc=LYNX",
+            "noc=LYNX&adminArea=092",
+            "search=Lynx",
+        ):
+            source.search = search
+            source.full_clean()
+
+        for search, error in (
+            ("lynx", "'lynx' is not a NOC or a query string"),
+            ("LYNXES", "'LYNXES' is not a NOC or a query string"),
+            ("nocc=LYNX&noc=LYNX", "nocc is not one of"),
+            ("Search=lynx", "Search is not one of"),
+        ):
+            source.search = search
+            with self.assertRaises(ValidationError) as context:
+                source.full_clean()
+            self.assertIn(error, context.exception.message_dict["search"][0])

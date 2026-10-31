@@ -4,8 +4,10 @@ import routeStopMarkerCircle from "data-url:../route-stop-marker-circle.png";
 import routeStopMarkerDark from "data-url:../route-stop-marker-dark.png";
 import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
-import stopMarkerCircle from "data-url:../stop-marker-circle.png";
-import { captureException, ErrorBoundary } from "@sentry/react";
+import osmBright from "url:../osm_bright.json";
+import "maplibre-gl/dist/maplibre-gl.css";
+import "./maps.css";
+import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
 import {
   type FilterSpecification,
   type Map as MapLibreMap,
@@ -30,6 +32,15 @@ import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
 import { ErrorFallback } from "./LoadingSorry";
 
 setWorkerUrl(maplibreWorkerUrl);
+
+// navigating away kills the worker, which maplibre reports as "Worker failed to load"
+let pageHidden = false;
+window.addEventListener("pagehide", () => {
+  pageHidden = true;
+});
+window.addEventListener("pageshow", () => {
+  pageHidden = false;
+});
 
 const imagesByName: { [imageName: string]: string } = {
   "stop-marker": stopMarker,
@@ -250,7 +261,11 @@ export default function BusTimesMap(
           mapStyle={mapStyleURL}
           RTLTextPlugin={""}
           attributionControl={false}
-          onError={(e) => captureException(e)}
+          onError={(e) => {
+            if (!pageHidden) {
+              captureException(e.error);
+            }
+          }}
           onContextMenu={onContextMenu}
         >
           <NavigationControl showCompass={false} />

@@ -3,6 +3,8 @@ import json
 import zipfile
 from datetime import datetime, timedelta
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError
@@ -11,7 +13,7 @@ from django.utils import timezone
 from huey import crontab
 from huey.contrib.djhuey import db_periodic_task, db_task
 
-from busstops.models import DataSource, Operator
+from busstops.models import DataSource, Operator, Service
 
 from .management.commands import import_bod_avl
 from .models import (
@@ -30,6 +32,19 @@ def get_bod_avl_command(source: DataSource):
     command.source = source
     command.source_name = source.name
     return command
+
+
+SIRI_CHANNEL = "bod_avl.siri"
+
+
+def queue_siri_post(uuid, data: dict):
+    """for the import_bod_avl --siri worker, or else huey"""
+    if channel_layer := get_channel_layer("bod_avl"):
+        async_to_sync(channel_layer.send)(
+            SIRI_CHANNEL, {"uuid": str(uuid), "data": data}
+        )
+    else:
+        handle_siri_post(uuid, data)
 
 
 @db_task()
@@ -83,7 +98,7 @@ def handle_siri_post(uuid, data: dict):
             now - timestamp,
             total_items,
             len(changed_items) + len(changed_journey_items),
-            timezone.now() - now,
+            (timezone.now() - now).total_seconds(),
         )
     )
     stats = stats[-50:]
@@ -91,7 +106,17 @@ def handle_siri_post(uuid, data: dict):
 
 
 @db_task()
-def log_vehicle_journey(service, data, time, destination, source_name, url, trip_id):
+def log_vehicle_journey(
+    *,
+    data: dict,
+    source_name: str,
+    url: str,
+    service: int | None = None,
+    time=None,
+    date=None,
+    destination: str = "",
+    trip_id: int | None = None,
+):
     operator_ref = data.get("OperatorRef")
     if operator_ref == "SWB":  # Stagecoach
         return
@@ -164,7 +189,8 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
             scheme=source_name, code=vehicle_code_code, vehicle=vehicle
         )
 
-    time = datetime.fromisoformat(time)
+    if isinstance(time, str):
+        time = datetime.fromisoformat(time)
 
     if last_journey := vehicle.latest_journey:
         last_time = last_journey.datetime
@@ -185,7 +211,9 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
     destination = destination or ""
     route_name = data.get("LineName") or data.get("LineRef")
 
-    date = timezone.localdate(time)
+    if not date:
+        date = timezone.localdate(time)
+
     journeys = vehicle.vehiclejourney_set.filter(date=date)
 
     existing = VehicleJourney.objects.filter(
@@ -210,6 +238,11 @@ def log_vehicle_journey(service, data, time, destination, source_name, url, trip
         destination=destination,
         trip_id=trip_id,
     )
+
+    if operator_ref == "FLIX" and not service:
+        journey.service = Service.objects.filter(
+            line_name=f"UK{route_name}", operator=operator_ref, current=True
+        ).first()
 
     if existing:  # FlixBus journey with no vehicle id yet
         journey.id = existing.id

@@ -1,11 +1,8 @@
-import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 import folium
-import requests
-from django.conf import settings
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required, permission_required
 from django.core.cache import cache
@@ -13,13 +10,10 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.storage import storages
 from django.db.models import (
     Count,
-    F,
-    FilteredRelation,
     Prefetch,
-    Q,
     prefetch_related_objects,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Now, TruncDate
 from django.http import (
     FileResponse,
     Http404,
@@ -43,18 +37,23 @@ from busstops.models import (
     Locality,
     Operator,
     Service,
-    StopArea,
     StopPoint,
 )
 from departures import avl, gtfsr, live
+from vehicles import rtpi
 from vehicles.forms import DateForm, TripUpdatesFeedForm
 from vehicles.models import Vehicle, VehicleJourney
-from vehicles.rtpi import add_progress_and_delay
 
-from .forms import UploadGTFSForm
+from . import snap as snap_utils
+from .formatting import format_timedelta
+from .forms import (
+    RouteLinkFormSet,
+    SaveRouteLinksForm,
+    SnapForm,
+    UploadGTFSForm,
+)
 from .gtfs_utils import handle_gtfs_upload
-from .models import Route, RouteLink, StopTime, Trip
-from .utils import get_calendars, get_other_trips_in_block
+from .models import BankHolidayDate, ImportTask, Route, RouteLink, Trip
 
 
 class ServiceDebugView(DetailView):
@@ -132,6 +131,123 @@ def route_link_view(request, pk):
     return HttpResponse(m.get_root().render())
 
 
+@staff_member_required
+def snap(request):
+    if request.method == "POST":
+        form = SaveRouteLinksForm(request.POST)
+        formset = RouteLinkFormSet(request.POST)
+        if form.is_valid() and formset.is_valid():
+            service = form.cleaned_data["service"]
+            route_links = [
+                RouteLink(
+                    service=service,
+                    from_stop_id=data["from_stop"],
+                    to_stop_id=data["to_stop"],
+                    geometry=data["geometry"],
+                    override=True,
+                )
+                for data in formset.cleaned_data
+                if data["save"]
+            ]
+            RouteLink.objects.bulk_create(
+                route_links,
+                update_conflicts=True,
+                update_fields=["geometry", "override"],
+                unique_fields=["service", "from_stop", "to_stop"],
+            )
+            return render(
+                request, "snap.html", {"service": service, "saved": route_links}
+            )
+        return HttpResponseBadRequest()
+
+    form = SnapForm(request.GET or None)
+    context = {"form": form}
+    if not form.is_valid():
+        return render(request, "snap.html", context)
+
+    journey = form.cleaned_data["journey"]
+    service = form.cleaned_data["service"]
+
+    points = snap_utils.get_points(journey)
+    coords, errors = snap_utils.map_match(points) if len(points) > 1 else ([], [])
+    proposals, problems = (
+        snap_utils.propose(journey, service, coords) if len(coords) > 1 else ([], [])
+    )
+
+    colours = ("#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#008080")
+    m = folium.Map(tiles="Stadia.OSMBright")
+    folium.PolyLine(
+        [(lat, lon) for lon, lat, _ in points], color="#888", weight=1, dash_array="2 4"
+    ).add_to(m)
+    for lon, lat, timestamp in points:
+        folium.CircleMarker(
+            (lat, lon),
+            radius=2,
+            color="#888",
+            tooltip=datetime.fromtimestamp(timestamp).strftime("%H:%M:%S"),
+        ).add_to(m)
+    for i, proposal in enumerate(proposals):
+        proposal.colour = colours[i % len(colours)]
+        if proposal.existing:
+            folium.PolyLine(
+                [(y, x) for x, y in proposal.existing.geometry],
+                color="#000",
+                weight=2,
+                dash_array="6 6",
+                tooltip=f"{i + 1}. existing",
+            ).add_to(m)
+        folium.PolyLine(
+            [(y, x) for x, y in proposal.geometry],
+            color=proposal.colour,
+            weight=5,
+            opacity=0.7,
+            tooltip=f"{i + 1}. {proposal.from_stop} → {proposal.to_stop}",
+        ).add_to(m)
+    stops = {p.from_stop for p in proposals} | {p.to_stop for p in proposals}
+    for stop in stops:
+        folium.CircleMarker(
+            (stop.latlong.y, stop.latlong.x),
+            radius=5,
+            color="#000",
+            fill=True,
+            fill_color="#fff",
+            fill_opacity=1,
+            tooltip=f"{stop} ({stop.atco_code})",
+        ).add_to(m)
+    if points:
+        m.fit_bounds(
+            [
+                (min(p[1] for p in points), min(p[0] for p in points)),
+                (max(p[1] for p in points), max(p[0] for p in points)),
+            ]
+        )
+
+    formset = RouteLinkFormSet(
+        initial=[
+            {
+                "save": proposal.checked,
+                "from_stop": proposal.from_stop.atco_code,
+                "to_stop": proposal.to_stop.atco_code,
+                "geometry": proposal.geometry.wkt,
+            }
+            for proposal in proposals
+        ]
+    )
+    for proposal, link_form in zip(proposals, formset):
+        proposal.form = link_form
+
+    context.update(
+        journey=journey,
+        service=service,
+        save_form=SaveRouteLinksForm(initial={"service": service}),
+        formset=formset,
+        proposals=proposals,
+        problems=errors + problems,
+        map=mark_safe(m._repr_html_()),
+    )
+    return render(request, "snap.html", context)
+
+
 class SourceListView(ListView):
     model = DataSource
     queryset = (
@@ -149,6 +265,10 @@ class SourceDetailView(DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
 
+        context["updates"] = self.object.importtask_set.annotate(
+            observations=Count("dataqualityobservation")
+        )
+
         context["routes"] = (
             self.object.route_set.filter(service__isnull=False)
             .order_by("service_code", "line_name", "start_date", "revision_number")
@@ -157,11 +277,29 @@ class SourceDetailView(DetailView):
             )
             .select_related("service", "version")
         )
+        if not context["routes"]:
+            raise Http404
 
         context["breadcrumb"] = [
             {"get_line_name_and_brand": "Sources", "get_absolute_url": "/sources"}
         ]
 
+        return context
+
+
+class ImportTaskDetailView(DetailView):
+    model = ImportTask
+
+    def get_queryset(self):
+        return super().get_queryset().filter(source_id=self.kwargs["source_id"])
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        context["breadcrumb"] = [
+            {"get_line_name_and_brand": "Sources", "get_absolute_url": "/sources"},
+            self.object.source,
+        ]
         return context
 
 
@@ -173,7 +311,7 @@ def open_source_file(source, code):
     try:
         return storages["archive"].open(source.get_archive_path()), code
     except FileNotFoundError:
-        raise Http404(f"{source} hasn't been archived")
+        raise Http404(f"{source} hasn't been archived") from None
 
 
 @require_GET
@@ -211,7 +349,7 @@ def route_xml(request, source, code=""):
     try:
         return FileResponse(archive.open(code), content_type="application/xml")
     except KeyError as e:
-        raise Http404(e)
+        raise Http404(e) from None
 
 
 def stop_time_json(stop_time, date) -> dict:
@@ -239,7 +377,6 @@ def stop_time_json(stop_time, date) -> dict:
         )
 
     return {
-        "stop_time": stop_time,
         "id": stop_time.id,
         "trip_id": stop_time.trip_id,
         "service": {
@@ -261,6 +398,7 @@ def stop_time_json(stop_time, date) -> dict:
 def stop_times_json(request, atco_code):
     stop = get_object_or_404(StopPoint, atco_code__iexact=atco_code)
     times = []
+    dates = []
 
     if "when" in request.GET:
         try:
@@ -283,9 +421,7 @@ def stop_times_json(request, atco_code):
     if now:
         vehicle_locations = avl.get_tracking(stop, services)
         if vehicle_locations:
-            by_trip = {
-                item["trip_id"]: item for item in vehicle_locations if "trip_id" in item
-            }
+            by_trip = rtpi.by_trip_id(vehicle_locations)
 
     try:
         limit = int(request.GET["limit"])
@@ -314,6 +450,7 @@ def stop_times_json(request, atco_code):
         "trip__destination__locality", "trip__route__service", "trip__operator"
     )[:limit]:
         times.append(stop_time_json(stop_time, yesterday_date))
+        dates.append((stop_time, yesterday_date))
 
     today = when.date()
 
@@ -324,40 +461,23 @@ def stop_times_json(request, atco_code):
         for stop_time in stop_times.select_related(
             "trip__destination__locality", "trip__route__service", "trip__operator"
         )[:limit]:
-            times.append(stop_time_json(stop_time, today))
+            # (might have started yesterday)
+            times.append(stop_time_json(stop_time, stop_time.date))
+            dates.append((stop_time, stop_time.date))
 
     stop_times = departures.get_times(today, time_since_midnight)
     for stop_time in stop_times.select_related(
         "trip__destination__locality", "trip__route__service", "trip__operator"
     )[:limit]:
         times.append(stop_time_json(stop_time, today))
+        dates.append((stop_time, today))
 
     if by_trip:
-        prefetch_related_objects(
-            [time["stop_time"].trip for time in times if time["trip_id"] in by_trip],
-            Prefetch(
-                "stoptime_set",
-                StopTime.objects.select_related("stop").filter(
-                    stop__latlong__isnull=False
-                ),
-            ),
-        )
-
-        for time in times:
-            if time["trip_id"] in by_trip:
-                item = by_trip[time["trip_id"]]
-
+        for time, (stop_time, date) in zip(times, dates):
+            item = by_trip.get(time["trip_id"])
+            if item and item["date"] == str(date):
                 if (time["aimed_arrival_time"] or time["aimed_departure_time"]) < when:
                     time["overdue"] = True
-
-                if "delay" not in item or (
-                    "overdue" in time and "progress" not in item
-                ):
-                    add_progress_and_delay(
-                        item,
-                        time["stop_time"],
-                        tzinfo=time["stop_time"].trip.route.timezone,
-                    )
 
                 if "delay" not in item:
                     continue
@@ -367,11 +487,7 @@ def stop_times_json(request, atco_code):
                 if (
                     "overdue" not in time
                     or progress
-                    and (
-                        progress["id"] < time["id"]
-                        or progress["id"] == time["id"]
-                        and progress["progress"] == 0
-                    )
+                    and rtpi.is_before_stop(item, stop_time)
                 ):
                     delay = timedelta(seconds=item["delay"])
                     time["delay"] = delay
@@ -389,8 +505,6 @@ def stop_times_json(request, atco_code):
                         time["expected_arrival_time"] = time["expected_departure_time"]
 
     times = [time for time in times if "delay" in time or ("overdue" not in time)]
-    for time in times:
-        del time["stop_time"]
 
     return JsonResponse({"times": times})
 
@@ -403,7 +517,6 @@ def stop_debug(request, atco_code: str):
     )
 
     responses = []
-    css = ""
 
     for response in cache.get_many(
         [
@@ -411,14 +524,13 @@ def stop_debug(request, atco_code: str):
             f"SiriSmDepartures:{stop.pk}",
         ]
     ).values():
-        response_text = response.text
         # syntax-highlight and pretty-print XML and JSON responses
         try:
             # XML
-            response_text, css = format_xml(response.text)
-        except ET.ParseError:
+            response_text = format_xml(response.text)
+        except SyntaxError:
             # JSON
-            response_text, css = format_json(response.text)
+            response_text = format_json(response.json())
         responses.append(
             {"url": response.url, "text": response_text, "headers": response.headers}
         )
@@ -430,7 +542,6 @@ def stop_debug(request, atco_code: str):
             "object": stop,
             "breadcrumb": [stop.locality, stop],
             "responses": responses,
-            "css": css,
         },
     )
 
@@ -488,17 +599,7 @@ class TripDetailView(DetailView):
             if stops[-1].stop:
                 context["destination"] = stops[-1].stop.locality
 
-            if route and (
-                route.source.name == "Realtime Transport Operators"
-                or route.source.name == "Ember"
-            ):
-                feed_name = "ember" if route.source.name == "Ember" else "ntaie"
-                trip_update = gtfsr.get_trip_update(self.object, feed_name)
-                if trip_update:
-                    context["trip_update"] = trip_update
-                    gtfsr.apply_trip_update(stops, trip_update)
-
-            else:
+            if gtfsr.maybe_get_and_apply_trip_update(self.object, stops) is False:
                 # no real-time data - cache for an hour
                 context["max_age"] = 3600
 
@@ -536,7 +637,7 @@ def trip_block(request, pk: int):
     else:
         date = timezone.localdate()
 
-    trips = get_other_trips_in_block(trip, date)
+    trips = trip.get_trips_in_block(date)
 
     trips = trips.annotate(
         destination_name=Coalesce(
@@ -572,23 +673,6 @@ def trip_block(request, pk: int):
     )
 
 
-def tfl_vehicle_arrivals(reg: str):
-    reg = reg.upper()
-
-    cache_key = f"TflVehicle:{reg}"
-
-    if (cached := cache.get(cache_key)) is not None:
-        return cached
-
-    response = requests.get(
-        f"https://api.tfl.gov.uk/Vehicle/{reg}/Arrivals", params=settings.TFL, timeout=8
-    )
-    if response.ok:
-        data = response.json()
-        cache.set(cache_key, data, 60)
-        return data
-
-
 @require_GET
 def tfl_vehicle(request, reg: str):
     reg = reg.upper()
@@ -598,146 +682,16 @@ def tfl_vehicle(request, reg: str):
         code=reg, vehiclecode__code=f"TFLO:{reg}", vehiclecode__scheme="BODS"
     ).first()
 
-    data = tfl_vehicle_arrivals(reg)
-
-    if not data:
-        if vehicle:
-            if vehicle.latest_journey and vehicle.latest_journey.trip_id:
-                return redirect(vehicle.latest_journey.trip)
-            return redirect(vehicle)
-        raise Http404
-
-    line_name = data[0]["lineName"]
-
-    try:
-        service = Service.objects.get(
-            line_name__iexact=line_name, current=True, source__name="L"
-        )
-    except (Service.DoesNotExist, Service.MultipleObjectsReturned):
-        service = None
-
-    atco_codes = []
-    for item in data:
-        atco_code = item["naptanId"]
-        # try "03700168" as well as "3700168"
-        if atco_code[:3] == "370" and atco_code.isdigit():
-            atco_codes.append(f"0{atco_code}")
-        atco_codes.append(atco_code)
-
-    if service:
-        try:
-            operator = service.operator.get()
-        except (Operator.DoesNotExist, Operator.MultipleObjectsReturned):
-            operator = None
-
-        stops = StopPoint.objects.annotate(
-            stopusages=FilteredRelation(
-                "stopusage", condition=Q(stopusage__service=service)
-            ),
-            sequence=F("stopusages__order"),
-        ).in_bulk(atco_codes)
-
-        # sort by sequence, cos sometimes the arrival predictions are out of order
-        prev_sequence = prev_trip_sequence = 0
-        prev_destination = None
-        for item in data:
-            if item.get("destinationName") != prev_destination:
-                prev_trip_sequence = prev_sequence
-
-            atco_code = item["naptanId"]
-
-            if stop := (stops.get(atco_code) or stops.get(f"0{atco_code}")):
-                item["sequence"] = (stop.sequence or 0) + prev_trip_sequence
-            else:
-                item["sequence"] = prev_sequence
-
-            prev_destination = item.get("destinationName")
-            prev_sequence = item["sequence"]
-        data.sort(key=lambda item: item.get("sequence", 0))
-    else:
-        stops = StopPoint.objects.in_bulk(atco_codes)
-
-    if not stops:
-        stops = StopArea.objects.in_bulk(atco_codes)
-
-    route_links = {
-        (link.from_stop_id, link.to_stop_id): link
-        for link in (
-            service.routelink_set.filter(from_stop__in=atco_codes) if service else ()
-        )
-    }
-
-    times = []
-    prev_stop = None
-    for i, item in enumerate(data):
-        expected_arrival = timezone.localtime(
-            datetime.fromisoformat(item["expectedArrival"])
-        )
-        expected_arrival = round(expected_arrival.timestamp() / 60) * 60
-        expected_arrival = datetime.fromtimestamp(
-            expected_arrival, tz=timezone.get_current_timezone()
-        )
-        time = {
-            "id": i,
-            "stop": {
-                "name": item["stationName"],
-            },
-            "expected_arrival_time": expected_arrival,
-        }
-        atco_code = item["naptanId"]
-
-        if stop := (stops.get(atco_code) or stops.get(f"0{atco_code}")):
-            if type(stop) is StopPoint:
-                time["stop"]["atco_code"] = stop.atco_code
-                time["stop"]["bearing"] = stop.get_heading()
-
-                if prev_stop:
-                    route_link = route_links.get((prev_stop.atco_code, stop.atco_code))
-                    if route_link:
-                        time["track"] = route_link.geometry.coords
-                prev_stop = stop
-
-            if stop.latlong:
-                time["stop"]["location"] = stop.latlong.coords
-
-        if item["platformName"] and item["platformName"] != "null":
-            time["stop"]["icon"] = item["platformName"]
-
-        times.append(time)
-
-    stops_data = {"times": times}
-    if service:
-        stops_data["service"] = {
-            # "id": service.id,
-            "line_name": service.line_name,
-            "slug": service.slug,
-        }
-        if operator:
-            stops_data["operator"] = {
-                "noc": operator.noc,
-                "name": operator.name,
-                "slug": operator.slug,
-            }
-
-    return render(
-        request,
-        "tfl_vehicle.html",
-        {
-            "breadcrumb": [service],
-            "data": data,
-            "object": vehicle,
-            "stops_data": stops_data,
-        },
-    )
+    if vehicle:
+        if vehicle.latest_journey:
+            return redirect(vehicle.latest_journey)
+        return redirect(vehicle)
+    raise Http404
 
 
 trip_updates_sources = {
-    "ember": {
-        "source_name": "Ember",
-    },
-    "ntaie": {
-        "source_name": "Realtime Transport Operators",
-    },
+    feed_name: {"source_name": source_name}
+    for source_name, feed_name in gtfsr.FEED_NAMES.items()
 }
 
 
@@ -797,13 +751,7 @@ def trip_updates(request):
 
 @require_GET
 def operator_blocks(request, slug):
-    """fleet list"""
-
     operator = get_object_or_404(Operator, slug=slug)
-
-    trips = operator.trip_set.filter(route__service__current=True).select_related(
-        "route"
-    )
 
     form = DateForm(request.GET)
     if form.is_valid():
@@ -811,19 +759,36 @@ def operator_blocks(request, slug):
     else:
         date = timezone.localdate()
 
-    calendars = get_calendars(date)
-    trips = trips.filter(calendar__in=calendars).order_by("block", "start")
+    routes = Route.objects.filter(trip__operator=operator).active_on(date)
+    trips = (
+        operator.trip_set.filter(route__in=routes)
+        .select_related("route")
+        .active_on(date)
+        .order_by("block", "start")
+    )
+
+    timescale = []
 
     if trips:
         start = min(trip.start.total_seconds() for trip in trips)
-        end = min(trip.end.total_seconds() for trip in trips)
+        end = max(trip.end.total_seconds() for trip in trips)
         length_of_day = end - start
+
+        time = start
+        while time <= end:
+            timescale.append(
+                {
+                    "time": format_timedelta(timedelta(seconds=time), True),
+                    "left": int((time - start) / length_of_day * 3000),
+                }
+            )
+            time = time + 3600
 
     blocks = defaultdict(list)
 
     for trip in trips:
-        trip.left = int((trip.start.total_seconds() - start) / length_of_day * 200)
-        trip.width = int((trip.end - trip.start).total_seconds() / length_of_day * 200)
+        trip.left = int((trip.start.total_seconds() - start) / length_of_day * 3000)
+        trip.width = int((trip.end - trip.start).total_seconds() / length_of_day * 3000)
 
         if trip.block:
             blocks[trip.block].append(trip)
@@ -832,7 +797,8 @@ def operator_blocks(request, slug):
         "object": operator,
         "breadcrumb": [operator],
         "date": date,
-        "blocks": blocks,
+        "timescale": timescale,
+        "blocks": dict(blocks),
     }
 
     return render(request, "operator_blocks.html", context)
@@ -853,3 +819,134 @@ def upload_gtfs(request):
         return redirect(source)
 
     return render(request, "upload_gtfs.html", context)
+
+
+# see the table in import_transxchange
+BANK_HOLIDAY_GROUPS = {
+    "AllBankHolidays": (
+        "AllHolidaysExceptChristmas",
+        "Christmas",
+        "DisplacementHolidays",
+    ),
+    "AllHolidaysExceptChristmas": ("Holidays", "HolidayMondays"),
+    "HolidayMondays": (
+        "EasterMonday",
+        "MayDay",
+        "SpringBank",
+        "LateSummerBankHolidayNotScotland",
+        "AugustBankHolidayScotland",
+    ),
+    "Christmas": ("ChristmasDay", "BoxingDay"),
+    "DisplacementHolidays": (
+        "ChristmasDayHoliday",
+        "BoxingDayHoliday",
+        "NewYearsDayHoliday",
+        "Jan2ndScotlandHoliday",
+        "StAndrewsDayHoliday",
+    ),
+    "EarlyRunOffDays": ("ChristmasEve", "NewYearsEve"),
+}
+
+BANK_HOLIDAY_ORDER = (
+    "AllBankHolidays",
+    "AllHolidaysExceptChristmas",
+    "Holidays",
+    "NewYearsDay",
+    "Jan2ndScotland",
+    "GoodFriday",
+    "StAndrewsDay",
+    "HolidayMondays",
+    "EasterMonday",
+    "MayDay",
+    "SpringBank",
+    "LateSummerBankHolidayNotScotland",
+    "AugustBankHolidayScotland",
+    "Christmas",
+    "ChristmasDay",
+    "BoxingDay",
+    "DisplacementHolidays",
+    "ChristmasDayHoliday",
+    "BoxingDayHoliday",
+    "NewYearsDayHoliday",
+    "Jan2ndScotlandHoliday",
+    "StAndrewsDayHoliday",
+    "EarlyRunOffDays",
+    "ChristmasEve",
+    "NewYearsEve",
+)
+
+# expected AllBankHolidays.scotland
+BANK_HOLIDAY_SCOTLAND = {
+    "Jan2ndScotland": True,
+    "Jan2ndScotlandHoliday": True,
+    "StAndrewsDay": True,
+    "StAndrewsDayHoliday": True,
+    "AugustBankHolidayScotland": True,
+    "LateSummerBankHolidayNotScotland": False,
+}
+
+
+def check_bank_holidays(table):
+    problems = []
+
+    for parent, children in BANK_HOLIDAY_GROUPS.items():
+        parent_dates = table.get(parent, {})
+        children_dates = set()
+        for child in children:
+            child_dates = table.get(child, {})
+            children_dates.update(child_dates)
+            for date in child_dates:
+                if date not in parent_dates:
+                    problems.append(f"{child} {date} is not in {parent}")
+        for date in parent_dates:
+            if date not in children_dates:
+                problems.append(
+                    f"{parent} {date} is not in any of {', '.join(children)}"
+                )
+
+    all_bank_holidays = table.get("AllBankHolidays", {})
+    for name, scotland in BANK_HOLIDAY_SCOTLAND.items():
+        for date in table.get(name, {}):
+            if date in all_bank_holidays:
+                actual = all_bank_holidays[date].scotland
+                if actual is not scotland:
+                    problems.append(
+                        f"{name} {date} has AllBankHolidays scotland={actual}, expected {scotland}"
+                    )
+
+    return problems
+
+
+def bank_holidays(request):
+    columns = set()
+
+    table = defaultdict(dict)
+
+    for bhd in (
+        BankHolidayDate.objects.select_related("bank_holiday")
+        .filter(date__gte=TruncDate(Now()))
+        .order_by("date")
+    ):
+        columns.add(bhd.date)
+        table[bhd.bank_holiday.name][bhd.date] = bhd
+
+    columns = sorted(columns)
+
+    context = {
+        "problems": check_bank_holidays(table),
+        "columns": columns,
+        "table": [
+            (date, [row.get(column) for column in columns])
+            for date, row in sorted(
+                table.items(),
+                key=lambda item: (
+                    BANK_HOLIDAY_ORDER.index(item[0])
+                    if item[0] in BANK_HOLIDAY_ORDER
+                    else len(BANK_HOLIDAY_ORDER),
+                    item[0],
+                ),
+            )
+        ],
+    }
+
+    return render(request, "bank_holidays.html", context)
