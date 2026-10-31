@@ -56,7 +56,7 @@ from busstops.models import (
     Service,
 )
 from busstops.utils import get_bounding_box
-from bustimes.models import Garage, Route, Trip
+from bustimes.models import Garage, Route, StopTime, Trip
 from departures.gtfsr import get_trip_updates
 from photos.forms import PhotoForm
 from photos.utils import WrongLicense, add_flickr_photo, add_uploaded_photo
@@ -73,6 +73,7 @@ from .models import (
     VehicleRevisionFeature,
     get_text_colour,
 )
+from .rtpi import add_progress_and_delay
 from .tasks import queue_siri_post
 from .utils import apply_revision, get_revision, redis_client
 
@@ -1540,12 +1541,18 @@ def overland(request, uuid=None):
                 "VehicleJourney": {"VehicleUniqueId": vehicle_unique_id}
             }
 
-        handle_siri_post(
+        queue_siri_post(
             uuid,
-            item["properties"]["timestamp"],
-            item["properties"]["device_id"],
-            lon,
-            lat,
+            {
+                "Siri": {
+                    "ServiceDelivery": {
+                        "ResponseTimestamp": when,
+                        "VehicleMonitoringDelivery": {
+                            "VehicleActivity": [activity],
+                        },
+                    }
+                }
+            },
         )
 
     cache_last_post(request, subscription)

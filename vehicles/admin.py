@@ -1,5 +1,6 @@
 import contextlib
 
+from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.core.cache import cache

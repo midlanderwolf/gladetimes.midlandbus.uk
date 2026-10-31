@@ -4,6 +4,7 @@ import functools
 import io
 import logging
 import re
+import uuid
 import zipfile
 import zlib
 from collections import Counter, defaultdict, namedtuple
@@ -109,20 +110,15 @@ occupancies = {
 }
 
 
-def get_destination_ref(destination_ref: str) -> str | None:
-    destination_ref = destination_ref.removeprefix("NT")  # Nottingham City Transport
-
-    # if (
-    #     " " in destination_ref
-    #     or len(destination_ref) < 4
-    #     or not destination_ref[:4].isdigit()
-    #     or destination_ref[:3] == "000"
-    #     or destination_ref[:3] == "999"
-    #     or destination_ref[:3] == "980"
-    #     or destination_ref[:3] == "900"
-    # ):
-    #     # destination ref is not in the expected ATCO code format - maybe a postcode or other placeholder
-    #     return
+def get_stop_ref(monitored_vehicle_journey: dict, key: str) -> str | None:
+    if not (stop_ref := monitored_vehicle_journey.get(key)):
+        return
+    if stop_ref in (
+        monitored_vehicle_journey.get("LineRef"),
+        monitored_vehicle_journey.get("PublishedLineName"),
+    ):
+        # Ticketer bullshit placeholder e.g. OriginRef and DestinationRef "23" on line 23
+        return
 
     stop_ref = stop_ref.removeprefix("NT")  # Nottingham City Transport
 

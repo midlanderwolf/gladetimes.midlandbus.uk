@@ -17,7 +17,6 @@
 {% block head %}{% endblock %}
 
 {% block fuse %}
-<script src="{{ static('consent.js') }}"></script>
 <script>
 var tz = window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone,
     bot = navigator.webdriver || screen.width === 1280 && screen.height === 1200 || tz && !/^(Europe\/|Etc\/|UTC$)/.test(tz);
