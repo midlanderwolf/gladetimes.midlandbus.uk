@@ -3,6 +3,8 @@ x-app-environment: &app-environment
   - DATABASE_URL=${DATABASE_URL-postgis://postgres:postgres@postgres/postgres}
   - REDIS_URL=${REDIS_URL-redis://redis:6379}
   - NTA_API_KEY
+  - ALLOWED_HOSTS
+  - CSRF_TRUSTED_ORIGINS
   - AWS_ACCESS_KEY_ID
   - AWS_SECRET_ACCESS_KEY
   - NEW_VEHICLE_WEBHOOK_URL
@@ -21,18 +23,32 @@ x-app-environment: &app-environment
 x-app-volumes: &app-volumes
   - .:/app
   - venv:/app/.venv
+  # the code is bind-mounted over the image, so STATIC_ROOT has to be writable
+  # and outlive the container - otherwise the manifest is whatever was built
+  # into the image and can go stale against the templates
+  - staticfiles:/staticfiles
 
 services:
 
   web:
     build: .
-    entrypoint: sh -c "DEBUG=1 exec ./manage.py runserver 0.0.0.0:8000"
+    # NOT runserver, and NOT DEBUG=1: with DEBUG on, CACHES["default"] is a
+    # DummyCache, so vehicles.json re-fetches every Vehicle row from the
+    # database on every request, and huey tasks run inline in the request.
+    # asgi (not the Dockerfile's wsgi) because /firehose is a websocket.
+    entrypoint:
+      - granian
+      - --host=0.0.0.0
+      - --port=8000
+      - --interface=asgi
+      - --workers=4
+      - --respawn-failed-workers
+      - buses.asgi:application
     container_name: django_web
     environment: *app-environment
     volumes: *app-volumes
     ports:
       - "8000:8000"
-      - "35729:35729"
     restart: on-failure
 
   distribute_vehicle_locations:
@@ -64,8 +80,8 @@ services:
 
   postgres:
     image: postgis/postgis
-    tmpfs:
-      - "/var/lib/postgresql/data/"
+    # NB: no tmpfs on /var/lib/postgresql/data - that would put the whole
+    # database in RAM and lose it on every recreate
     # # sloppy non-durable settings, which allegedly make the tests run faster
     # # not to be used in production!
     # command: --autovacuum=off --fsync=off --synchronous_commit=off --full_page_writes=off --work_mem=12MB --max-connections=10 --max_wal_senders=0
@@ -81,6 +97,15 @@ services:
 
   redis:
     image: redis
+    # a backstop so redis can never grow big enough to push the host into swap
+    # again (a single-threaded redis that has to fault pages back in from disk
+    # stalls every client at once). The real fix is the TTL on journey
+    # polylines in distribute_vehicle_locations.
+    command:
+      - redis-server
+      - --maxmemory=12gb
+      - --maxmemory-policy=allkeys-lru
 
 volumes:
   venv:
+  staticfiles:

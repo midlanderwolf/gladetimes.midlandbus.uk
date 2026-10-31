@@ -1,3 +1,5 @@
+import time
+
 from django.conf import settings
 from django.core.cache import caches
 from django.core.cache.backends.base import InvalidCacheBackendError
@@ -48,6 +50,17 @@ class Command(BaseCommand):
             "--max-idle-days",
             type=int,
             help="Remove keys idle for more than this many days",
+        )
+        parser.add_argument(
+            "--journey-keys-only",
+            action="store_true",
+            help="Only consider journey location history (16-byte uuid) keys",
+        )
+        parser.add_argument(
+            "--sleep-ms",
+            type=int,
+            default=0,
+            help="Pause between SCAN batches, to keep the sweep off redis's back",
         )
 
     def handle(self, *args, **options):
@@ -243,55 +256,95 @@ class Command(BaseCommand):
         cursor = 0
         deleted = 0
         skipped = 0
+        scanned = 0
+        last_report = 0
 
         persistent_patterns = {
             "liveries_css_version",
         }
+
+        journeys_only = self.options["journey_keys_only"]
+        sleep_ms = self.options["sleep_ms"]
 
         self.stdout.write(
             f"Scanning for keys idle for more than {max_idle_days} days..."
         )
 
         while True:
-            cursor, keys = r.scan(cursor=cursor, count=5000)
-            keys_to_delete = []
+            cursor, keys = r.scan(cursor=cursor, count=1000)
+            scanned += len(keys)
 
+            candidates = []
             for key in keys:
-                key_str = decode(key)
+                # journey location history is keyed by the raw 16 bytes of
+                # VehicleJourney.uuid - that's the bulk of the keyspace
+                if journeys_only and not (
+                    isinstance(key, bytes) and len(key) == 16
+                ):
+                    continue
 
-                if any(key_str.endswith(p) for p in persistent_patterns):
+                # keys are arbitrary bytes (journey keys are raw uuids), so
+                # compare as bytes rather than trying to decode them as utf-8
+                if any(
+                    key.endswith(p.encode()) if isinstance(key, bytes)
+                    else key.endswith(p)
+                    for p in persistent_patterns
+                ):
                     skipped += 1
                     continue
 
-                try:
-                    idle_time = r.object("idletime", key)
-                    if idle_time is not None and idle_time > max_idle_seconds:
-                        ttl = r.ttl(key)
-                        if ttl == -1:
-                            keys_to_delete.append(key)
-                except Exception:
-                    continue
+                candidates.append(key)
 
-            if keys_to_delete:
-                if self.options["dry_run"]:
-                    self.stdout.write(
-                        f"  Would delete {len(keys_to_delete)} idle keys"
+            if candidates:
+                # one round trip for the whole batch instead of two per key -
+                # at ~15 million keys, per-key round trips take hours
+                pipe = r.pipeline(transaction=False)
+                for key in candidates:
+                    pipe.object("idletime", key)
+                    pipe.ttl(key)
+                results = pipe.execute()
+
+                keys_to_delete = [
+                    key
+                    for key, idle_time, ttl in zip(
+                        candidates, results[0::2], results[1::2]
                     )
-                else:
-                    for i in range(0, len(keys_to_delete), 500):
-                        r.delete(*keys_to_delete[i : i + 500])
-                    deleted += len(keys_to_delete)
+                    if idle_time is not None
+                    and idle_time > max_idle_seconds
+                    and ttl == -1
+                ]
+
+                if keys_to_delete:
+                    if self.options["dry_run"]:
+                        deleted += len(keys_to_delete)
+                    else:
+                        for i in range(0, len(keys_to_delete), 500):
+                            # UNLINK, not DEL: frees the memory on a background
+                            # thread so a big batch doesn't stall every client
+                            r.unlink(*keys_to_delete[i : i + 500])
+                        deleted += len(keys_to_delete)
+
+            if scanned - last_report >= 500_000:
+                last_report = scanned
+                used = r.info("memory")["used_memory"]
+                self.stdout.write(
+                    f"  scanned {scanned:,}, deleted {deleted:,}, "
+                    f"redis using {used / 1024 / 1024 / 1024:.1f}GB",
+                    ending="\n",
+                )
+                self.stdout.flush()
+
+            if sleep_ms:
+                # deliberately slow: this walks the whole keyspace, and on a
+                # redis that has been pushed into swap every key touched is a
+                # page fault
+                time.sleep(sleep_ms / 1000)
 
             if cursor == 0:
                 break
 
-        if self.options["dry_run"]:
-            self.stdout.write(
-                f"Would delete {deleted} keys idle >{max_idle_days} days "
-                f"(skipped {skipped} persistent keys)"
-            )
-        else:
-            self.stdout.write(
-                f"Deleted {deleted} keys idle >{max_idle_days} days "
-                f"(skipped {skipped} persistent keys)"
-            )
+        verb = "Would delete" if self.options["dry_run"] else "Deleted"
+        self.stdout.write(
+            f"{verb} {deleted} of {scanned} scanned keys, idle >{max_idle_days} days "
+            f"(skipped {skipped} persistent keys)"
+        )

@@ -1,4 +1,5 @@
 import logging
+import re
 import pandas as pd
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from ...models import Route, StopTime, Trip
 from ...gtfs_utils import get_calendars, MODES, do_route_links
 
 logger = logging.getLogger(__name__)
+
+# all-caps town name, then a stop name with some lowercase letters, e.g. "VALOGNES Le Gravier"
+TOWN_IN_STOP_NAME = re.compile(r"([A-ZÀ-Þ'-]+(?: [A-ZÀ-Þ'-]+)*) (.*[a-zß-ÿ].*)")
 
 
 class Command(BaseCommand):
@@ -42,8 +46,13 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip download and use the existing local file",
         )
+        parser.add_argument(
+            "--town-in-stop-names",
+            action="store_true",
+            help="Split an all-caps town name from the start of each stop name, e.g. 'VALOGNES Le Gravier'",
+        )
 
-    def handle(self, source, url=None, filename=None, stop_prefix=None, region=None, local=False, *args, **options):
+    def handle(self, source, url=None, filename=None, stop_prefix=None, region=None, local=False, town_in_stop_names=False, *args, **options):
         from datetime import datetime, timezone
 
         source_path = Path(source)
@@ -121,14 +130,20 @@ class Command(BaseCommand):
 
         operators = {}
         for agency in feed.agency.itertuples():
-            agency_id_str = str(agency.agency_id)
+            # agency_id is optional in agency.txt when there's only one agency
+            agency_id_raw = getattr(agency, "agency_id", None)
+            agency_id_str = (
+                ""
+                if agency_id_raw is None or pd.isna(agency_id_raw)
+                else str(agency_id_raw)
+            )
             agency_ids = [a.strip() for a in agency_id_str.split(",")]
             agency_name = agency.agency_name if hasattr(agency, "agency_name") else ""
 
             # If multiple agency_ids, create separate operators for each
             if len(agency_ids) > 1:
                 for agency_id in agency_ids:
-                    noc = agency_id[:10]
+                    noc = (agency_id or stop_prefix).upper()[:10]
                     operator, _ = Operator.objects.update_or_create(
                         noc=noc,
                         defaults={"name": agency_name, "timezone": agency_timezone, "region": region_obj} if region_obj else {"name": agency_name, "timezone": agency_timezone}
@@ -144,7 +159,10 @@ class Command(BaseCommand):
                 agency_id = agency_ids[0]
                 operator = Operator.objects.filter(name__iexact=agency_name).first()
                 if not operator:
-                    noc = agency_id[:10]
+                    # agency_id may be blank (optional when there's only one
+                    # agency) - fall back to the stop prefix so we don't
+                    # create an Operator with an empty primary key
+                    noc = (agency_id or stop_prefix).upper()[:10]
                     defaults = {"name": agency_name, "timezone": agency_timezone}
                     if region_obj:
                         defaults["region"] = region_obj
@@ -180,7 +198,7 @@ class Command(BaseCommand):
             new_stops.append(
                 StopPoint(
                     atco_code=f"{stop_prefix}-{stop.stop_id}",
-                    common_name=stop.stop_name[:48],
+                    common_name=stop.stop_name,
                     active=True,
                     source=source_obj,
                     latlong=f"POINT({stop.stop_lon} {stop.stop_lat})",
@@ -189,11 +207,18 @@ class Command(BaseCommand):
                 )
             )
 
+        for stop in new_stops:
+            if town_in_stop_names and (
+                match := TOWN_IN_STOP_NAME.fullmatch(stop.common_name)
+            ):
+                stop.town, stop.common_name = match.groups()
+            stop.common_name = stop.common_name[:48]
+
         StopPoint.objects.bulk_create(
             new_stops,
             update_conflicts=True,
             unique_fields=["atco_code"],
-            update_fields=["common_name", "latlong", "bearing", "timezone"],
+            update_fields=["common_name", "latlong", "bearing", "timezone", "town"],
         )
         logger.info(f"Matched {matched} NaPTAN stops, created/updated {len(new_stops)} new stops")
         for stop in new_stops:
@@ -242,7 +267,11 @@ class Command(BaseCommand):
                 service.geometry = geometry.wkt
 
             service.save()
-            operator = operators.get(row.agency_id)
+            # agency_id is optional in routes.txt when there's only one agency
+            route_agency_id = getattr(row, "agency_id", "")
+            if pd.isna(route_agency_id):
+                route_agency_id = ""
+            operator = operators.get(route_agency_id)
             if operator:
                 service.operator.add(operator)
             route.save()
@@ -302,7 +331,7 @@ class Command(BaseCommand):
                 departure=departure_time,
                 sequence=row.stop_sequence,
                 trip=trip,
-                timing_status="PTP" if getattr(row, "timepoint", 1) else "OTH",
+                timing_point=bool(getattr(row, "timepoint", 1)),
                 pick_up=(row.pickup_type != 1),
                 set_down=(row.drop_off_type != 1),
             )

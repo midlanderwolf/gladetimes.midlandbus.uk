@@ -206,6 +206,9 @@ STORAGES = {
             "custom_domain": "photos.midlandbus.uk",
         },
     },
+    # upstream puts this on DigitalOcean Spaces (bucket "bustimes-data"), which
+    # we have no credentials for - AWS_* here is Cloudflare R2. Keep timetable
+    # source archives on local disk regardless of DEBUG.
     "archive": {
         "BACKEND": "django.core.files.storage.InMemoryStorage",
     }
@@ -214,15 +217,6 @@ STORAGES = {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
         "OPTIONS": {
             "location": BASE_DIR / "archive",
-        },
-    }
-    if DEBUG
-    else {
-        "BACKEND": "storages.backends.s3.S3Storage",
-        "OPTIONS": {
-            "region_name": "ams3",
-            "endpoint_url": "https://ams3.digitaloceanspaces.com",
-            "bucket_name": "bustimes-data",
         },
     },
     "staticfiles": {

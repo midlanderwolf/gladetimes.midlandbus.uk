@@ -16,6 +16,13 @@ from ...utils import VEHICLE_POSITIONS_CHANNEL, async_redis_client
 
 logger = logging.getLogger(__name__)
 
+# How long a journey's location history (the time-aware polyline at
+# journey.get_redis_key()) is kept in Redis. Without this these keys are never
+# removed - one per journey, forever - which is what grew Redis to ~15 million
+# keys / 27GB and pushed the host into swap. The expiry is refreshed on every
+# append, so it is time-since-last-update, not time-since-journey-start.
+JOURNEY_HISTORY_TTL = 7 * 24 * 60 * 60  # 7 days
+
 
 class PolylineWrapper:
     def __init__(self):
@@ -103,7 +110,7 @@ class Command(BaseCommand):
             # the key currently holds the old 'list' type, so it needs a
             # full SET (not APPEND) to convert it and store the migrated
             # history; subsequent updates can be appended incrementally
-            migrate_pipe.set(uuid, polyline)
+            migrate_pipe.set(uuid, polyline, ex=JOURNEY_HISTORY_TTL)
             migrating = True
 
         if migrating:
@@ -121,6 +128,10 @@ class Command(BaseCommand):
         for uuid, wrapper in polylines.items():
             if wrapper.pending:
                 append_pipe.append(uuid, wrapper.pending)
+                # APPEND leaves an existing TTL alone, and creates the key with
+                # no TTL at all if it didn't exist - so set it explicitly each
+                # time, which also keeps a journey alive while it's running
+                append_pipe.expire(uuid, JOURNEY_HISTORY_TTL)
                 wrapper.pending = ""
                 appending = True
 
