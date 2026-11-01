@@ -1,3 +1,4 @@
+#!/bin/bash
 # docker compose exec web uv run ./manage.py
 
 set -o pipefail
