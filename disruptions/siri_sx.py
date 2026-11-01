@@ -17,7 +17,6 @@ from .models import (
     Link,
     Situation,
     ValidityPeriod,
-    delete_old_situations,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,11 +251,18 @@ def bods_disruptions():
         situation_number = element.findtext("SituationNumber")
         try:
             with transaction.atomic():
-                situations.append(handle_item(element, source, current_situations))
+                situations.append(handle_item(element, sources, current_situations))
         except Exception:
             logger.exception("situation %s", situation_number)
             # keep showing the previous version
             if situation := current_situations.get(situation_number):
                 situations.append(situation.id)
 
-    delete_old_situations(source, situations)
+    stale_sources = set(sources.values())
+    if legacy_source := DataSource.objects.filter(name="Bus Open Data").first():
+        stale_sources.add(legacy_source)
+
+    for source in stale_sources:
+        source.situation_set.filter(current=True).exclude(id__in=situations).update(
+            current=False
+        )

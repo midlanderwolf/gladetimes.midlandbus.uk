@@ -111,18 +111,18 @@ class SiriSXTest(TestCase):
 
     def test_siri_sx_request(self):
         with use_cassette(str(VCR_DIR / "siri_sx.yaml")) as cassette:
-            with self.assertNumQueries(144):
+            with self.assertNumQueries(154):
                 bods_disruptions()
 
             cassette.rewind()
 
-            with self.assertNumQueries(21):
+            with self.assertNumQueries(22):
                 bods_disruptions()
 
             cassette.rewind()
             Situation.objects.all().update(data="")
 
-            with self.assertNumQueries(158):
+            with self.assertNumQueries(159):
                 bods_disruptions()
 
         situation = Situation.objects.first()
@@ -158,7 +158,7 @@ class SiriSXTest(TestCase):
             "Towards Manchester the 142 service will begin outside Didsbury Cricket club . ",
         )
 
-        with self.assertNumQueries(13):
+        with self.assertNumQueries(14):
             response = self.client.get("/services/156")
 
         # long text so collapsed by default
@@ -230,8 +230,9 @@ class SiriSXTest(TestCase):
             </Consequences>
         </PtSituationElement>"""
         source = DataSource.objects.create(name="Bus Open Data")
+        sources = {"Cornwall": source}
 
-        situation_id = handle_item(ET.fromstring(xml), source, {})
+        situation_id = handle_item(ET.fromstring(xml), sources, {})
 
         situation = Situation.objects.get(id=situation_id)
         self.assertEqual(situation.reason, "defectivePublicAnnouncementSystem")
@@ -278,11 +279,12 @@ class SiriSXTest(TestCase):
             </PtSituationElement>"""
 
         source = DataSource.objects.create(name="Bus Open Data")
+        sources = {"Cornwall": source}
         for element in (
             area_situation("storm", "Storm Austen", "bus"),
             area_situation("engineering", "Engineering works", "rail"),
         ):
-            handle_item(ET.fromstring(element), source, {})
+            handle_item(ET.fromstring(element), sources, {})
 
         stop = StopPoint.objects.create(
             atco_code="0800COB00001", admin_area_id=73, active=True
@@ -304,7 +306,8 @@ class SiriSXTest(TestCase):
 
         with use_cassette(str(VCR_DIR / "siri_sx.yaml")) as cassette:
             bods_disruptions()
-            self.assertFalse(Situation.objects.filter(id=gone.id).exists())
+            gone.refresh_from_db()
+            self.assertFalse(gone.current)
 
             hidden = Situation.objects.first()
             hidden.current = False
