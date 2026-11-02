@@ -85,7 +85,8 @@ class Command(GTFSRCommand):
     def set_feed(self, feed_name):
         self.feed_name = feed_name
         self.feed = FEEDS[feed_name]
-        self.source_name = self.vehicle_code_scheme = self.feed.source_name
+        self.source_name = self.feed.source_name
+        self.vehicle_code_scheme = self.feed.vehicle_code_scheme or self.feed.source_name
         self.stop_id_prefix = self.feed.stop_id_prefix
 
     def do_source(self):

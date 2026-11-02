@@ -11,6 +11,7 @@ class GTFSFeed:
     trip_updates_url: str = ""
     alerts_url: str = ""
     stop_id_prefix: str = ""
+    vehicle_code_scheme: str = ""  # defaults to source_name if blank
     alert_ids_change: bool = False  # entity ids are different in every response
     skip_alert_headers: tuple = ()
     town_in_stop_names: bool = False  # e.g. "VALOGNES Le Gravier"
@@ -45,6 +46,31 @@ FEEDS = {
         trip_updates_url="https://app.pysae.com/api/v2/groups/transdev-cotentin/gtfs-rt",
         stop_id_prefix="capcotentin-",
         town_in_stop_names=True,
+    ),
+    "marta": GTFSFeed(
+        source_name="MARTA",
+        noc="MARTA",
+        timezone="America/New_York",
+        static_url="https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/GTFS/GTFS.zip",
+        vehicle_positions_url="https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb",
+        stop_id_prefix="marta-",
+    ),
+    "go_metro": GTFSFeed(
+        source_name="Go Metro",
+        noc="GM",
+        timezone="America/New_York",
+        static_url="https://www.go-metro.com/gtfs/gtfs.zip",
+        vehicle_positions_url="https://tmgtfsprd.sorttrpcloud.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb",
+        stop_id_prefix="go metro-",
+        vehicle_code_scheme="GM",
+    ),
+    "hsl": GTFSFeed(
+        source_name="HSL",
+        noc="HSL",
+        timezone="Europe/Helsinki",
+        static_url="https://infopalvelut.storage.hsldev.com/gtfs/hsl.zip",
+        vehicle_positions_url="https://realtime.hsl.fi/realtime/vehicle-positions/v2/hsl",
+        stop_id_prefix="hsl-",
     ),
     # static data and vehicle positions have their own importers
     "ember": GTFSFeed(
