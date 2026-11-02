@@ -36,6 +36,11 @@ echo "L.zip download complete"
 run docker compose exec web uv run ./manage.py import_transxchange data/TNDS/L.zip
 echo "TfL import complete"
 
+echo "TfL Blocks"
+run docker compose exec web uv run ./manage.py update_ibus_static_data
+run docker compose exec web uv run ./manage.py match_tfl_trip_blocks
+echo "TfL Blocks complete"
+
 
 cd /root/bustimes.org
 

@@ -129,7 +129,9 @@ class BusOpenDataVehicleLocationsTest(TestCase):
             active=True,
             common_name="Bus Station (Stand 2)",
         )
-        shudehill = Locality.objects.create(admin_area=suffolk, name="Shudehill")
+        shudehill = Locality.objects.create(
+            id="shudehill", admin_area=suffolk, name="Shudehill"
+        )
         StopPoint.objects.create(
             atco_code="390071068",
             locality=shudehill,
