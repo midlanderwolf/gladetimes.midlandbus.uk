@@ -73,7 +73,7 @@ from .models import (
     VehicleRevisionFeature,
     get_text_colour,
 )
-from .rtpi import add_progress_and_delay
+from .rtpi import Pairs, add_progress_and_delay
 from .tasks import queue_siri_post
 from .utils import apply_revision, get_revision, redis_client
 
@@ -680,7 +680,7 @@ def get_vehicle_locations(
                 # skip the RouteLink lookup here (an extra DB query per vehicle)
                 # since this runs for every vehicle on the map, not just one -
                 # the straight-line-between-stops fallback is good enough
-                route_links=False,
+                pairs=Pairs(stop_times, {}),
             )
 
     return locations

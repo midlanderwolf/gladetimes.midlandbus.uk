@@ -17,7 +17,7 @@ CSRF_TRUSTED_ORIGINS = os.environ.get(
 ).split()
 
 TEST = "test" in sys.argv or "pytest" in sys.argv[0]
-DEBUG = bool(os.environ.get("DEBUG"))
+DEBUG = True
 
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL",

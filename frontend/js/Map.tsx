@@ -4,6 +4,7 @@ import routeStopMarkerCircle from "data-url:../route-stop-marker-circle.png";
 import routeStopMarkerDark from "data-url:../route-stop-marker-dark.png";
 import routeStopMarkerDarkCircle from "data-url:../route-stop-marker-dark-circle.png";
 import stopMarker from "data-url:../stop-marker.png";
+import stopMarkerCircle from "data-url:../stop-marker-circle.png";
 import osmBright from "url:../osm_bright.json";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./maps.css";
@@ -28,7 +29,7 @@ import MapGL, {
   useControl,
   useMap,
 } from "react-map-gl/maplibre";
-import maplibreWorkerUrl from "worklet:./maplibre-worker.ts";
+import { captureException, ErrorBoundary } from "@sentry/react";
 import { ErrorFallback } from "./LoadingSorry";
 
 setWorkerUrl(maplibreWorkerUrl);
