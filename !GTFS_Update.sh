@@ -9,4 +9,5 @@ docker compose exec web python ./manage.py import_gtfs_feed marta
 docker compose exec web python ./manage.py import_gtfs_feed hsl
 docker compose exec web python ./manage.py import_gtfs_feed capcotentin
 docker compose exec web python ./manage.py import_gtfs_feed zditm
+docker compose exec web python ./manage.py import_gtfs_feed ztmwarszawa
 echo "Other GTFS feeds import complete"

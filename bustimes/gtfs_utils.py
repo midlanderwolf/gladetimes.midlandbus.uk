@@ -29,6 +29,13 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# gtfs_kit declares these columns as Int16, but real-world feeds (e.g. ZTM
+# Warszawa's fare_attributes.transfer_duration of 86400 seconds) can exceed
+# Int16's range (-32768 to 32767), causing pandas to raise a TypeError when
+# reading the feed. Widen them to Int32 to match other GTFS duration fields.
+gtfs_kit.constants.DTYPES["fare_attributes"]["transfer_duration"] = "Int32"
+gtfs_kit.constants.DTYPES["transfers"]["min_transfer_time"] = "Int32"
+
 
 class RouteType(IntEnum):
     tram = 0

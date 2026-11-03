@@ -956,7 +956,7 @@ export default function BigMap(
       // trip mode
       if (trip?.id?.toString() === props.tripId) {
         loadVehicles(true);
-        document.title = `${trip.service?.line_name} \u2013 ${trip.operator?.name} \u2013 bustimes.org`;
+        document.title = `${trip.service?.line_name} \u2013 ${trip.operator?.name} \u2013 gladetimes`;
       } else {
         setJourney(undefined);
         fetchJson(`api/trips/${props.tripId}.json`).then(setTrip);
@@ -966,13 +966,13 @@ export default function BigMap(
       setTrip(undefined);
       // operator mode
       if (operator) {
-        document.title = `Map \u2013 ${operator.name} \u2013 bustimes.org`;
+        document.title = `Map \u2013 ${operator.name} \u2013 gladetimes`;
         loadVehicles(true);
       }
     } else if (props.journeyId) {
       // journey mode
       if (journey?.id?.toString() === props.journeyId) {
-        document.title = `${journey.route_name} – ${journey.destination} – bustimes.org`;
+        document.title = `${journey.route_name} – ${journey.destination} – gladetimes`;
         if (!document.hidden) {
           vehiclesTimeout.current = window.setTimeout(loadVehicles, 12000); // 12 seconds
         }
@@ -984,7 +984,7 @@ export default function BigMap(
       setJourney(undefined);
       setTrip(undefined);
       // slippy mode
-      document.title = "Map \u2013 bustimes.org";
+      document.title = "Map \u2013 gladetimes";
       loadVehicles();
     }
   }, [

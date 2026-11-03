@@ -15,6 +15,9 @@ class GTFSFeed:
     alert_ids_change: bool = False  # entity ids are different in every response
     skip_alert_headers: tuple = ()
     town_in_stop_names: bool = False  # e.g. "VALOGNES Le Gravier"
+    # extra intermediate certificate(s) (paths relative to bustimes/certs/)
+    # to trust, for servers that fail to send their full certificate chain
+    extra_ca_certs: tuple = ()
 
 
 FEEDS = {
@@ -51,16 +54,19 @@ FEEDS = {
         source_name="MARTA",
         noc="MARTA",
         timezone="America/New_York",
-        static_url="https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/GTFS/GTFS.zip",
+        static_url="https://itsmarta.com/google_transit_feed/google_transit.zip",
         vehicle_positions_url="https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb",
+        trip_updates_url="https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/tripupdate/tripupdates.pb",
         stop_id_prefix="marta-",
     ),
     "go_metro": GTFSFeed(
         source_name="Go Metro",
         noc="GM",
         timezone="America/New_York",
-        static_url="https://www.go-metro.com/gtfs/gtfs.zip",
+        static_url="https://www.go-metro.com/wp-content/uploads/2024/12/google_transit-1.zip",
         vehicle_positions_url="https://tmgtfsprd.sorttrpcloud.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb",
+        trip_updates_url="https://tmgtfsprd.sorttrpcloud.com/TMGTFSRealTimeWebService/tripupdate/tripupdates.pb",
+        alerts_url="https://tmgtfsprd.sorttrpcloud.com/TMGTFSRealTimeWebService/alert/alerts.pb",
         stop_id_prefix="go metro-",
         vehicle_code_scheme="GM",
     ),
@@ -71,6 +77,25 @@ FEEDS = {
         static_url="https://infopalvelut.storage.hsldev.com/gtfs/hsl.zip",
         vehicle_positions_url="https://realtime.hsl.fi/realtime/vehicle-positions/v2/hsl",
         stop_id_prefix="hsl-",
+    ),
+    "ztmwarszawa": GTFSFeed(
+        source_name="ZTM Warszawa",
+        noc="ZTM",
+        timezone="Europe/Warsaw",
+        static_url="https://mkuran.pl/gtfs/warsaw.zip",
+        vehicle_positions_url="https://mkuran.pl/gtfs/warsaw/vehicles.pb",
+        alerts_url="https://mkuran.pl/gtfs/warsaw/alerts.pb",
+
+        stop_id_prefix="ztm-",
+    ),
+    "titsa": GTFSFeed(
+        source_name="titsa",
+        noc="TITSA",
+        timezone="Atlantic/Canary",
+        static_url="http://www.titsa.com/Google_transit.zip",
+        stop_id_prefix="titsa-",
+        # titsa.com's server doesn't send its intermediate certificate
+        extra_ca_certs=("titsa_intermediate.pem",),
     ),
     # static data and vehicle positions have their own importers
     "ember": GTFSFeed(

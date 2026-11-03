@@ -1,9 +1,9 @@
 import logging
-import math
 import re
 from pathlib import Path
 
 import gtfs_kit
+import pandas as pd
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -36,9 +36,11 @@ TOWN_IN_STOP_NAME = re.compile(r"([A-ZÀ-Þ'-]+(?: [A-ZÀ-Þ'-]+)*) (.*[a-zß-ÿ
 def get_platform_code(stop) -> str:
     # may have been parsed as a number
     value = getattr(stop, "platform_code", None)
+    if pd.isna(value):
+        return ""
     if isinstance(value, float):
-        return "" if math.isnan(value) else f"{value:g}"
-    return "" if value is None else str(value)
+        return f"{value:g}"
+    return str(value)
 
 
 class Command(BaseCommand):
@@ -61,7 +63,9 @@ class Command(BaseCommand):
         source, _ = DataSource.objects.get_or_create(name=feed_config.source_name)
         source.url = feed_config.static_url
 
-        modified, last_modified = download_if_modified(path, source)
+        modified, last_modified = download_if_modified(
+            path, source, extra_ca_certs=feed_config.extra_ca_certs
+        )
 
         if not modified and not force:
             return  # no new data to import
@@ -161,7 +165,8 @@ class Command(BaseCommand):
                     )
                 service.colour = colours[(bg, fg)]
 
-            service.mode = MODES[row.route_type]
+            if row.route_type in MODES:
+                service.mode = MODES[row.route_type]
             if row.geometry:
                 service.geometry = row.geometry.wkt
 
@@ -183,10 +188,13 @@ class Command(BaseCommand):
             trip = Trip(
                 route=route,
                 calendar=calendars[row.service_id],
-                inbound=row.direction_id == 1,
+                inbound=getattr(row, "direction_id", None) == 1,
                 ticket_machine_code=row.trip_id,
                 vehicle_journey_code=row.trip_id,
-                block=get_str(row, "block_id", None),
+                block=re.sub(
+                    r"^\d{4}-\d{2}-\d{2}:", "", get_str(row, "block_id", None) or ""
+                )
+                or None,
                 operator=operator,
                 headsign=headsign,
             )
