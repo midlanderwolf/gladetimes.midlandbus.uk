@@ -1,6 +1,6 @@
 {% extends 'page.html' %}
 
-{% block title %}Fleet list – {{ object }} – bustimes.org{% endblock %}
+{% block title %}Fleet list – {{ object }} – gladetimes.com{% endblock %}
 
 {% block canonical %}
     <link rel="canonical" href="https://bustimes.org{% firstof group.get_vehicles_url object.get_absolute_url %}">
@@ -23,7 +23,7 @@
             <li><a href="{{ object.get_absolute_url }}/map">Map</a></li>
             <li><a href="{{ object.get_absolute_url }}/vehicles/lateness">Lateness</a></li>
         {% endif %}
-        <li>{{ vehicles|length }} vehicle{{ vehicles|length|pluralize }}</li>
+        <li>{{ paginator.count }} vehicle{{ paginator.count|pluralize }}</li>
     </ul>
 {% endif %}
 

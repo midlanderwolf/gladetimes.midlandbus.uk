@@ -84,7 +84,7 @@ class Command(BaseCommand):
         operator = Operator.objects.get_or_create(
             noc=feed_config.noc,
             defaults={
-                "name": agency.agency_name,
+                "name": feed_config.operator_name or agency.agency_name,
                 "url": get_str(agency, "agency_url"),
                 "timezone": timezone,
             },
@@ -185,10 +185,11 @@ class Command(BaseCommand):
         for row in feed.trips.itertuples():
             route = existing_routes[row.route_id]
             headsign = get_str(row, "trip_headsign").removeprefix(f"{route.line_name} ")
+            direction_id = getattr(row, "direction_id", None)
             trip = Trip(
                 route=route,
                 calendar=calendars[row.service_id],
-                inbound=getattr(row, "direction_id", None) == 1,
+                inbound=pd.notna(direction_id) and direction_id == 1,
                 ticket_machine_code=row.trip_id,
                 vehicle_journey_code=row.trip_id,
                 block=re.sub(

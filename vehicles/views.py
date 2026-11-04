@@ -269,19 +269,16 @@ def operator_vehicles(request, slug=None, group_slug=None):
     if not group and operator.noc in settings.ALLOW_VEHICLE_NOTES_OPERATORS:
         vehicles = sorted(vehicles, key=lambda v: v.notes)
 
-    if group:
-        paginator = Paginator(vehicles, 1000)
-        page = request.GET.get("page")
-        vehicles = paginator.get_page(page)
+    paginator = Paginator(vehicles, 1000)
+    page = request.GET.get("page")
+    vehicles = paginator.get_page(page)
+    context["paginator"] = paginator
 
+    if group:
         for v in vehicles:
             v.operator = operators[v.operator_id]
             v.operator_name = v.operator.name.removeprefix(f"{group} ")
-
-        context["paginator"] = paginator
     else:
-        paginator = None
-
         context["features_column"] = any(vehicle.feature_names for vehicle in vehicles)
 
     columns = {key for vehicle in vehicles if vehicle.data for key in vehicle.data}

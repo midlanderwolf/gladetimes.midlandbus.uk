@@ -6,6 +6,7 @@ class GTFSFeed:
     source_name: str
     noc: str
     timezone: str
+    operator_name: str = ""  # defaults to agency.txt's agency_name if blank
     static_url: str = ""
     vehicle_positions_url: str = ""
     trip_updates_url: str = ""
@@ -85,7 +86,6 @@ FEEDS = {
         static_url="https://mkuran.pl/gtfs/warsaw.zip",
         vehicle_positions_url="https://mkuran.pl/gtfs/warsaw/vehicles.pb",
         alerts_url="https://mkuran.pl/gtfs/warsaw/alerts.pb",
-
         stop_id_prefix="ztm-",
     ),
     "titsa": GTFSFeed(
