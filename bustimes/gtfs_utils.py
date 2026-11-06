@@ -60,6 +60,15 @@ MODES = {
 }
 
 
+def _date_str(value) -> str:
+    # some feeds (e.g. Renfe) have trailing whitespace after the last column
+    # of a row, which stops gtfs_kit/pandas matching that column's forced
+    # "string" dtype, so it can come back as a numpy int instead of a str
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def get_calendars(feed, source) -> dict:
     if feed.calendar is not None:
         calendars = {
@@ -71,8 +80,8 @@ def get_calendars(feed, source) -> dict:
                 fri=row.friday,
                 sat=row.saturday,
                 sun=row.sunday,
-                start_date=row.start_date,
-                end_date=row.end_date,
+                start_date=_date_str(row.start_date),
+                end_date=_date_str(row.end_date),
                 source=source,
             )
             for row in feed.calendar.itertuples()
@@ -86,18 +95,19 @@ def get_calendars(feed, source) -> dict:
         for row in feed.calendar_dates.itertuples():
             operation = row.exception_type == 1
             # 1: operates, 2: does not operate
+            date = _date_str(row.date)
 
             if (calendar := calendars.get(row.service_id)) is None:
                 calendar = Calendar(
-                    start_date=row.date,  # dummy date
+                    start_date=date,  # dummy date
                     source=source,
                 )
                 calendars[row.service_id] = calendar
             calendar_dates.append(
                 CalendarDate(
                     calendar=calendar,
-                    start_date=row.date,
-                    end_date=row.date,
+                    start_date=date,
+                    end_date=date,
                     operation=operation,
                     special=operation,  # additional date of operation
                 )
@@ -487,24 +497,36 @@ def finish_gtfs_import(
     been saved: refresh affected services' stop usages and search vectors,
     remove routes/trips that weren't in this import, mark the operator's
     other services as not current, and work out each route's start date.
+
+    `operator` may be a single Operator (the usual case) or an iterable of
+    them, for feeds that import one Operator per agency.txt row.
+
+    `update_geometry`, if set, only fills in a bounding-box geometry for
+    services that don't already have one (e.g. from the feed's shapes.txt) -
+    it never overwrites a real shape.
     """
+    operators = [operator] if isinstance(operator, Operator) else operator
+
     for service in source.service_set.filter(current=True):
         service.do_stop_usages()
         service.update_search_vector()
-        if update_geometry:
+        if update_geometry and not service.geometry:
             service.update_geometry()
 
     logger.info(
         source.route_set.exclude(id__in=[route.id for route in routes]).delete()
     )
-    logger.info(
-        operator.trip_set.exclude(id__in=[trip.id for trip in trip_objs]).delete()
-    )
-    logger.info(
-        operator.service_set.filter(current=True, route__isnull=True).update(
-            current=False
+    for operator in operators:
+        logger.info(
+            operator.trip_set.exclude(
+                id__in=[trip.id for trip in trip_objs if trip.operator_id == operator.pk]
+            ).delete()
         )
-    )
+        logger.info(
+            operator.service_set.filter(current=True, route__isnull=True).update(
+                current=False
+            )
+        )
 
     set_route_start_dates(source)
 

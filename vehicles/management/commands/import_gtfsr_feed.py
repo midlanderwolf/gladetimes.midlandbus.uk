@@ -11,6 +11,7 @@ from google.transit import gtfs_realtime_pb2
 
 from busstops.models import DataSource
 from bustimes.gtfs_feeds import FEEDS
+from bustimes.models import Calendar, Trip
 
 from ...models import Operator, Service, Vehicle, VehicleJourney
 from .import_gtfsr_ie import Command as GTFSRCommand
@@ -68,6 +69,22 @@ def parse_feed(data: bytes):
 
 
 class Command(GTFSRCommand):
+    @staticmethod
+    def get_journey_identity(item):
+        # some feeds (e.g. HSL) never give a trip_id, so (route_id, trip_id,
+        # start_date) alone can't tell consecutive trips on the same route
+        # apart - worst case is a vehicle (e.g. a ferry) shuttling back and
+        # forth on the same route all day, which would otherwise look like
+        # one never-ending journey. start_time and direction_id are constant
+        # for the duration of a single trip, so adding them is always safe.
+        return (
+            item.vehicle.trip.route_id,
+            item.vehicle.trip.trip_id,
+            item.vehicle.trip.start_date,
+            item.vehicle.trip.start_time,
+            item.vehicle.trip.direction_id,
+        )
+
     @staticmethod
     def add_arguments(parser):
         GTFSRCommand.add_arguments(parser)
@@ -159,6 +176,7 @@ class Command(GTFSRCommand):
         journey = VehicleJourney(code=item.vehicle.trip.trip_id, date=now.date())
 
         start_date = None
+        start_time = None
         if item.vehicle.trip.start_date:
             start_date = datetime.strptime(
                 f"{item.vehicle.trip.start_date} 12:00:00",
@@ -183,7 +201,31 @@ class Command(GTFSRCommand):
 
         journey.route_name = item.vehicle.trip.route_id
 
-        if journey.code and (trip := self.trips.get(journey.code)):
+        trip = journey.code and self.trips.get(journey.code)
+
+        if (
+            not trip
+            and item.vehicle.trip.route_id
+            and start_date
+            and start_time is not None
+        ):
+            # feed doesn't give a trip_id (e.g. HSL) - identify the specific
+            # trip from its route, scheduled start time and direction instead
+            trips = Trip.objects.filter(
+                route__source=self.source,
+                route__service__current=True,
+                route__code=item.vehicle.trip.route_id,
+                start=start_time,
+                inbound=item.vehicle.trip.direction_id == 1,
+            )
+            if len(trips) > 1:
+                calendar_ids = [t.calendar_id for t in trips]
+                trips = trips.filter(
+                    calendar__in=Calendar.objects.active_on(start_date, calendar_ids)
+                )
+            trip = trips.first()
+
+        if trip:
             journey.trip = trip
 
             if start_date:

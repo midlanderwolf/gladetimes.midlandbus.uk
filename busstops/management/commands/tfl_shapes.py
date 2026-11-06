@@ -11,7 +11,7 @@ from shapely.ops import substring
 
 from bustimes.models import RouteLink
 
-from ...models import Service, ServiceCode
+from ...models import Service, ServiceCode, StopPoint
 
 
 class Command(BaseCommand):
@@ -89,6 +89,22 @@ class Command(BaseCommand):
                         geometry=line_substring.wkt,
                         service=service,
                     )
+
+        stop_ids = {stop_id for pair in to_create for stop_id in pair}
+        existing_stop_ids = set(
+            StopPoint.objects.filter(atco_code__in=stop_ids).values_list(
+                "atco_code", flat=True
+            )
+        )
+        missing_stop_ids = stop_ids - existing_stop_ids
+        if missing_stop_ids:
+            print("⚠️ missing stops:", missing_stop_ids)
+
+        to_create = {
+            key: route_link
+            for key, route_link in to_create.items()
+            if key[0] in existing_stop_ids and key[1] in existing_stop_ids
+        }
 
         RouteLink.objects.bulk_create(
             to_create.values(),

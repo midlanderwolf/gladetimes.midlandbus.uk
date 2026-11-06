@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import gtfs_kit
@@ -19,6 +20,7 @@ from ...gtfs_utils import (
     get_arrival_and_departure,
     get_calendars,
     get_first_and_last_stop_times,
+    get_operators,
     get_str,
     save_trips,
     set_stop_time_defaults,
@@ -46,7 +48,12 @@ def get_platform_code(stop) -> str:
 class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
-            "feed", choices=[name for name, feed in FEEDS.items() if feed.static_url]
+            "feed",
+            choices=[
+                name
+                for name, feed in FEEDS.items()
+                if feed.static_url or feed.static_path
+            ],
         )
         parser.add_argument(
             "--force",
@@ -55,17 +62,25 @@ class Command(BaseCommand):
         )
 
     def handle(self, feed, force, *args, **options):
-        path = settings.DATA_DIR / Path(f"{feed}_gtfs.zip")
         feed_config = FEEDS[feed]
         prefix = feed_config.stop_id_prefix
         timezone = feed_config.timezone
 
         source, _ = DataSource.objects.get_or_create(name=feed_config.source_name)
-        source.url = feed_config.static_url
 
-        modified, last_modified = download_if_modified(
-            path, source, extra_ca_certs=feed_config.extra_ca_certs
-        )
+        if feed_config.static_path:
+            path = settings.DATA_DIR / feed_config.static_path
+            last_modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            modified = force or source.last_modified != last_modified
+            if modified:
+                source.last_modified = last_modified
+                source.save(update_fields=["last_modified"])
+        else:
+            path = settings.DATA_DIR / Path(f"{feed}_gtfs.zip")
+            source.url = feed_config.static_url
+            modified, last_modified = download_if_modified(
+                path, source, extra_ca_certs=feed_config.extra_ca_certs
+            )
 
         if not modified and not force:
             return  # no new data to import
@@ -80,27 +95,39 @@ class Command(BaseCommand):
 
         set_stop_time_defaults(feed)
 
-        agency = next(feed.agency.itertuples())
-        operator = Operator.objects.get_or_create(
-            noc=feed_config.noc,
-            defaults={
-                "name": feed_config.operator_name or agency.agency_name,
-                "url": get_str(agency, "agency_url"),
-                "timezone": timezone,
-            },
-        )[0]
+        if feed_config.multi_operator:
+            if "agency_noc" not in feed.agency.columns:
+                # Operator.noc is max_length=10 - agency_id may be longer
+                feed.agency["agency_noc"] = feed.agency["agency_id"].str[:10]
+            operators = get_operators(feed)
+        else:
+            agency = next(feed.agency.itertuples())
+            operator = Operator.objects.get_or_create(
+                noc=feed_config.noc,
+                defaults={
+                    "name": feed_config.operator_name or agency.agency_name,
+                    "url": get_str(agency, "agency_url"),
+                    "timezone": timezone,
+                },
+            )[0]
+            operators = {None: operator}
 
-        existing_services = {
-            service.line_name: service for service in operator.service_set.all()
-        }
+        existing_services = {}
+        for operator in operators.values():
+            for service in operator.service_set.all():
+                existing_services[(operator.pk, service.line_name)] = service
         existing_routes = {route.code: route for route in source.route_set.all()}
         routes = []
 
         # upsert stops
         stops = {}
-        new_stops = [
-            StopPoint(
-                atco_code=f"{prefix}{stop.stop_id}",
+        new_stops = []
+        for stop in feed.stops.itertuples():
+            stop_id = stop.stop_id
+            if feed_config.stop_ids_are_uuids:
+                stop_id = stop_id.replace("-", "")
+            stop_point = StopPoint(
+                atco_code=f"{prefix}{stop_id}",
                 common_name=stop.stop_name,
                 indicator=get_platform_code(stop),
                 active=True,
@@ -111,8 +138,8 @@ class Command(BaseCommand):
                 if stop.stop_name[:3].upper() in ("NB ", "EB ", "SB ", "WB ")
                 else "",
             )
-            for stop in feed.stops.itertuples()
-        ]
+            new_stops.append(stop_point)
+            stops[stop.stop_id] = stop_point
         for stop in new_stops:
             if feed_config.town_in_stop_names and (
                 match := TOWN_IN_STOP_NAME.fullmatch(stop.common_name)
@@ -125,8 +152,6 @@ class Command(BaseCommand):
             unique_fields=["atco_code"],
             update_fields=["common_name", "indicator", "latlong", "bearing", "town"],
         )
-        for stop in new_stops:
-            stops[stop.atco_code.removeprefix(prefix)] = stop
 
         calendars = get_calendars(feed, source)
 
@@ -135,12 +160,22 @@ class Command(BaseCommand):
             for colour in ServiceColour.objects.all()
         }
 
-        for row in feed.get_routes(as_gdf=True).itertuples():
-            if row.route_short_name in existing_services:
-                service = existing_services[row.route_short_name]
+        route_operators = {}
+
+        has_shapes = feed.shapes is not None
+        for row in feed.get_routes(as_gdf=has_shapes).itertuples():
+            operator = operators.get(get_str(row, "agency_id"))
+            if operator is None and len(operators) == 1:
+                # agency_id is optional if there's only one agency
+                operator = next(iter(operators.values()))
+            route_operators[row.route_id] = operator
+
+            services_key = (operator.pk, row.route_short_name)
+            if services_key in existing_services:
+                service = existing_services[services_key]
             else:
                 service = Service(line_name=row.route_short_name)
-                existing_services[row.route_short_name] = service
+                existing_services[services_key] = service
 
             if row.route_id in existing_routes:
                 route = existing_routes[row.route_id]
@@ -167,7 +202,7 @@ class Command(BaseCommand):
 
             if row.route_type in MODES:
                 service.mode = MODES[row.route_type]
-            if row.geometry:
+            if has_shapes and row.geometry:
                 service.geometry = row.geometry.wkt
 
             service.save()
@@ -178,12 +213,14 @@ class Command(BaseCommand):
 
             existing_routes[route.code] = route  # deals with duplicate rows
 
-        existing_trips = {
-            trip.vehicle_journey_code: trip for trip in operator.trip_set.all()
-        }
+        existing_trips = {}
+        for operator in operators.values():
+            for trip in operator.trip_set.all():
+                existing_trips[(operator.pk, trip.vehicle_journey_code)] = trip
         trips = {}
         for row in feed.trips.itertuples():
             route = existing_routes[row.route_id]
+            operator = route_operators[row.route_id]
             headsign = get_str(row, "trip_headsign").removeprefix(f"{route.line_name} ")
             direction_id = getattr(row, "direction_id", None)
             trip = Trip(
@@ -199,9 +236,10 @@ class Command(BaseCommand):
                 operator=operator,
                 headsign=headsign,
             )
-            if trip.vehicle_journey_code in existing_trips:
+            existing_trip_key = (operator.pk, trip.vehicle_journey_code)
+            if existing_trip_key in existing_trips:
                 # reuse existing trip id
-                trip.id = existing_trips[trip.vehicle_journey_code].id
+                trip.id = existing_trips[existing_trip_key].id
             trips[trip.vehicle_journey_code] = trip
         del existing_trips
 
@@ -264,6 +302,12 @@ class Command(BaseCommand):
             StopTime.objects.filter(trip__in=existing_trips).delete()
             StopTime.objects.bulk_create(stop_times)
 
-            finish_gtfs_import(source, operator, routes, trip_objs)
+            finish_gtfs_import(
+                source,
+                list(operators.values()),
+                routes,
+                trip_objs,
+                update_geometry=True,
+            )
 
             source.save(update_fields=["url", "datetime"])

@@ -181,7 +181,19 @@ def index(request):
             .count(),
         }
 
-    context = {"stats": stats}
+    def regions():
+        return Region.objects.all()
+
+    def operators_without_a_region():
+        return Operator.objects.filter(
+            operator_has_current_services, region=None
+        ).order_by("name")
+
+    context = {
+        "stats": stats,
+        "regions": regions,
+        "operators_without_a_region": operators_without_a_region,
+    }
 
     return render(request, "index.html", context)
 

@@ -45,68 +45,23 @@
     </div>
 </div>
 
-<h2>Regions</h2>
+{% cache 600 "index_regions" %}
+<h3>Regions</h3>
 
 <ul class="regions">
-    {% if request.headers.cf_ipcountry == "IE" %}
-    <li>Ireland
-        <ul class="long">
-            <li><a href="/regions/CO">Connacht</a></li>
-            <li><a href="/regions/LE">Leinster</a></li>
-            <li><a href="/regions/MU">Munster</a></li>
-            <li><a href="/regions/UL">Ulster</a></li>
-        </ul>
-    </li>
-    <li><a href="/regions/NI">Northern Ireland</a></li>
-    {% endif %}
-    <li>England
-        <ul class="long">
-            <li><a href="/regions/EA">East Anglia</a></li>
-            <li><a href="/regions/EM">East Midlands</a></li>
-            <li><a href="/regions/L">London</a></li>
-            <li><a href="/regions/NE">North East</a></li>
-            <li><a href="/regions/NW">North West</a></li>
-            <li><a href="/regions/SE">South East</a></li>
-            <li><a href="/regions/SW">South West</a></li>
-            <li><a href="/regions/WM">West Midlands</a></li>
-            <li><a href="/regions/Y">Yorkshire</a></li>
-        </ul>
-    </li>
-    <li><a href="/regions/W">Wales</a></li>
-    <li><a href="/regions/S">Scotland</a></li>
-    <li><a href="/regions/GB">Great Britain</a></li>
-    {% if request.headers.cf_ipcountry != "IE" %}
-    <li><a href="/regions/NI">Northern Ireland</a></li>
-    <li>Ireland
-        <ul class="long">
-            <li><a href="/regions/CO">Connacht</a></li>
-            <li><a href="/regions/LE">Leinster</a></li>
-            <li><a href="/regions/MU">Munster</a></li>
-            <li><a href="/regions/UL">Ulster</a></li>
-        </ul>
-    {% endif %}
-    <li><a href="/regions/IM">Isle of Man</a></li>
-    <li><a href="/operators/stagecoach-guernsey">Guernsey</a></li>
-    <li><a href="/operators/liberty-bus">Jersey</a></li>
-    <li>France
-        <ul class="long">
-            <li><a href="/operators/cap-cotentin">Cherbourg (Cap Cotentin)</a></li>
-        </ul>
-    </li>
-    <li>Poland
-        <ul class="long">
-            <li><a href="/operators/zditm-szczecin">Szczecin</a></li>
-            <li><a href="/operators/warszawski-transport-publiczny">Warszawa</a></li>
-        </ul>
-    </li>
-    <li>USA
-        <ul class="long">
-            <li><a href="/operators/rtcsnv">Las Vegas</a></li>
-            <li><a href="/operators/marta">Atlanta</a></li>
-            <li><a href="/operators/go-metro">Cincinnati</a></li>
-        </ul>
-    </li>
+    {% for region in regions %}
+    <li><a href="{{ region.get_absolute_url }}">{{ region.name }}</a></li>
+    {% endfor %}
 </ul>
+
+<h3>Operators</h3>
+
+<ul class="regions">
+    {% for operator in operators_without_a_region %}
+    <li><a href="{{ operator.get_absolute_url }}">{{ operator }}</a></li>
+    {% endfor %}
+</ul>
+{% endcache %}
 
 {% if popular_services %}
     <h2>Popular pages</h2>

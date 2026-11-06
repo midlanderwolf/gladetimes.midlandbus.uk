@@ -55,7 +55,7 @@ def get_stoppoint(stop, source):
 
 class Command(BaseCommand):
     def handle(self, *args, **options):
-        operator = Operator.objects.get(name="FlixBus")
+        operator = Operator.objects.get(name="FlixBus (Europe)")
         source, _ = DataSource.objects.get_or_create(name="FlixBus")
 
         path = settings.DATA_DIR / Path("flixbus_eu.zip")
